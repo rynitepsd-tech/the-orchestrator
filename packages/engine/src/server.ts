@@ -8,24 +8,25 @@
  *  - events carry a monotonic sequence so the host can detect gaps after a crash.
  *  - malformed input is reported, never fatal.
  */
+
+import { ompVersion } from "@orchestrator/omp-adapter";
 import {
-  encodeFrame,
-  FrameDecoder,
-  isEngineRequest,
-  isProtocolCompatible,
-  PROTOCOL_VERSION,
-  redactValue,
   type EngineErrorPayload,
   type EngineEventFrame,
   type EngineInfo,
   type EngineRequest,
   type EngineResponse,
+  encodeFrame,
+  FrameDecoder,
+  isEngineRequest,
+  isProtocolCompatible,
+  PROTOCOL_VERSION,
   type ProductEvent,
+  redactValue,
 } from "@orchestrator/protocol";
-import { ompVersion } from "@orchestrator/omp-adapter";
-import { RuntimeManager } from "./runtime-manager";
 import { handleRequest } from "./handlers";
 import { logger } from "./logging";
+import { RuntimeManager } from "./runtime-manager";
 
 export interface EngineServerOptions {
   agentDir?: string;

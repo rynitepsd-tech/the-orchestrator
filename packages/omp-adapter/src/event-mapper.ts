@@ -19,10 +19,10 @@
  * event degrades to "not displayed" instead of breaking the session.
  */
 import {
-  redactValue,
-  sanitizeOutput,
   type ProductEvent,
   type RunState,
+  redactValue,
+  sanitizeOutput,
   type ToolDetail,
 } from "@orchestrator/protocol";
 
@@ -40,6 +40,11 @@ export class EventMapper {
   #messageSeq = 0;
   #currentMessageId: string | null = null;
   readonly #toolStartedAt = new Map<string, number>();
+  /**
+   * Args live on tool_execution_start; end events may omit them upstream.
+   * Remembered per call id so tool cards can always show what actually ran.
+   */
+  readonly #toolArgs = new Map<string, Record<string, unknown>>();
   readonly #ctx: MapperContext;
 
   constructor(ctx: MapperContext) {
@@ -90,6 +95,13 @@ export class EventMapper {
 
       case "message_end": {
         const msg = ev.message;
+        // Advisor notes arrive as batched custom messages injected by the
+        // watchdog runtime (session-advisors.ts upstream):
+        //   { role: "custom", customType: "advisor",
+        //     details: { notes: [{ note, severity, advisor? }] } }
+        if (msg?.role === "custom" && msg?.customType === "advisor") {
+          return this.#mapAdvisorNotes(msg);
+        }
         if (msg?.role !== "assistant") return [];
         const id = this.#messageId();
         this.#currentMessageId = null;
@@ -108,9 +120,15 @@ export class EventMapper {
       case "tool_execution_start": {
         const callId = String(ev.toolCallId ?? "");
         this.#toolStartedAt.set(callId, Date.now());
+        if (ev.args && typeof ev.args === "object") this.#toolArgs.set(callId, ev.args);
         this.#ctx.onRunState?.("tool", `${ev.toolName}`);
         return [
-          { type: "session.state", sessionId, runState: "tool", activity: String(ev.toolName ?? "") },
+          {
+            type: "session.state",
+            sessionId,
+            runState: "tool",
+            activity: String(ev.toolName ?? ""),
+          },
           {
             type: "tool.start",
             sessionId,
@@ -138,6 +156,8 @@ export class EventMapper {
         const callId = String(ev.toolCallId ?? "");
         const startedAt = this.#toolStartedAt.get(callId);
         this.#toolStartedAt.delete(callId);
+        const rememberedArgs = this.#toolArgs.get(callId);
+        this.#toolArgs.delete(callId);
         const raw = contentText(ev.result);
         const { output, truncated } = sanitizeOutput(raw);
         const isError = ev.isError === true;
@@ -156,7 +176,7 @@ export class EventMapper {
                 : startedAt
                   ? Date.now() - startedAt
                   : undefined,
-            detail: toolDetail(String(ev.toolName ?? ""), ev),
+            detail: toolDetail(String(ev.toolName ?? ""), ev, rememberedArgs),
           },
         ];
       }
@@ -179,6 +199,53 @@ export class EventMapper {
       default:
         return [];
     }
+  }
+
+  #mapAdvisorNotes(msg: OmpEvent): ProductEvent[] {
+    const sessionId = this.#ctx.sessionId;
+    const notes: any[] = Array.isArray(msg?.details?.notes) ? msg.details.notes : [];
+    const at =
+      typeof msg?.timestamp === "number"
+        ? new Date(msg.timestamp).toISOString()
+        : new Date().toISOString();
+    const out: ProductEvent[] = [];
+    for (const n of notes) {
+      const text = typeof n?.note === "string" ? n.note : "";
+      if (!text) continue;
+      const name = typeof n?.advisor === "string" && n.advisor ? n.advisor : "Advisor";
+      const sev = n?.severity;
+      out.push({
+        type: "advisor.message",
+        sessionId,
+        advisorId: `advisor:${name}`,
+        advisorName: name,
+        // Unknown future severities degrade to "unknown" instead of vanishing.
+        severity: sev === "nit" || sev === "concern" || sev === "blocker" ? sev : "unknown",
+        text,
+        messageId: `${sessionId}:adv${++this.#messageSeq}`,
+        at,
+      });
+    }
+    // The batched note body is also rendered to the model as an <advisory>
+    // block; the per-note cards above are the product-facing form. If upstream
+    // ships a shape without `details.notes`, fall back to the raw text so the
+    // advisory is never silently dropped.
+    if (out.length === 0) {
+      const raw = textOf(msg);
+      if (raw) {
+        out.push({
+          type: "advisor.message",
+          sessionId,
+          advisorId: "advisor:unknown",
+          advisorName: "Advisor",
+          severity: "unknown",
+          text: raw,
+          messageId: `${sessionId}:adv${++this.#messageSeq}`,
+          at,
+        });
+      }
+    }
+    return out;
   }
 
   #mapMessageUpdate(ev: OmpEvent): ProductEvent[] {
@@ -228,7 +295,9 @@ export function thinkingOf(message: any): string {
   const content = message?.content;
   if (!Array.isArray(content)) return "";
   return content
-    .filter((p: any) => (p?.type === "thinking" || p?.type === "reasoning") && typeof p.text === "string")
+    .filter(
+      (p: any) => (p?.type === "thinking" || p?.type === "reasoning") && typeof p.text === "string",
+    )
     .map((p: any) => p.text)
     .join("");
 }
@@ -245,8 +314,12 @@ function contentText(result: any): string {
 }
 
 /** Structured detail so the UI can render native cards instead of raw text. */
-function toolDetail(toolName: string, ev: OmpEvent): ToolDetail {
-  const args = ev.args ?? {};
+function toolDetail(
+  toolName: string,
+  ev: OmpEvent,
+  rememberedArgs?: Record<string, unknown>,
+): ToolDetail {
+  const args: any = ev.args ?? rememberedArgs ?? {};
   const details = ev.result?.details ?? {};
   switch (toolName) {
     case "bash":

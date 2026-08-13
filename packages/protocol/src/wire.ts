@@ -64,7 +64,23 @@ export type EngineLifecycleEvent =
   | { type: "engine.status"; stage: EngineStage; message?: string }
   | { type: "engine.ready"; info: EngineInfo }
   | { type: "engine.error"; error: EngineErrorPayload }
-  | { type: "engine.log"; level: "debug" | "info" | "warn" | "error"; subsystem: string; message: string };
+  | {
+      type: "engine.log";
+      level: "debug" | "info" | "warn" | "error";
+      subsystem: string;
+      message: string;
+    }
+  /**
+   * Provider OAuth flow progress. `url` must be opened in the user's browser
+   * by the host; the engine never opens anything itself.
+   */
+  | {
+      type: "engine.auth";
+      provider: string;
+      status: "browser" | "progress" | "prompt" | "done" | "failed";
+      url?: string;
+      message?: string;
+    };
 
 export const ENGINE_STAGES = [
   "starting",
@@ -107,6 +123,10 @@ export interface RequestPayloads {
 
   "project.open": { path: string };
   "project.environment": { path: string };
+  "project.changes": { path: string };
+  "project.diff": { path: string; file: string };
+  "project.files": { path: string; query?: string; limit?: number };
+  "project.readFile": { path: string; file: string };
 
   "sessions.discover": { projectPath?: string };
   "sessions.create": SessionLaunchConfig;
@@ -122,7 +142,18 @@ export interface RequestPayloads {
   };
   "session.abort": { sessionId: SessionId };
   "session.compact": { sessionId: SessionId };
-  "session.fork": { sessionId: SessionId; title?: string };
+  /**
+   * Fork a session. Either a live session (`sessionId`) or a persisted session
+   * file (`sourcePath`) can be forked; the fork becomes a new live session.
+   */
+  "session.fork": {
+    sessionId?: SessionId;
+    sourcePath?: string;
+    projectPath?: string;
+    title?: string;
+    model?: string;
+    thinkingLevel?: string;
+  };
   "session.setModel": { sessionId: SessionId; model: string; thinkingLevel?: string };
   "session.setTitle": { sessionId: SessionId; title: string };
   "session.setApprovalMode": { sessionId: SessionId; mode: ApprovalMode };
@@ -132,9 +163,17 @@ export interface RequestPayloads {
   "session.advisors.get": { sessionId: SessionId };
 
   "approval.respond": { sessionId: SessionId; approvalId: string; optionId: string };
-  "extension.ui.respond": { sessionId: SessionId; requestId: string; value: unknown; cancelled: boolean };
+  "extension.ui.respond": {
+    sessionId: SessionId;
+    requestId: string;
+    value: unknown;
+    cancelled: boolean;
+  };
 
   "slash.list": { sessionId: SessionId };
+
+  "mcp.status": { sessionId: SessionId };
+  "mcp.reconnect": { sessionId: SessionId; server: string };
 
   "usage.session": { sessionId: SessionId };
   "usage.query": UsageQuery;
@@ -165,6 +204,14 @@ export interface ResponsePayloads {
     activeSessions: number;
     logPath: string;
     warnings: string[];
+    workers: Array<{
+      sessionId: SessionId;
+      title: string;
+      pid?: number;
+      runState: string;
+      rssBytes?: number;
+      uptimeMs?: number;
+    }>;
   };
 
   "models.list": { models: ModelInfo[]; defaultModel?: string; roles: Record<string, string> };
@@ -175,6 +222,10 @@ export interface ResponsePayloads {
 
   "project.open": { project: import("./domain").ProjectInfo };
   "project.environment": ProjectEnvironment;
+  "project.changes": import("./domain").GitChanges;
+  "project.diff": import("./domain").GitDiff;
+  "project.files": { files: string[]; truncated: boolean };
+  "project.readFile": { file: string; content: string; binary: boolean; truncated: boolean };
 
   "sessions.discover": { sessions: DiscoveredSession[] };
   "sessions.create": { session: SessionSummary };
@@ -197,6 +248,17 @@ export interface ResponsePayloads {
   "extension.ui.respond": { ok: boolean };
 
   "slash.list": { commands: Array<{ name: string; description?: string; source: string }> };
+
+  "mcp.status": {
+    servers: Array<{
+      name: string;
+      status: "connected" | "connecting" | "disconnected";
+      toolCount?: number;
+      source?: string;
+      error?: string;
+    }>;
+  };
+  "mcp.reconnect": { ok: boolean; status?: string };
 
   "usage.session": { breakdown: UsageBreakdown };
   "usage.query": { records: UsageRecord[]; breakdown: UsageBreakdown };

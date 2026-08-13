@@ -175,6 +175,13 @@ export interface UsageRecord extends TokenCounts {
   completedAt?: string;
 
   source: UsageSource;
+
+  /**
+   * OMP's own persisted session id, when known. The global usage index keys on
+   * this (not the per-run Orchestrator session id) so usage survives restarts
+   * and reconciles with reindexed session files.
+   */
+  ompSessionId?: string;
 }
 
 export function emptyTokenCounts(): TokenCounts {
@@ -197,7 +204,13 @@ export function totalTokens(t: TokenCounts): number {
 /** Rolled-up usage for a session, split by actor. */
 export interface UsageBreakdown {
   primary: TokenCounts & { cost?: number };
-  advisors: Array<{ actorId: string; actorName?: string; model?: string; tokens: TokenCounts; cost?: number }>;
+  advisors: Array<{
+    actorId: string;
+    actorName?: string;
+    model?: string;
+    tokens: TokenCounts;
+    cost?: number;
+  }>;
   subagents: { runs: number; tokens: TokenCounts; cost?: number };
   byModel: Array<{ model: string; provider: string; tokens: TokenCounts; cost?: number }>;
   total: TokenCounts & { cost?: number };
@@ -315,6 +328,8 @@ export interface SessionSummary {
   projectPath: string;
   title: string;
   runState: RunState;
+  /** Short live-activity label, e.g. "Editing session.ts". */
+  activity?: string;
   model?: string;
   thinkingLevel?: string;
   advisorCount: number;
@@ -349,6 +364,31 @@ export interface ProjectInfo {
   git?: { branch?: string; dirty: boolean; detached?: boolean };
   /** Discovered OMP environment for this project. */
   environment?: ProjectEnvironment;
+}
+
+/** Working-tree change list. Truthfully labelled: this is the WHOLE working
+ * tree, not per-session attribution — concurrent sessions share it. */
+export interface GitChanges {
+  branch?: string;
+  detached?: boolean;
+  files: Array<{
+    path: string;
+    /** Porcelain status: "M" | "A" | "D" | "R" | "?" | "C" | "U". */
+    status: string;
+    renamedFrom?: string;
+  }>;
+}
+
+export interface GitDiff {
+  file: string;
+  diff: string;
+  binary: boolean;
+  /** Set when the diff was truncated for transport. */
+  truncated?: boolean;
+  additions: number;
+  deletions: number;
+  /** For untracked files: full content preview instead of a diff. */
+  untracked?: boolean;
 }
 
 export interface ProjectEnvironment {

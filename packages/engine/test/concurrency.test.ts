@@ -21,10 +21,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ProductEvent, RunState } from "@orchestrator/protocol";
 import { ompAgentDir } from "@orchestrator/omp-adapter";
+import type { ProductEvent, RunState } from "@orchestrator/protocol";
 import { RuntimeManager } from "../src/runtime-manager";
-import { startMockProvider, type MockServer } from "./mock-provider";
+import { type MockServer, startMockProvider } from "./mock-provider";
 
 let mock: MockServer;
 let manager: RuntimeManager;
@@ -60,7 +60,9 @@ function eventsFor(sessionId: string): ProductEvent[] {
 
 function textFor(sessionId: string): string {
   return eventsFor(sessionId)
-    .filter((e): e is Extract<ProductEvent, { type: "assistant.text" }> => e.type === "assistant.text")
+    .filter(
+      (e): e is Extract<ProductEvent, { type: "assistant.text" }> => e.type === "assistant.text",
+    )
     .map((e) => e.delta)
     .join("");
 }
@@ -227,9 +229,9 @@ describe("abort isolation", () => {
     await prompt(d.sessionId, "slow d");
 
     // Let both get genuinely underway.
-    expect(await waitFor(() => textFor(c.sessionId).length > 0 && textFor(d.sessionId).length > 0)).toBe(
-      true,
-    );
+    expect(
+      await waitFor(() => textFor(c.sessionId).length > 0 && textFor(d.sessionId).length > 0),
+    ).toBe(true);
 
     await abort(c.sessionId);
     expect(runStates.get(c.sessionId)).toBe("interrupted");
@@ -294,9 +296,7 @@ describe("three simultaneous sessions across two projects", () => {
     ]);
 
     const allDone = await waitFor(() =>
-      [s1, s2, s3].every((s) =>
-        eventsFor(s.sessionId).some((e) => e.type === "session.finished"),
-      ),
+      [s1, s2, s3].every((s) => eventsFor(s.sessionId).some((e) => e.type === "session.finished")),
     );
     expect(allDone).toBe(true);
 

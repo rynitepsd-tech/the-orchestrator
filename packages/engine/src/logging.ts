@@ -4,7 +4,7 @@
  * Never writes to stdout — stdout is the protocol channel. Diagnostics go to
  * stderr and to a rotating file under Application Support.
  */
-import { appendFileSync, mkdirSync, existsSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { redactValue } from "@orchestrator/protocol";
@@ -108,9 +108,7 @@ export function protectStdout(): void {
   const toStderr =
     (level: LogLevel) =>
     (...args: unknown[]) => {
-      const msg = args
-        .map((a) => (typeof a === "string" ? a : safeStringify(a)))
-        .join(" ");
+      const msg = args.map((a) => (typeof a === "string" ? a : safeStringify(a))).join(" ");
       logger.log(level, "console", msg);
     };
   console.log = toStderr("info");

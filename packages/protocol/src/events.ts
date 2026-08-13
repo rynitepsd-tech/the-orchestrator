@@ -165,7 +165,13 @@ export interface SubagentStarted extends EventBase {
   type: "subagent.start";
   subagentId: string;
   label: string;
+  /** The agent definition used, e.g. "task" or a named custom agent. */
+  agent?: string;
+  agentSource?: string;
+  /** Task text given to the subagent. */
+  task?: string;
   model?: string;
+  parentToolCallId?: string;
   startedAt: string;
 }
 
@@ -174,6 +180,12 @@ export interface SubagentUpdated extends EventBase {
   subagentId: string;
   toolCalls: number;
   activity?: string;
+  currentTool?: string;
+  /** Cumulative billed tokens across the subagent's turns (upstream figure). */
+  tokens?: number;
+  cost?: number;
+  contextTokens?: number;
+  contextWindow?: number;
 }
 
 export interface SubagentCompleted extends EventBase {
@@ -190,6 +202,16 @@ export interface SubagentCompleted extends EventBase {
 export interface UsageUpdated extends EventBase {
   type: "usage.update";
   breakdown: UsageBreakdown;
+}
+
+/**
+ * Raw usage records for the engine-wide index. Workers emit these alongside
+ * `usage.update` so the supervisor can persist and aggregate across sessions
+ * without re-deriving from breakdowns.
+ */
+export interface UsageRecordsAdded extends EventBase {
+  type: "usage.records";
+  records: import("./domain").UsageRecord[];
 }
 
 export interface ContextChanged extends EventBase {
@@ -239,7 +261,12 @@ export interface ExtensionUIRequested extends EventBase {
   extensionName: string;
   ui:
     | { kind: "confirm"; title: string; message?: string }
-    | { kind: "select"; title: string; options: Array<{ id: string; label: string }>; multi: boolean }
+    | {
+        kind: "select";
+        title: string;
+        options: Array<{ id: string; label: string }>;
+        multi: boolean;
+      }
     | { kind: "input"; title: string; placeholder?: string; secret?: boolean }
     | { kind: "editor"; title: string; initial: string; language?: string }
     | { kind: "notification"; level: "info" | "warn" | "error"; message: string }
@@ -267,6 +294,7 @@ export type ProductEvent =
   | SubagentUpdated
   | SubagentCompleted
   | UsageUpdated
+  | UsageRecordsAdded
   | ContextChanged
   | ModelChanged
   | SessionCompacted

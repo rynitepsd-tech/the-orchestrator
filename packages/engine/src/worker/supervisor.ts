@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { projectIdFor } from "@orchestrator/omp-adapter";
 import {
   encodeFrame,
   FrameDecoder,
@@ -21,7 +22,6 @@ import {
   type SessionLaunchConfig,
   type SessionSummary,
 } from "@orchestrator/protocol";
-import { projectIdFor } from "@orchestrator/omp-adapter";
 import { logger } from "../logging";
 
 export interface WorkerSpawnEnv {
@@ -34,14 +34,20 @@ interface PendingRequest {
   reject: (e: Error) => void;
 }
 
+const STDERR_RING_SIZE = 40;
+
 class Worker {
   readonly sessionId: string;
   readonly summary: SessionSummary;
+  readonly startedAtMs = Date.now();
   readonly #proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   readonly #decoder = new FrameDecoder();
   readonly #pending = new Map<string, PendingRequest>();
+  /** Last worker stderr lines, for actionable create/crash errors. */
+  readonly stderrTail: string[] = [];
   #ready = false;
   #exited = false;
+  pid: number | undefined;
 
   constructor(
     sessionId: string,
@@ -53,6 +59,7 @@ class Worker {
     this.sessionId = sessionId;
     this.summary = summary;
     this.#proc = proc;
+    this.pid = proc.pid;
 
     void this.#pumpStdout(onEvent);
     void this.#pumpStderr();
@@ -80,11 +87,15 @@ class Worker {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const { frames } = this.#decoder.push(td.decode(value, { stream: true }));
+      const { frames, errors } = this.#decoder.push(td.decode(value, { stream: true }));
+      for (const msg of errors) {
+        logger.warn("worker-protocol", msg.slice(0, 500), { sessionId: this.sessionId });
+      }
       for (const f of frames) {
         const frame = f as any;
         if (frame.workerReady) {
           this.#ready = true;
+          if (typeof frame.pid === "number") this.pid = frame.pid;
           continue;
         }
         if (frame.requestId) {
@@ -92,11 +103,28 @@ class Worker {
           if (p) {
             this.#pending.delete(frame.requestId);
             if (frame.ok) p.resolve(frame.result);
-            else p.reject(Object.assign(new Error(frame.error?.message ?? "worker error"), frame.error));
+            else
+              p.reject(
+                Object.assign(new Error(frame.error?.message ?? "worker error"), frame.error),
+              );
           }
           continue;
         }
-        if (frame.event) onEvent(frame.event as ProductEvent);
+        if (frame.event) {
+          const event = frame.event as ProductEvent;
+          // Ownership check: a worker may only speak for its own session.
+          // Anything else is a bug (or a compromised child) and must not be
+          // routed to another session's UI.
+          if ((event as { sessionId?: string }).sessionId !== this.sessionId) {
+            logger.warn("supervisor", "dropped event with foreign sessionId", {
+              sessionId: this.sessionId,
+              claimed: (event as { sessionId?: string }).sessionId,
+              type: (event as { type?: string }).type,
+            });
+            continue;
+          }
+          onEvent(event);
+        }
       }
     }
   }
@@ -104,11 +132,21 @@ class Worker {
   async #pumpStderr(): Promise<void> {
     const td = new TextDecoder();
     const reader = this.#proc.stderr.getReader();
+    let carry = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      for (const line of td.decode(value, { stream: true }).split("\n")) {
-        if (line.trim()) logger.debug("worker", line.slice(0, 2000), { sessionId: this.sessionId });
+      carry += td.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = carry.indexOf("\n")) >= 0) {
+        const line = carry.slice(0, idx).trim();
+        carry = carry.slice(idx + 1);
+        if (!line) continue;
+        this.stderrTail.push(line.slice(0, 2000));
+        if (this.stderrTail.length > STDERR_RING_SIZE) this.stderrTail.shift();
+        // info, not debug: worker boot failures must be visible in a default
+        // log level or they are undiagnosable in the field.
+        logger.info("worker-stderr", line.slice(0, 2000), { sessionId: this.sessionId });
       }
     }
   }
@@ -172,6 +210,8 @@ function workerCommand(): string[] {
 
 export class WorkerSupervisor {
   readonly #workers = new Map<string, Worker>();
+  /** Summaries of sessions whose worker exited, kept for diagnostics/restart. */
+  readonly #closed = new Map<string, SessionSummary>();
   readonly #emit: (e: ProductEvent) => void;
   readonly #agentDir: string;
   readonly #env: WorkerSpawnEnv;
@@ -233,11 +273,15 @@ export class WorkerSupervisor {
       thinkingLevel: config.thinkingLevel,
       advisors: config.advisors ?? [],
       resumeSessionPath: config.resumeSessionPath,
+      approvalMode: config.approvalMode,
       // MCP and LSP are per-process now; keep them off in tests and opt-in
       // elsewhere so N sessions do not spawn N language servers unasked.
-      enableMCP: this.#testMode ? false : true,
-      enableLsp: this.#testMode ? false : true,
-      autoApprove: this.#testMode,
+      enableMCP: !this.#testMode,
+      enableLsp: !this.#testMode,
+      // Tests auto-approve by default so the mock provider can run tools
+      // unattended — EXCEPT when a test explicitly exercises the approval
+      // bridge by asking for "always-ask". Production is never auto-approve.
+      autoApprove: this.#testMode && config.approvalMode !== "always-ask",
       testProviders: this.#env.testProviders,
     };
 
@@ -276,7 +320,7 @@ export class WorkerSupervisor {
     }
     if (worker.exited) {
       this.#workers.delete(sessionId);
-      throw Object.assign(new Error("The session engine failed to start."), { kind: "engine" });
+      throw this.#createFailure(worker);
     }
     if (!worker.ready) {
       await worker.shutdown();
@@ -290,19 +334,46 @@ export class WorkerSupervisor {
     return summary;
   }
 
+  /** Build an actionable error from a worker that died during boot. */
+  #createFailure(worker: Worker): Error {
+    // The worker writes structured JSON error lines; surface the last message.
+    let message = "The session engine failed to start.";
+    let kind = "engine";
+    for (let i = worker.stderrTail.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(worker.stderrTail[i]);
+        if (parsed?.message) {
+          message = `The session engine failed to start: ${parsed.message}`;
+          if (typeof parsed.kind === "string") kind = parsed.kind;
+          break;
+        }
+      } catch {
+        /* non-JSON stderr line */
+      }
+    }
+    return Object.assign(new Error(message), {
+      kind,
+      detail: worker.stderrTail.slice(-10).join("\n"),
+    });
+  }
+
   #onWorkerExit(sessionId: string, code: number | null): void {
     const w = this.#workers.get(sessionId);
     if (!w) return;
-    // Never report an in-flight run as still running once its process died.
+    // Remove the dead worker so it cannot swallow future routing, but keep the
+    // summary for diagnostics and so the UI can offer resume.
+    this.#workers.delete(sessionId);
     w.summary.runState = "interrupted";
+    this.#closed.set(sessionId, w.summary);
     logger.warn("supervisor", `session worker exited`, { sessionId, code });
+    // Never report an in-flight run as still running once its process died.
     this.#emit({
       type: "session.failed",
       sessionId,
       error: {
         kind: "engine",
         message: "This session's engine stopped unexpectedly. Its transcript is preserved.",
-        detail: `worker exit code ${code ?? "signal"}`,
+        detail: `worker exit code ${code ?? "signal"}\n${w.stderrTail.slice(-5).join("\n")}`,
         retryable: true,
       },
     });
@@ -311,7 +382,17 @@ export class WorkerSupervisor {
 
   get(sessionId: string): Worker {
     const w = this.#workers.get(sessionId);
-    if (!w) throw new Error(`Unknown session: ${sessionId}`);
+    if (!w) {
+      const closed = this.#closed.get(sessionId);
+      throw Object.assign(
+        new Error(
+          closed
+            ? "This session's engine has stopped. Resume the session to continue."
+            : `Unknown session: ${sessionId}`,
+        ),
+        { kind: "engine", retryable: Boolean(closed) },
+      );
+    }
     return w;
   }
 
@@ -321,6 +402,50 @@ export class WorkerSupervisor {
 
   list(): SessionSummary[] {
     return [...this.#workers.values()].map((w) => w.summary);
+  }
+
+  /** Sessions whose worker exited (crash or close) since engine start. */
+  closedSummaries(): SessionSummary[] {
+    return [...this.#closed.values()];
+  }
+
+  /** Live worker process stats for diagnostics. Cheap ping per worker. */
+  async workerStats(): Promise<
+    Array<{
+      sessionId: string;
+      title: string;
+      pid?: number;
+      runState: string;
+      rssBytes?: number;
+      uptimeMs?: number;
+    }>
+  > {
+    const rows = await Promise.all(
+      [...this.#workers.values()].map(async (w) => {
+        let rssBytes: number | undefined;
+        let uptimeMs: number | undefined = Date.now() - w.startedAtMs;
+        try {
+          const ping = await w.request<{ rssBytes?: number; uptimeMs?: number }>(
+            "worker.ping",
+            {},
+            3_000,
+          );
+          rssBytes = ping.rssBytes;
+          uptimeMs = ping.uptimeMs ?? uptimeMs;
+        } catch {
+          /* a busy worker that misses a ping still gets listed */
+        }
+        return {
+          sessionId: w.sessionId,
+          title: w.summary.title,
+          pid: w.pid,
+          runState: w.summary.runState,
+          rssBytes,
+          uptimeMs,
+        };
+      }),
+    );
+    return rows;
   }
 
   openSessionPaths(): Set<string> {
@@ -345,10 +470,11 @@ export class WorkerSupervisor {
     const w = this.#workers.get(sessionId);
     if (!w) return;
     this.#workers.delete(sessionId);
+    this.#closed.set(sessionId, w.summary);
     if (dispose) await w.shutdown();
   }
 
-  /** Ordered shutdown so no worker is orphaned. */
+  /** Parallel shutdown; no worker may be orphaned past the kill deadline. */
   async shutdown(): Promise<void> {
     const all = [...this.#workers.values()];
     this.#workers.clear();

@@ -26,8 +26,9 @@
  * Because advisor and subagent totals are reported separately from the primary
  * message usage, summing all three actor types does not double count.
  */
-import { usageKey } from "@orchestrator/usage";
+
 import type { ContextUsage, UsageRecord, UsageSource } from "@orchestrator/protocol";
+import { usageKey } from "@orchestrator/usage";
 
 interface ExtractContext {
   sessionId: string;
@@ -42,7 +43,13 @@ interface OmpUsage {
   cacheWrite?: number;
   reasoning?: number;
   totalTokens?: number;
-  cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
 }
 
 function num(v: unknown): number {
@@ -142,33 +149,41 @@ export function advisorUsageFromStats(ctx: ExtractContext, stats: any): UsageRec
 }
 
 /**
- * Build a subagent usage record from a completed task tool call.
+ * Build a subagent usage record from one of the subagent's own assistant
+ * messages (observed on the `task:subagent:event` bus channel).
  *
- * `taskId` must be the tool call id so repeated observation of the same
- * completed task collapses to one record.
+ * Identity is the provider responseId, exactly like the primary path, so
+ * repeated observation of the same response collapses to one record and each
+ * distinct provider response accumulates. This is authoritative attribution
+ * with full token splits — better than the task tool's summary totals.
  */
-export function subagentUsage(
+export function subagentUsageFromMessage(
   ctx: ExtractContext,
-  taskId: string,
-  info: { label?: string; provider?: string; model?: string; usage?: OmpUsage },
+  subagentId: string,
+  message: any,
 ): UsageRecord | null {
-  const u = info.usage;
+  const u: OmpUsage | undefined = message?.usage;
   if (!u) return null;
-  const actorId = `task:${taskId}`;
+  const actorId = `subagent:${subagentId}`;
+  const messageId =
+    (typeof message.responseId === "string" && message.responseId) ||
+    (typeof message.timestamp === "number" && `ts:${message.timestamp}`) ||
+    "unknown";
   return {
-    key: usageKey({ sessionId: ctx.sessionId, actorId, messageId: "total" }),
+    key: usageKey({ sessionId: ctx.sessionId, actorId, messageId }),
     sessionId: ctx.sessionId,
     projectId: ctx.projectId,
     actorType: "subagent",
     actorId,
-    actorName: info.label,
-    provider: String(info.provider ?? "unknown"),
-    model: String(info.model ?? "unknown"),
+    provider: String(message.provider ?? "unknown"),
+    model: String(message.model ?? "unknown"),
     inputTokens: num(u.input),
     outputTokens: num(u.output),
     cacheReadTokens: num(u.cacheRead),
     cacheWriteTokens: num(u.cacheWrite),
     cost: costOf(u),
+    completedAt:
+      typeof message.timestamp === "number" ? new Date(message.timestamp).toISOString() : undefined,
     source: "subagent-log",
   };
 }
@@ -193,43 +208,6 @@ export function contextUsageOf(session: any): ContextUsage | null {
     const max = num(raw.contextWindow ?? raw.max ?? raw.limit);
     if (max <= 0) return null;
     return { usedTokens: used, maxTokens: max, fraction: Math.min(1, used / max) };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Session-cumulative primary usage from `getSessionStats()`.
- *
- * Measured shape (OMP 17.3.1):
- *   { sessionId, userMessages, assistantMessages, toolCalls, toolResults,
- *     totalMessages, tokens: { input, output, reasoning, cacheRead, cacheWrite,
- *     total }, cost, premiumRequests, contextUsage: { tokens, contextWindow, percent } }
- *
- * Used as a RECONCILIATION cross-check against the per-response records built
- * by {@link primaryUsageFromTurn}, not as an additional additive source —
- * adding both would double count.
- */
-export function sessionStatsTotals(session: any): {
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
-  cost?: number;
-  toolCalls: number;
-  messages: number;
-} | null {
-  try {
-    const s = session?.getSessionStats?.();
-    if (!s?.tokens) return null;
-    return {
-      tokens: {
-        input: num(s.tokens.input),
-        output: num(s.tokens.output),
-        cacheRead: num(s.tokens.cacheRead),
-        cacheWrite: num(s.tokens.cacheWrite),
-      },
-      cost: typeof s.cost === "number" && Number.isFinite(s.cost) ? s.cost : undefined,
-      toolCalls: num(s.toolCalls),
-      messages: num(s.totalMessages),
-    };
   } catch {
     return null;
   }

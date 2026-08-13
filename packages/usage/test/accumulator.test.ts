@@ -41,7 +41,14 @@ function rec(p: {
 /** The exact scenario from the product acceptance test. */
 function scenarioRecords(source: UsageRecord["source"] = "live-event"): UsageRecord[] {
   return [
-    rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 10_000, output: 2_000, source }),
+    rec({
+      actorType: "primary",
+      actorId: "primary",
+      messageId: "m1",
+      input: 10_000,
+      output: 2_000,
+      source,
+    }),
     rec({
       actorType: "advisor",
       actorId: "advisor:architecture",
@@ -138,9 +145,15 @@ describe("de-duplication", () => {
   test("cumulative live updates replace rather than sum", () => {
     const acc = new UsageAccumulator();
     // OMP reports usage cumulatively during a stream: 0 -> partial -> final.
-    acc.ingest(rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 0, output: 0 }));
-    acc.ingest(rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 1_000, output: 40 }));
-    acc.ingest(rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 1_500, output: 50 }));
+    acc.ingest(
+      rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 0, output: 0 }),
+    );
+    acc.ingest(
+      rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 1_000, output: 40 }),
+    );
+    acc.ingest(
+      rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 1_500, output: 50 }),
+    );
 
     const b = acc.breakdown(SESSION);
     expect(b.total.inputTokens).toBe(1_500);
@@ -151,11 +164,25 @@ describe("de-duplication", () => {
   test("persisted data is not clobbered by a late live event", () => {
     const acc = new UsageAccumulator();
     acc.ingest(
-      rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 1_500, output: 50, source: "omp-session" }),
+      rec({
+        actorType: "primary",
+        actorId: "primary",
+        messageId: "m1",
+        input: 1_500,
+        output: 50,
+        source: "omp-session",
+      }),
     );
     // A straggler live event with stale (lower) numbers must not win.
     const changed = acc.ingest(
-      rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 900, output: 10, source: "live-event" }),
+      rec({
+        actorType: "primary",
+        actorId: "primary",
+        messageId: "m1",
+        input: 900,
+        output: 10,
+        source: "live-event",
+      }),
     );
     expect(changed).toBe(false);
     expect(acc.breakdown(SESSION).total.inputTokens).toBe(1_500);
@@ -163,8 +190,12 @@ describe("de-duplication", () => {
 
   test("distinct messages accumulate", () => {
     const acc = new UsageAccumulator();
-    acc.ingest(rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 100, output: 10 }));
-    acc.ingest(rec({ actorType: "primary", actorId: "primary", messageId: "m2", input: 200, output: 20 }));
+    acc.ingest(
+      rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 100, output: 10 }),
+    );
+    acc.ingest(
+      rec({ actorType: "primary", actorId: "primary", messageId: "m2", input: 200, output: 20 }),
+    );
     const b = acc.breakdown(SESSION);
     expect(b.total.inputTokens).toBe(300);
     expect(b.total.outputTokens).toBe(30);
@@ -174,7 +205,13 @@ describe("de-duplication", () => {
 describe("session isolation", () => {
   test("usage never crosses sessions", () => {
     const acc = new UsageAccumulator();
-    const a = rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 100, output: 10 });
+    const a = rec({
+      actorType: "primary",
+      actorId: "primary",
+      messageId: "m1",
+      input: 100,
+      output: 10,
+    });
     const b: UsageRecord = {
       ...a,
       sessionId: "sess-2",
@@ -189,7 +226,13 @@ describe("session isolation", () => {
 
   test("clearSession removes only that session", () => {
     const acc = new UsageAccumulator();
-    const a = rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 100, output: 10 });
+    const a = rec({
+      actorType: "primary",
+      actorId: "primary",
+      messageId: "m1",
+      input: 100,
+      output: 10,
+    });
     const b: UsageRecord = {
       ...a,
       sessionId: "sess-2",
@@ -212,8 +255,19 @@ describe("cost honesty", () => {
 
   test("partial cost coverage is flagged, not silently summed as complete", () => {
     const acc = new UsageAccumulator();
-    acc.ingest(rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 100, output: 10, cost: 0.5 }));
-    acc.ingest(rec({ actorType: "advisor", actorId: "advisor:x", messageId: "a1", input: 50, output: 5 }));
+    acc.ingest(
+      rec({
+        actorType: "primary",
+        actorId: "primary",
+        messageId: "m1",
+        input: 100,
+        output: 10,
+        cost: 0.5,
+      }),
+    );
+    acc.ingest(
+      rec({ actorType: "advisor", actorId: "advisor:x", messageId: "a1", input: 50, output: 5 }),
+    );
     const b = acc.breakdown(SESSION);
     expect(b.costPartial).toBe(true);
     expect(b.total.cost).toBe(0.5);
@@ -221,8 +275,26 @@ describe("cost honesty", () => {
 
   test("full cost coverage is not flagged partial", () => {
     const acc = new UsageAccumulator();
-    acc.ingest(rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 100, output: 10, cost: 0.5 }));
-    acc.ingest(rec({ actorType: "advisor", actorId: "advisor:x", messageId: "a1", input: 50, output: 5, cost: 0.25 }));
+    acc.ingest(
+      rec({
+        actorType: "primary",
+        actorId: "primary",
+        messageId: "m1",
+        input: 100,
+        output: 10,
+        cost: 0.5,
+      }),
+    );
+    acc.ingest(
+      rec({
+        actorType: "advisor",
+        actorId: "advisor:x",
+        messageId: "a1",
+        input: 50,
+        output: 5,
+        cost: 0.25,
+      }),
+    );
     const b = acc.breakdown(SESSION);
     expect(b.costPartial).toBe(false);
     expect(b.total.cost).toBeCloseTo(0.75);
@@ -233,10 +305,26 @@ describe("model rollup", () => {
   test("groups by provider/model and sorts by volume", () => {
     const acc = new UsageAccumulator();
     acc.ingest(
-      rec({ actorType: "primary", actorId: "primary", messageId: "m1", input: 100, output: 10, model: "small", provider: "p" }),
+      rec({
+        actorType: "primary",
+        actorId: "primary",
+        messageId: "m1",
+        input: 100,
+        output: 10,
+        model: "small",
+        provider: "p",
+      }),
     );
     acc.ingest(
-      rec({ actorType: "advisor", actorId: "advisor:x", messageId: "a1", input: 5_000, output: 500, model: "big", provider: "p" }),
+      rec({
+        actorType: "advisor",
+        actorId: "advisor:x",
+        messageId: "a1",
+        input: 5_000,
+        output: 500,
+        model: "big",
+        provider: "p",
+      }),
     );
     const b = acc.breakdown(SESSION);
     expect(b.byModel[0].model).toBe("big");

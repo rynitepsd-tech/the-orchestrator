@@ -9,18 +9,20 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
+import * as OMP from "@oh-my-pi/pi-coding-agent";
 import {
+  type AuthStorage,
   discoverAuthStorage,
   ModelRegistry,
   SessionManager,
   Settings,
-  type AuthStorage,
 } from "@oh-my-pi/pi-coding-agent";
-import * as OMP from "@oh-my-pi/pi-coding-agent";
 import {
-  fromOmpAdvisorSelector,
   type AdvisorConfig,
   type DiscoveredSession,
+  fromOmpAdvisorSelector,
+  type GitChanges,
+  type GitDiff,
   type ModelInfo,
   type ProjectInfo,
   type ProviderInfo,
@@ -245,7 +247,10 @@ export async function gitInfo(
   } catch {
     detached = true;
     try {
-      const { stdout } = await exec("git", ["rev-parse", "--short", "HEAD"], { cwd, timeout: 3000 });
+      const { stdout } = await exec("git", ["rev-parse", "--short", "HEAD"], {
+        cwd,
+        timeout: 3000,
+      });
       branch = stdout.trim() || undefined;
     } catch {
       branch = undefined;
@@ -263,50 +268,140 @@ export async function gitInfo(
   return { branch, dirty, detached: detached || undefined };
 }
 
-/** Changed files for the Changes panel. Read-only. */
-export async function gitChanges(
-  cwd: string,
-): Promise<Array<{ path: string; status: "modified" | "added" | "deleted" | "untracked" | "renamed" }>> {
+/**
+ * Working-tree changes for the Changes panel. Read-only.
+ *
+ * Uses `-z` porcelain so paths with spaces/unicode round-trip exactly. Rename
+ * entries carry two NUL-separated paths (new, then old).
+ */
+export async function gitChanges(cwd: string): Promise<GitChanges> {
+  const info = await gitInfo(cwd);
+  const files: GitChanges["files"] = [];
   try {
     const { stdout } = await exec("git", ["status", "--porcelain=v1", "-z"], {
       cwd,
       timeout: 5000,
       maxBuffer: 8 * 1024 * 1024,
     });
-    const out: Array<{ path: string; status: any }> = [];
-    for (const entry of stdout.split("\0")) {
+    const parts = stdout.split("\0");
+    for (let i = 0; i < parts.length; i++) {
+      const entry = parts[i];
       if (entry.length < 4) continue;
       const code = entry.slice(0, 2);
       const path = entry.slice(3);
       if (!path) continue;
       let status: string;
-      if (code === "??") status = "untracked";
-      else if (code.includes("D")) status = "deleted";
-      else if (code.includes("A")) status = "added";
-      else if (code.includes("R")) status = "renamed";
-      else status = "modified";
-      out.push({ path, status });
+      let renamedFrom: string | undefined;
+      if (code === "??") status = "?";
+      else if (code.includes("R") || code.includes("C")) {
+        status = "R";
+        // In -z format the ORIGINAL path follows as its own NUL-separated field.
+        renamedFrom = parts[i + 1] || undefined;
+        i += 1;
+      } else if (code.includes("D")) status = "D";
+      else if (code.includes("A")) status = "A";
+      else if (code.includes("U")) status = "U";
+      else status = "M";
+      files.push({ path, status, renamedFrom });
     }
-    return out;
   } catch {
-    return [];
+    /* not a repo, or git missing: empty list with whatever gitInfo saw */
   }
+  return { branch: info?.branch, detached: info?.detached, files };
 }
 
-/** Unified diff for one file. Read-only; empty string when unavailable. */
-export async function gitDiff(cwd: string, path: string): Promise<string> {
+const DIFF_TRANSPORT_LIMIT = 512 * 1024;
+
+/** Unified diff (or untracked-file preview) for one file. Read-only. */
+export async function gitDiff(cwd: string, path: string): Promise<GitDiff> {
+  const count = (diff: string, prefix: string): number =>
+    diff.split("\n").filter((l) => l.startsWith(prefix) && !l.startsWith(prefix.repeat(3))).length;
+
   for (const args of [
     ["diff", "--no-color", "--", path],
     ["diff", "--no-color", "--staged", "--", path],
   ]) {
     try {
-      const { stdout } = await exec("git", args, { cwd, timeout: 5000, maxBuffer: 8 * 1024 * 1024 });
-      if (stdout.trim()) return stdout;
+      const { stdout } = await exec("git", args, {
+        cwd,
+        timeout: 5000,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      if (!stdout.trim()) continue;
+      if (/^Binary files /m.test(stdout)) {
+        return { file: path, diff: "", binary: true, additions: 0, deletions: 0 };
+      }
+      const truncated = stdout.length > DIFF_TRANSPORT_LIMIT;
+      return {
+        file: path,
+        diff: truncated ? stdout.slice(0, DIFF_TRANSPORT_LIMIT) : stdout,
+        binary: false,
+        truncated: truncated || undefined,
+        additions: count(stdout, "+"),
+        deletions: count(stdout, "-"),
+      };
     } catch {
       /* try next */
     }
   }
-  return "";
+
+  // Untracked file: show a bounded content preview instead of an empty diff.
+  try {
+    const abs = resolve(cwd, path);
+    const file = Bun.file(abs);
+    if (await file.exists()) {
+      const size = file.size;
+      if (size > 2 * 1024 * 1024) {
+        return {
+          file: path,
+          diff: "",
+          binary: false,
+          truncated: true,
+          additions: 0,
+          deletions: 0,
+          untracked: true,
+        };
+      }
+      const text = await file.text();
+      if (text.includes("\0")) {
+        return { file: path, diff: "", binary: true, additions: 0, deletions: 0, untracked: true };
+      }
+      const truncated = text.length > DIFF_TRANSPORT_LIMIT;
+      return {
+        file: path,
+        diff: truncated ? text.slice(0, DIFF_TRANSPORT_LIMIT) : text,
+        binary: false,
+        truncated: truncated || undefined,
+        additions: text.split("\n").length,
+        deletions: 0,
+        untracked: true,
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { file: path, diff: "", binary: false, additions: 0, deletions: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Slash commands (project-level discovery, no live session required)
+// ---------------------------------------------------------------------------
+
+/**
+ * File-based slash commands visible for a project. The live per-session list
+ * (builtins, skills, extensions, MCP prompts) comes from the session worker's
+ * `slash.list`; this is the cheap superset the project environment can show
+ * before any session exists.
+ */
+export async function discoverSlashCommandsIn(cwd: string): Promise<string[]> {
+  try {
+    const discover = (OMP as any).discoverSlashCommands;
+    if (typeof discover !== "function") return [];
+    const cmds = await discover(cwd);
+    return (Array.isArray(cmds) ? cmds : []).map((c: any) => String(c.name)).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +476,11 @@ export function normalizeAdvisor(
 
 /** Convert the product shape back into what OMP's advisor runtime expects. */
 export function toOmpAdvisor(a: AdvisorConfig): Record<string, unknown> {
-  const selector = a.model ? (a.thinkingLevel ? `${a.model}:${a.thinkingLevel}` : a.model) : undefined;
+  const selector = a.model
+    ? a.thinkingLevel
+      ? `${a.model}:${a.thinkingLevel}`
+      : a.model
+    : undefined;
   return {
     name: a.name,
     ...(selector ? { model: selector } : {}),
@@ -401,4 +500,79 @@ export async function loadSettings(cwd: string, agentDir: string): Promise<Setti
 
 export function newModelRegistry(auth: AuthStorage): ModelRegistry {
   return new ModelRegistry(auth as any);
+}
+
+// ---------------------------------------------------------------------------
+// Project files (read-only, gitignore-aware)
+// ---------------------------------------------------------------------------
+
+/**
+ * List project files for the Files panel. Uses git's index+untracked walk so
+ * .gitignore is respected and node_modules never floods the panel; non-git
+ * folders get a bounded filesystem walk instead.
+ */
+export async function listProjectFiles(
+  cwd: string,
+  query?: string,
+  limit = 2_000,
+): Promise<{ files: string[]; truncated: boolean }> {
+  let files: string[] = [];
+  try {
+    const { stdout } = await exec("git", ["ls-files", "-co", "--exclude-standard", "-z"], {
+      cwd,
+      timeout: 10_000,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    files = stdout.split("\0").filter(Boolean);
+  } catch {
+    // Not a git repo: shallow bounded walk, skipping dot/dependency dirs.
+    try {
+      const glob = new Bun.Glob("**/*");
+      for await (const f of glob.scan({ cwd, onlyFiles: true, dot: false })) {
+        if (/(^|\/)(node_modules|target|dist|build|\.git)\//.test(f)) continue;
+        files.push(f);
+        if (files.length >= limit * 2) break;
+      }
+    } catch {
+      files = [];
+    }
+  }
+  if (query) {
+    const q = query.toLowerCase();
+    files = files.filter((f) => f.toLowerCase().includes(q));
+  }
+  files.sort();
+  const truncated = files.length > limit;
+  return { files: truncated ? files.slice(0, limit) : files, truncated };
+}
+
+const FILE_PREVIEW_LIMIT = 512 * 1024;
+
+/** Bounded read-only preview of one project file. */
+export async function readProjectFile(
+  cwd: string,
+  file: string,
+): Promise<{ file: string; content: string; binary: boolean; truncated: boolean }> {
+  const abs = resolve(cwd, file);
+  // The preview stays inside the project; a crafted "../../" path must not
+  // read arbitrary files through the engine.
+  if (!abs.startsWith(resolve(cwd) + "/") && abs !== resolve(cwd)) {
+    return { file, content: "", binary: false, truncated: false };
+  }
+  try {
+    const f = Bun.file(abs);
+    if (!(await f.exists())) return { file, content: "", binary: false, truncated: false };
+    if (f.size > 4 * 1024 * 1024) return { file, content: "", binary: false, truncated: true };
+    const text = await f.text();
+    if (text.includes("\0")) return { file, content: "", binary: true, truncated: false };
+    const truncated = text.length > FILE_PREVIEW_LIMIT;
+    return {
+      file,
+      content: truncated ? text.slice(0, FILE_PREVIEW_LIMIT) : text,
+      binary: false,
+      truncated,
+    };
+  } catch {
+    return { file, content: "", binary: false, truncated: false };
+  }
 }

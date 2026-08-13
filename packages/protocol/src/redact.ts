@@ -10,7 +10,11 @@ const REDACTED = "[redacted]";
 
 /** Key names whose values are always replaced, regardless of shape. */
 const SENSITIVE_KEY_RE =
-  /^(?:.*_)?(?:api[-_]?key|apikey|secret|password|passwd|token|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer|authorization|auth|cookie|session[-_]?key|private[-_]?key|client[-_]?secret|credential[s]?)$/i;
+  // snake/kebab compounds and exact words…
+  // …plus camelCase compounds (authToken, clientSecret, userApiKey). The
+  // camel arm requires the singular capitalised suffix so usage-counter keys
+  // like `inputTokens`/`totalTokens` are never scrubbed.
+  /^(?:(?:.*_)?(?:api[-_]?key|apikey|secret|password|passwd|token|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer|authorization|auth|cookie|session[-_]?key|private[-_]?key|client[-_]?secret|credential[s]?)|[a-z][A-Za-z0-9]*(?:Token|Secret|Password|ApiKey))$/i;
 
 /**
  * Value patterns that look like credentials even under an innocuous key.
@@ -76,9 +80,10 @@ export function redactValue<T>(value: T, depth = 0): T {
       // Environment maps: redact by key name, keep names visible for debugging.
       const env: Record<string, unknown> = {};
       for (const [ek, ev] of Object.entries(v as Record<string, unknown>)) {
-        env[ek] = SENSITIVE_KEY_RE.test(ek) || /KEY|TOKEN|SECRET|PASSWORD/i.test(ek)
-          ? REDACTED
-          : redactValue(ev, depth + 1);
+        env[ek] =
+          SENSITIVE_KEY_RE.test(ek) || /KEY|TOKEN|SECRET|PASSWORD/i.test(ek)
+            ? REDACTED
+            : redactValue(ev, depth + 1);
       }
       out[k] = env;
     } else {

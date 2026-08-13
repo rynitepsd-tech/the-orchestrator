@@ -5,12 +5,18 @@
  * type without handling it is a type error rather than a runtime surprise.
  */
 import {
+  discoverSlashCommandsIn,
   gitChanges,
   gitDiff,
   inspectProject,
   projectIdFor,
 } from "@orchestrator/omp-adapter";
-import type { EngineRequest, RequestType, ResponsePayloads } from "@orchestrator/protocol";
+import type {
+  EngineRequest,
+  RequestType,
+  ResponsePayloads,
+  UsageRecord,
+} from "@orchestrator/protocol";
 import type { EngineServer } from "./server";
 
 export async function handleRequest(
@@ -39,6 +45,7 @@ export async function handleRequest(
         activeSessions: m.activeCount(),
         logPath: engineLogPath(),
         warnings: [],
+        workers: await m.workerStats(),
       };
     }
 
@@ -55,17 +62,16 @@ export async function handleRequest(
       return { quotas: await m.quotas() };
 
     case "providers.login":
-      // Provider onboarding is intentionally not implemented as a credential
-      // pass-through: the engine must own secrets, and OMP owns the flows.
-      throw Object.assign(
-        new Error(
-          "Provider sign-in from the GUI is not available in this build. Run `omp` once to connect a provider; The Orchestrator reuses those credentials.",
-        ),
-        { kind: "auth" },
-      );
+      return m.login(String(p.provider), (e) => server.emitLifecycle(e));
 
     case "providers.logout":
-      throw Object.assign(new Error("Sign-out is managed by OMP."), { kind: "auth" });
+      // Sign-out is deliberately not exposed: OMP owns credential lifecycle,
+      // and revoking from a GUI that did not create the credential risks
+      // breaking the user's CLI. Actionable message, not a silent no-op.
+      throw Object.assign(
+        new Error("Sign-out is managed by OMP. Run `omp logout` in a terminal."),
+        { kind: "auth" },
+      );
 
     // --- projects ----------------------------------------------------------
     case "project.open":
@@ -74,15 +80,32 @@ export async function handleRequest(
     case "project.environment": {
       const path = String(p.path);
       const advisors = await m.projectAdvisors(path);
+      const slashCommands = await discoverSlashCommandsIn(path);
       return {
         contextFiles: [],
         skills: 0,
         advisors,
         mcpServers: [],
-        slashCommands: [],
+        slashCommands,
         extensions: [],
         hasWatchdogConfig: advisors.length > 0,
       };
+    }
+
+    case "project.changes":
+      return gitChanges(String(p.path));
+
+    case "project.diff":
+      return gitDiff(String(p.path), String(p.file));
+
+    case "project.files": {
+      const { listProjectFiles } = await import("@orchestrator/omp-adapter");
+      return listProjectFiles(String(p.path), p.query ? String(p.query) : undefined, p.limit);
+    }
+
+    case "project.readFile": {
+      const { readProjectFile } = await import("@orchestrator/omp-adapter");
+      return readProjectFile(String(p.path), String(p.file));
     }
 
     // --- sessions ----------------------------------------------------------
@@ -109,10 +132,35 @@ export async function handleRequest(
     case "session.compact":
       return m.route(String(p.sessionId), "session.compact", p) as never;
 
-    case "session.fork":
-      throw Object.assign(new Error("Fork is not implemented in this build."), {
-        kind: "configuration",
+    case "session.fork": {
+      // Fork a live session (by id) or a persisted file (by path).
+      let sourcePath = p.sourcePath ? String(p.sourcePath) : undefined;
+      let projectPath = p.projectPath ? String(p.projectPath) : undefined;
+      if (!sourcePath && p.sessionId) {
+        const live = m.list().find((s) => s.sessionId === String(p.sessionId));
+        if (!live?.ompSessionPath) {
+          throw Object.assign(
+            new Error("This session has not been persisted yet, so it cannot be forked."),
+            { kind: "configuration" },
+          );
+        }
+        sourcePath = live.ompSessionPath;
+        projectPath = projectPath ?? live.projectPath;
+      }
+      if (!sourcePath || !projectPath) {
+        throw Object.assign(new Error("Fork needs a source session and a project folder."), {
+          kind: "configuration",
+        });
+      }
+      const session = await m.fork({
+        sourcePath,
+        projectPath,
+        title: p.title ? String(p.title) : undefined,
+        model: p.model ? String(p.model) : undefined,
+        thinkingLevel: p.thinkingLevel ? String(p.thinkingLevel) : undefined,
       });
+      return { session };
+    }
 
     case "session.setModel":
       return m.route(String(p.sessionId), "session.setModel", p) as never;
@@ -121,10 +169,10 @@ export async function handleRequest(
       return m.route(String(p.sessionId), "session.setTitle", p) as never;
 
     case "session.setApprovalMode":
-      return { ok: false };
+      return m.route(String(p.sessionId), "session.setApprovalMode", p) as never;
 
     case "session.transcript":
-      return { events: [], sequence: 0 };
+      return m.route(String(p.sessionId), "session.transcript", p) as never;
 
     case "session.advisors.set":
       return m.route(String(p.sessionId), "session.advisors.set", p) as never;
@@ -134,21 +182,27 @@ export async function handleRequest(
 
     // --- interaction bridges ----------------------------------------------
     case "approval.respond":
-      return { ok: false };
+      return m.route(String(p.sessionId), "approval.respond", p) as never;
 
     case "extension.ui.respond":
-      return { ok: false };
+      return m.route(String(p.sessionId), "extension.ui.respond", p) as never;
 
     case "slash.list":
-      return { commands: [] };
+      return m.route(String(p.sessionId), "slash.list", p) as never;
+
+    case "mcp.status":
+      return m.route(String(p.sessionId), "mcp.status", p) as never;
+
+    case "mcp.reconnect":
+      return m.route(String(p.sessionId), "mcp.reconnect", p) as never;
 
     // --- usage -------------------------------------------------------------
     case "usage.session":
       return { breakdown: await m.sessionUsage(String(p.sessionId)) };
 
     case "usage.query": {
-      const acc = m.globalUsage();
-      let records = acc.records();
+      const index = m.usageIndex();
+      let records = index.records();
       if (p?.projectPath) {
         const pid = projectIdFor(String(p.projectPath));
         records = records.filter((r) => r.projectId === pid);
@@ -156,25 +210,24 @@ export async function handleRequest(
       if (p?.provider) records = records.filter((r) => r.provider === p.provider);
       if (p?.model) records = records.filter((r) => r.model === p.model);
       if (p?.actorType) records = records.filter((r) => r.actorType === p.actorType);
+      if (p?.since) {
+        const since = String(p.since);
+        records = records.filter((r) => (r.completedAt ?? "") >= since);
+      }
+      if (p?.until) {
+        const until = String(p.until);
+        records = records.filter((r) => (r.completedAt ?? "") <= until);
+      }
       const { summarize } = await import("@orchestrator/usage");
-      return { records, breakdown: summarize(records) };
+      return { records: records as UsageRecord[], breakdown: summarize(records) };
     }
 
     case "usage.reindex":
-      return { indexed: 0, durationMs: 0 };
+      return m.reindexUsage();
 
     default: {
       const never: never = req.type as never;
       throw new Error(`Unhandled request type: ${String(never)}`);
     }
   }
-}
-
-/** Exposed for the Changes panel; kept out of the switch to stay readable. */
-export async function projectChanges(cwd: string) {
-  return gitChanges(cwd);
-}
-
-export async function projectDiff(cwd: string, path: string) {
-  return gitDiff(cwd, path);
 }
