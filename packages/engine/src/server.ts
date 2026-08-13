@@ -42,6 +42,9 @@ export class EngineServer {
   manager!: RuntimeManager;
   #shuttingDown = false;
 
+  /** Set by the entrypoint so a shutdown request can end the read loop. */
+  onStopped: (() => void) | null = null;
+
   constructor(opts: EngineServerOptions) {
     this.#opts = opts;
     this.#write = opts.write ?? ((c) => process.stdout.write(c));
@@ -167,7 +170,10 @@ export class EngineServer {
     if (this.#shuttingDown) return;
     this.#shuttingDown = true;
     this.emitLifecycle({ type: "engine.status", stage: "stopping" });
+    // Dispose every session worker before signalling the entrypoint, so no
+    // agent process outlives the engine.
     await this.manager?.shutdown();
+    this.onStopped?.();
   }
 }
 

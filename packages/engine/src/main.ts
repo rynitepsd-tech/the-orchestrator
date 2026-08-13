@@ -34,15 +34,29 @@ async function main(): Promise<void> {
 
   const decoder = new TextDecoder();
   const reader = Bun.stdin.stream().getReader();
+
+  // A shutdown request must actually end the process. Without this race the
+  // loop stays parked on read() — stdin is still open — and the engine lingers
+  // after acknowledging shutdown, orphaning it and its workers.
+  const stopped = new Promise<"stopped">((resolve) => {
+    server.onStopped = () => resolve("stopped");
+  });
+
   while (!server.shuttingDown) {
-    const { done, value } = await reader.read();
-    if (done) break;
+    const next = await Promise.race([reader.read(), stopped]);
+    if (next === "stopped") break;
+    const { done, value } = next;
+    if (done) {
+      // stdin closed: the host went away. Tear down rather than orphaning agents.
+      logger.info("engine", "stdin closed; shutting down");
+      await server.shutdown();
+      break;
+    }
     await server.ingest(decoder.decode(value, { stream: true }));
   }
 
-  // stdin closed: the host went away. Tear down rather than orphaning agents.
-  logger.info("engine", "stdin closed; shutting down");
-  await server.shutdown();
+  // Release the stdin lock so Bun's event loop can drain and the process exits.
+  await reader.cancel().catch(() => {});
 }
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
