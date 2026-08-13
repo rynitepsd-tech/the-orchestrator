@@ -213,6 +213,72 @@ try {
       usage?.ok === true && (tot?.inputTokens ?? 0) > 0,
       tot ? `${tot.inputTokens} in / ${tot.outputTokens} out` : undefined,
     );
+
+    // 7b. transcript replay from the worker's history buffer
+    send("session.transcript", { sessionId: sid }, "t1");
+    await waitFor(() => !!findResp("t1"), 20_000);
+    const replay = findResp("t1");
+    const replayTypes = new Set((replay?.result?.events ?? []).map((e: any) => e.type));
+    check(
+      "serves transcript replay",
+      replay?.ok === true && replayTypes.has("user.message") && replayTypes.has("tool.end"),
+      `${replay?.result?.events?.length ?? 0} events`,
+    );
+
+    // 7c. fork with upstream semantics, packaged
+    send("session.fork", { sessionId: sid, title: "Smoke fork" }, "f1");
+    await waitFor(() => !!findResp("f1"), 90_000);
+    const forked = findResp("f1");
+    check(
+      "forks the session into a new live worker",
+      forked?.ok === true && forked.result.session.sessionId !== sid,
+      forked?.error?.message,
+    );
+
+    // 7d. the approval bridge, end to end in the packaged binary
+    send(
+      "sessions.create",
+      {
+        projectPath: project,
+        title: "Smoke approval",
+        model: "mockprov/mock-smoke",
+        advisors: [],
+        approvalMode: "always-ask",
+      },
+      "c2",
+    );
+    await waitFor(() => !!findResp("c2"), 90_000);
+    const created2 = findResp("c2");
+    check("creates a gated session", created2?.ok === true, created2?.error?.message);
+    if (created2?.ok) {
+      const sid2 = created2.result.session.sessionId;
+      send("session.prompt", { sessionId: sid2, text: "smoke", whenBusy: "steer" }, "pr2");
+      const gotApproval = await waitFor(
+        () =>
+          frames.some((f) => f.event?.type === "approval.request" && f.event.sessionId === sid2),
+        60_000,
+      );
+      check("gated tool blocks on approval", gotApproval);
+      if (gotApproval) {
+        const req = frames.find(
+          (f) => f.event?.type === "approval.request" && f.event.sessionId === sid2,
+        ).event;
+        send(
+          "approval.respond",
+          { sessionId: sid2, approvalId: req.approvalId, optionId: "allow_once" },
+          "a1",
+        );
+        const done2 = await waitFor(
+          () =>
+            frames.some((f) => f.event?.type === "session.finished" && f.event.sessionId === sid2),
+          120_000,
+        );
+        const tool2 = frames.find(
+          (f) => f.event?.type === "tool.end" && f.event.sessionId === sid2,
+        );
+        check("approval releases the tool", done2 && tool2?.event?.ok === true);
+      }
+    }
   }
 
   // 8. clean shutdown

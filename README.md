@@ -43,12 +43,38 @@ new-session sheet, and the usage inspector will be added here.
 - Command palette (`⌘K` or `⌘⇧P`) covering new session, abort, compact, restart engine, panel
   toggles, and jump-to-session.
 - Native macOS menus and keyboard shortcuts; notifications through the system notification centre.
+- Session presets, model favourites and recents, pinned projects, and local session archiving —
+  all Orchestrator-local preferences; OMP's own config is never written by this app.
+
+**Approvals**
+
+- Gated tools (bash, edit, delete, move) stop and ask, with inline approval cards offering Allow
+  once / Always allow / Reject / Always reject, routed back to the right session even with several
+  prompts pending at once.
+- Per-session approval policy — `always-ask`, `write` (file edits auto-allowed, bash still prompts),
+  or `yolo` — set at session creation, enforced worker-side.
+- Extension confirm / select / input / editor / notification requests render as native UI; requests
+  that only make sense in a terminal surface an explicit "unsupported interaction" card instead of
+  hanging or auto-confirming.
 
 **Transcript**
 
 - Native rendering of assistant text, reasoning, tool calls, tool output, and edit diffs with
   per-file diffstat — not a terminal emulator.
 - Advisor cards rendered inline with upstream's own severity levels: `nit`, `concern`, `blocker`.
+- Slash-command completion in the composer, sourced from OMP's own command registry (builtins,
+  skills, extensions, MCP prompts, file commands).
+
+**Sessions**
+
+- **Fork** — branch an existing session (live or discovered) into a new one with its history
+  copied and lineage recorded, using upstream's own `forkFrom`.
+- **Resume** — the sidebar lists previously persisted sessions; resuming replays their transcript
+  into a fresh worker.
+- **Changes** and **Files** panels — working-tree git status and diff, and a file browser scoped to
+  the project, both read live through the engine.
+- **MCP** status per session (server name, connection state, tool count) with reconnect, and an
+  **engine diagnostics** view (per-worker PID and memory) under Settings.
 
 **Usage**
 
@@ -59,12 +85,16 @@ new-session sheet, and the usage inspector will be added here.
 - Cost is shown only when OMP reports it; a partial total says so instead of implying zero.
 - Provider quota is read only from the provider's own usage endpoint. Providers without one render
   "Usage limit not reported by provider" — never a fabricated 0%.
+- A global usage centre (⌘U) backed by a persistent, engine-wide index that survives restarts and
+  never double-counts across sessions, forks, or reindexes.
 
 **Resilience**
 
 - The Rust shell reaps the engine process and reports its exit explicitly. Every affected session is
   marked interrupted, transcripts already on screen are preserved, and "Restart engine" relaunches
   and rediscovers persisted OMP sessions.
+- A crashed worker is removed from routing with an actionable "resume" error; its transcript is
+  preserved and other sessions are unaffected.
 - The supervisor enforces single-writer access to OMP session files, which have no cross-process
   lock, and refuses to open the same session twice.
 
@@ -78,15 +108,16 @@ See [docs/USAGE_MODEL.md](docs/USAGE_MODEL.md) for the attribution and de-duplic
   addon beside it, and nothing is downloaded at runtime. You do not need Bun installed, you do not
   need OMP installed, and normal use requires no terminal.
 
-One exception: **connecting a provider currently requires running `omp` once in a terminal.** GUI
-provider sign-in is not implemented, so credentials must already exist in OMP's own credential store.
-The Orchestrator reuses them and never receives them in the frontend.
+Provider sign-in runs from the app: Settings → Providers triggers OMP's own OAuth flow and opens the
+browser URL the engine reports. The engine never sees the resulting secret; it is written straight
+into OMP's own credential store, which the app then reuses. (Disconnecting a provider still requires
+running `omp logout` in a terminal — sign-out is intentionally not exposed in the GUI.)
 
 Windows and Linux are not supported.
 
 ## Installation
 
-1. Download `The Orchestrator_0.1.0_aarch64.dmg` from the GitHub Releases page.
+1. Download `The Orchestrator_0.2.0_aarch64.dmg` from the GitHub Releases page.
 2. Open the disk image and drag **The Orchestrator.app** to `/Applications`.
 3. Builds are ad-hoc signed (the maintainer has no paid Apple Developer account) and are therefore
    not notarised. On first launch macOS will refuse to open the app. Open
@@ -107,16 +138,22 @@ Prerequisites:
 ```bash
 bun install            # install workspace dependencies
 bun run build:engine   # compile the single-file engine + place the OMP native addon beside it
-bun run dev            # run the desktop app against the local engine
-bun test               # 20 tests: usage de-duplication + concurrency
-bun run typecheck      # tsc --build --force
+bun run dev            # run the desktop app against the local engine (sets ORCHESTRATOR_ENGINE_ENTRY itself)
+bun test               # 67 tests across 8 files: usage de-duplication, concurrency, adapter, protocol
+bun run check          # quality gate: biome check + typecheck + bun test
 ```
+
+`bun run dev` works standalone — it sets `ORCHESTRATOR_ENGINE_ENTRY` to the local engine source
+itself, so there is no separate "point the app at the engine" step.
 
 Packaging and verification:
 
 ```bash
-cd apps/desktop && bunx tauri build   # produces the .app and .dmg
-bun run scripts/smoke-packaged.ts     # packaged smoke test, currently 12/12
+bun run release:check                 # check + build:engine + app build + packaged smoke, end to end
+cd apps/desktop && bunx tauri build   # produces the .app and .dmg, if run standalone
+bun run scripts/smoke-packaged.ts     # packaged smoke test: 24 checks
+bun run validate:live                 # live validation against real providers (primary, advisor,
+                                       # multi-advisor, subagent, resume, concurrent, fork)
 ```
 
 Notes on the build:
@@ -188,25 +225,24 @@ session format. Orchestrator-only UI metadata lives in
 
 ## Current limitations
 
-This is version 0.1.0. The following are not implemented in this build:
+This is version 0.2.0. The following are not implemented in this build:
 
-- **Session fork** — no branching an existing session.
-- **GUI provider sign-in** — connect a provider by running `omp` once in a terminal.
-- **MCP status surfacing** — MCP servers run per session but their state is not shown in the UI.
-- **Slash-command completion** in the composer.
-- **Extension UI bridge** — extensions that want to draw UI have nowhere to draw it.
-- **Approval UI bridge** — approvals follow OMP's own semantics; the absence of a terminal UI is
-  never treated as consent.
-- **Global usage centre** — usage is per session; there is no cross-session roll-up view.
-- **Changes panel is a placeholder.** The tab exists and explains itself; git status is not yet
-  wired through the engine.
 - **Intel (x64) is untested.** The build script supports it; no Intel build has been produced or run.
 - Windows and Linux are not supported and are not planned.
+- **No notarization.** Builds are ad-hoc signed; see [Installation](#installation).
+- **Same-session CLI + GUI concurrent writes are unsupported.** The single-writer guarantee is
+  enforced only within this app's own process; running `omp` on a session this app currently has
+  open risks corruption (sequential handoff between the two is fine — see
+  [docs/SESSION_MODEL.md](docs/SESSION_MODEL.md)).
+- **Extension UI bridge is terminal-only for custom components.** Standard interaction types
+  (confirm, select, input, editor, notify) render natively; an extension's fully custom component
+  surfaces an explicit "unsupported interaction" card rather than drawing arbitrary UI.
 
 Each unimplemented protocol request returns an explicit error or an empty result rather than a silent
 no-op.
 
-Accepted costs of process-per-session: roughly 150–250 MB RSS per live session, and MCP servers and
+Accepted costs of process-per-session: roughly 320 MB RSS per live session packaged (see
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the full measured breakdown), and MCP servers and
 LSP pools are per-session rather than shared — which is why both are opt-in per session.
 
 ## Contributing
@@ -216,9 +252,9 @@ Issues and pull requests are welcome. Before opening a pull request:
 1. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the layer responsibilities are enforced, and
    in particular the UI must not learn OMP internals and the adapter must not leak upstream types
    upward.
-2. Run `bun run typecheck`, `bun test`, and `bun run lint`.
+2. Run `bun run check` (biome check + typecheck + `bun test`).
 3. If the change touches packaging or the engine, run `bun run build:engine` and
-   `bun run scripts/smoke-packaged.ts`.
+   `bun run scripts/smoke-packaged.ts`, or the combined `bun run release:check`.
 4. Do not add telemetry, analytics, or any network call that is not an OMP provider request.
 
 Changes that bump the OMP pin must follow the procedure in

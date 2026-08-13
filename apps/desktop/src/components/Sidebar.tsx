@@ -65,7 +65,7 @@ export function Sidebar({
   const resumable = useMemo(() => {
     const archived = new Set(prefs.archivedSessions);
     return discovered
-      .filter((d) => !openPaths.has(d.path) && !d.openInThisApp)
+      .filter((d) => !openPaths.has(d.path) && !d.openInThisApp && !d.cwdMissing)
       .filter((d) => showArchived || !archived.has(d.path))
       .filter((d) => !q || d.title.toLowerCase().includes(q) || d.cwd.toLowerCase().includes(q))
       .sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""))

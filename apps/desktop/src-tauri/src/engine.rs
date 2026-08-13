@@ -27,12 +27,20 @@ pub const EVENT_SUPERVISOR: &str = "engine://supervisor";
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SupervisorEvent {
-    Spawning { attempt: u32 },
+    Spawning {
+        attempt: u32,
+    },
     Ready,
     /// The engine exited. `code` is None when killed by a signal.
-    Exited { code: Option<i32>, restarting: bool },
+    Exited {
+        code: Option<i32>,
+        restarting: bool,
+    },
     /// The engine could not be located or launched at all.
-    LaunchFailed { message: String, detail: String },
+    LaunchFailed {
+        message: String,
+        detail: String,
+    },
 }
 
 /// The live half of a spawned engine.
@@ -68,7 +76,10 @@ fn resolve_engine(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
         let bun = resource_dir.join("engine").join("bun");
         let entry = resource_dir.join("engine").join("main.js");
         if bun.is_file() && entry.is_file() {
-            return Ok((bun, vec!["run".into(), entry.to_string_lossy().into_owned()]));
+            return Ok((
+                bun,
+                vec!["run".into(), entry.to_string_lossy().into_owned()],
+            ));
         }
     }
 
@@ -82,25 +93,25 @@ fn resolve_engine(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
 }
 
 fn which_bun() -> Option<PathBuf> {
-    for candidate in [
-        std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".bun/bin/bun")),
+    [
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(".bun/bin/bun")),
         Some(PathBuf::from("/opt/homebrew/bin/bun")),
         Some(PathBuf::from("/usr/local/bin/bun")),
     ]
     .into_iter()
     .flatten()
-    {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    .find(|candidate| candidate.is_file())
 }
 
 impl EngineSupervisor {
     pub fn new(app: AppHandle) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(EngineHandle { child: None, stdin: None })),
+            inner: Arc::new(Mutex::new(EngineHandle {
+                child: None,
+                stdin: None,
+            })),
             app,
             restarts: Arc::new(Mutex::new(0)),
         }
@@ -122,7 +133,9 @@ impl EngineSupervisor {
             *r += 1;
             *r
         };
-        let _ = self.app.emit(EVENT_SUPERVISOR, SupervisorEvent::Spawning { attempt });
+        let _ = self
+            .app
+            .emit(EVENT_SUPERVISOR, SupervisorEvent::Spawning { attempt });
 
         let (program, args) = match resolve_engine(&self.app) {
             Ok(v) => v,
@@ -135,7 +148,10 @@ impl EngineSupervisor {
                 );
                 let _ = self.app.emit(
                     EVENT_SUPERVISOR,
-                    SupervisorEvent::LaunchFailed { message: message.clone(), detail },
+                    SupervisorEvent::LaunchFailed {
+                        message: message.clone(),
+                        detail,
+                    },
                 );
                 return Err(message);
             }
@@ -153,7 +169,10 @@ impl EngineSupervisor {
             let detail = format!("program={:?} args={:?} error={e}", program, args);
             let _ = self.app.emit(
                 EVENT_SUPERVISOR,
-                SupervisorEvent::LaunchFailed { message: message.clone(), detail },
+                SupervisorEvent::LaunchFailed {
+                    message: message.clone(),
+                    detail,
+                },
             );
             message
         })?;
@@ -225,7 +244,10 @@ impl EngineSupervisor {
                 if let Some(code) = exited {
                     let _ = app.emit(
                         EVENT_SUPERVISOR,
-                        SupervisorEvent::Exited { code, restarting: false },
+                        SupervisorEvent::Exited {
+                            code,
+                            restarting: false,
+                        },
                     );
                     return;
                 }

@@ -6,7 +6,7 @@ assumes familiarity with [ARCHITECTURE.md](./ARCHITECTURE.md) — in particular
 that the app is a Tauri 2 shell around a supervisor process that spawns one OMP
 worker process per session.
 
-The Orchestrator is an unofficial harness. It is version 0.1.0, macOS only
+The Orchestrator is an unofficial harness. It is version 0.2.0, macOS only
 (Apple Silicon builds; the x64 target exists in the build script but has not
 been built or tested), and ad-hoc signed.
 
@@ -44,10 +44,17 @@ OMP owns credentials. This project adds no credential store of its own.
 - The app never copies, re-encrypts, mirrors, or exports API keys. There is no
   keychain entry, no config file, and no database owned by The Orchestrator that
   contains a secret.
-- Because there is no GUI sign-in flow in this build, connecting a provider is
-  done by running `omp` once in a terminal. That is a missing feature, but it
-  has a security consequence worth naming: the app never asks you to type an API
-  key into a window it controls.
+- Settings → Providers can trigger sign-in from the GUI, but the app still never
+  asks you to type an API key into a window it controls. `providers.login` runs
+  OMP's own OAuth flow (`AuthStorage.login`); the engine emits `engine.auth`
+  lifecycle events carrying the browser URL, the host opens that URL in the
+  system browser, and OMP's own flow writes the resulting credential straight
+  into its own store. The engine process never receives or handles the secret
+  itself. Manual-code OAuth flows are refused with an actionable message rather
+  than prompting for a code the app would have to relay.
+- Disconnecting a provider is intentionally *not* exposed in the GUI —
+  `providers.logout` still refuses and points at running `omp logout` in a
+  terminal.
 - The frontend receives only sanitised provider metadata — provider name,
   whether it is authenticated, and a credential *origin* label such as which
   mechanism supplied it. Never the value.
@@ -119,24 +126,55 @@ appearance (transparent titlebar), not for capability.
 
 ## Approvals
 
-Upstream OMP approval semantics are preserved. The isolation layer is explicit
-about it (`packages/omp-adapter/src/isolation.ts`): `autoApprove` defaults to
-`false`, and the only place it is ever set true is the supervisor's test mode
-(`packages/engine/src/worker/supervisor.ts`, `autoApprove: this.#testMode`),
-which is reached only when `ORCHESTRATOR_TEST_MODE=1`. Sessions are created with
-`hasUI: true`. **The absence of a terminal UI is never treated as consent.**
+Upstream OMP approval semantics are preserved, and the app now bridges them into
+the GUI rather than only inheriting whatever your terminal OMP config allows.
+The isolation layer is explicit about it
+(`packages/omp-adapter/src/isolation.ts`): `autoApprove` defaults to `false` in
+production, and the only place it is ever set true is the supervisor's test
+mode (`packages/engine/src/worker/supervisor.ts`,
+`autoApprove: this.#testMode`), which is reached only when
+`ORCHESTRATOR_TEST_MODE=1`. Sessions are created with `hasUI: true`. **The
+absence of a UI response is never treated as consent** — a tool call awaiting
+approval simply stays blocked until it is answered or the turn is aborted.
 
-Be aware of the current limitation: **the approval UI bridge is not implemented
-in this build.** The protocol defines `approval.request` / `approval.resolved`
-events and an `approval.respond` request, but the engine handler currently
-returns `{ ok: false }` — there is no window in which you click "allow".
+Each worker implements upstream's `ClientBridge.requestPermission`, wired via
+`session.setClientBridge()` immediately after `createAgentSession` (the same
+pattern upstream's own ACP mode uses). A permission gate
+(`packages/omp-adapter/src/acp-permission-gate.ts`) intercepts bash, edit,
+delete, and move before they run, and turns each request into an
+`approval.request` event carrying the exact command and a fixed four-option
+menu: Allow once, Always allow, Reject, Always reject. The host renders that as
+an inline card; `approval.respond` routes the answer back to the right pending
+request, and `allow_always` / `reject_always` are cached per session (per
+`cacheKey`) so repeated identical requests in one session do not re-prompt.
 
-Practically, this means sessions run under whatever approval configuration your
-existing OMP installation already has. If your OMP configuration approves a
-class of tool calls without prompting, The Orchestrator will approve them too;
-if it would prompt, there is presently nowhere for that prompt to be answered
-from the GUI. Review your OMP approval settings before running sessions here,
-and prefer projects where an unreviewed command is recoverable.
+Per-session **approval mode** — `always-ask`, `write`, or `yolo` — is enforced
+worker-side: `write` auto-allows file edits but still prompts for bash;
+`always-ask` prompts for everything gated; `yolo` auto-allows everything gated.
+None of these bypass the gate itself — they configure what the gate decides
+without asking, not whether the gate runs.
+
+Aborting a session **cancels any pending approval prompt** for it rather than
+leaving it stuck waiting forever with no way to resolve it from the UI.
+
+Practically, this means: if your OMP configuration approves a class of tool
+calls without prompting (outside this project's own gate), The Orchestrator
+still won't override that; where the gate does prompt, there is now a window in
+the GUI to answer it, and until you do, the tool call does not run. Review your
+OMP approval settings before running sessions here, and prefer projects where
+an unreviewed command is recoverable.
+
+## Extension UI bridge
+
+Extensions that want to draw UI (OMP's ask-tool style select / confirm / input
+/ editor / notify requests) are bridged into native cards via an
+`ExtensionUIContext` the worker passes through `createAgentSession`'s
+`setToolUIContext`, sourced from `CreateAgentSessionResult.eventBus`. The same
+rule as approvals applies: the bridge never auto-confirms a request and never
+lets one hang silently. TUI-only methods are explicit no-ops, and a fully
+custom component that has no native equivalent surfaces an explicit
+"unsupported interaction" card rather than attempting to render arbitrary
+extension-authored UI or pretending the request succeeded.
 
 ## Shell is not sandboxed
 
@@ -167,6 +205,7 @@ fetch if the agent uses those tools. Provider quota figures come from
 | Path | Contents | Owner |
 | --- | --- | --- |
 | `~/Library/Application Support/The Orchestrator/logs/engine.log` | Structured JSON engine log, redacted, rotated at 5 MB to `engine.log.1` (one generation kept) | this app |
+| `~/Library/Application Support/The Orchestrator/usage/records.jsonl` | The global usage index: per-response token/cost records keyed by provider `responseId`, project, provider, model, and actor. No prompts, no completions, no secrets — counts only. | this app |
 | `~/.omp` (agent dir `~/.omp/agent`) | OMP credentials, settings, session transcripts | OMP |
 
 The log level defaults to `info` and is set by `ORCHESTRATOR_LOG_LEVEL`. Log

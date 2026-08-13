@@ -15,8 +15,9 @@ It embeds OMP rather than reimplementing it, so it is tightly coupled to a speci
 | **Required runtime** | Bun `>= 1.3.14` (OMP declares `engines.bun`) |
 | **Upstream licence** | MIT (Mario Zechner; Can Bölük) |
 
-Upstream `HEAD` at the time of writing was ahead of `v17.3.1`; this project pins the tag deliberately
-(see [Version pinning](#version-pinning)).
+Upstream `HEAD` at the time of writing is `v17.3.1` — this project is caught up to upstream's latest
+tag. The pin is still deliberate, not incidental: a future upstream release does not move this
+project's version automatically (see [Updating the bundled OMP](#updating-the-bundled-omp)).
 
 ## Integration surface used
 
@@ -28,8 +29,8 @@ and not by vendoring upstream source.
 | Symbol | Used for |
 |---|---|
 | `createAgentSession(options)` | Builds the one `AgentSession` a worker owns |
-| `AgentSession` | `prompt`, `abort`, `compact`, `dispose`, `subscribe`, `setModel`, `setThinkingLevel`, `setSessionName`, `applyAdvisorConfigs`, `setAdvisorEnabled`, `getAdvisorStats`, `getContextUsage`, `getSessionStats`, `getAvailableThinkingLevels` |
-| `SessionManager` | `create`, `open`, `list`, `listAll`, `getDefaultSessionDir` |
+| `AgentSession` | `prompt`, `abort`, `compact`, `dispose`, `subscribe`, `setModel`, `setThinkingLevel`, `setSessionName`, `applyAdvisorConfigs`, `setAdvisorEnabled`, `getAdvisorStats`, `getContextUsage`, `getSessionStats`, `getAvailableThinkingLevels`, `setClientBridge`, `setToolUIContext` |
+| `SessionManager` | `create`, `open`, `list`, `listAll`, `getDefaultSessionDir`, `forkFrom`, `getBranch` |
 | `Settings.init` | Per-worker settings resolution |
 | `AuthStorage` / `discoverAuthStorage` | Credential reuse and `fetchUsageReports` |
 | `ModelRegistry` | Model catalogue, `find`, `getAll`, `registerProvider` (tests only) |
@@ -117,6 +118,47 @@ what the chosen model reports and nothing when it reports none.
 precedence. Per advisor: `name`, `model` (a selector that may carry a `:level` thinking suffix,
 e.g. `anthropic/claude-fable-5:high`), `tools`, `instructions`, `enabled`.
 
+### Advisor activation is two steps, not one
+
+`applyAdvisorConfigs(advisors, sharedInstructions)` only **stores** the roster on the session; it
+does not start anything. The advisor runtime is only built once `setAdvisorEnabled(true)` flips the
+session's advisor toggle. The worker therefore calls `applyAdvisorConfigs` first and then calls
+`setAdvisorEnabled(true)` if and only if the roster contains at least one enabled advisor. After
+enabling, the worker checks `isAdvisorActive()`; if it is still `false` (for example, the
+configured model is unavailable), the worker emits `advisor.failed` with a `model-unavailable`
+reason instead of silently proceeding as if advisors were running.
+
+### The advise tool drops non-blocker notes from in-progress reviews
+
+`advise-tool.ts` gates updates raised while a review is still in progress
+(`#inProgressUpdate`): a `nit` or `concern` raised mid-review returns `"Recorded."` to the advisor
+but is **not delivered** to the primary session. `blocker` severity always delivers, in progress or
+not. A `concern` (or lower) raised as an **end-of-turn** note against an otherwise-idle primary is
+delivered as a preserved card, and — unlike the dropped in-progress case — that delivery does emit
+its own `message_start` / `message_end`, which is why advisor message counting has to key off those
+events rather than assume one review produces exactly one delivered note.
+
+Advisor reviews themselves run **asynchronously after `turn_end`**, not synchronously with the
+primary turn. There is no push event for "the advisor finished reviewing" — the worker polls
+`getAdvisorStats()` / advisor state on a 5-second tick and only emits `advisor.state` when it
+actually changes.
+
+### Approval and extension UI wiring
+
+- `ClientBridge.requestPermission` is installed via `session.setClientBridge()` immediately after
+  `createAgentSession` returns — the same point upstream's own ACP (agent-client-protocol) mode
+  installs its bridge. `PERMISSION_OPTIONS` is a fixed four-option menu (allow once / always allow
+  / reject / always reject); `allow_always` and `reject_always` are cached per `cacheKey`, scoped to
+  the session, not global.
+- `setToolUIContext(uiContext, hasUI)` — called with the `ExtensionUIContext` built from
+  `CreateAgentSessionResult` — is what wires extension and ask-tool UI requests to the host instead
+  of a terminal.
+- `CreateAgentSessionResult.eventBus` carries the `task:subagent:lifecycle` / `task:subagent:progress`
+  / `task:subagent:event` channels the worker subscribes to for subagent cards.
+- `SessionManager.forkFrom(sourcePath, cwd, sessionDir)` writes the fork to disk atomically before
+  returning — the caller never observes a partially-written fork file. `getBranch()` is what feeds
+  resume's transcript replay.
+
 ## Known compatibility limitations
 
 1. **Process-per-session is mandatory.** Several process-global hazards make many concurrent
@@ -133,9 +175,16 @@ e.g. `anthropic/claude-fable-5:high`), `tools`, `instructions`, `enabled`.
    an unresolvable dynamic import. `fastembed` and `onnxruntime-node` are also externalised.
 7. **The native addon must sit beside the engine binary.** In a compiled binary the loader's final
    search path is the executable's directory; nothing is downloaded at runtime.
-8. **Not implemented in this build:** session fork, GUI provider sign-in, MCP status surfacing,
-   slash-command completion, extension UI bridge. Each is a protocol request that currently returns
-   an explicit error or empty result rather than a silent no-op.
+8. **`applyAdvisorConfigs` does not activate advisors by itself.** It only stores the roster;
+   `setAdvisorEnabled(true)` is a required second call, and its effect must be checked with
+   `isAdvisorActive()` rather than assumed. See
+   [Advisor activation is two steps, not one](#advisor-activation-is-two-steps-not-one) above.
+9. **The advise tool silently drops non-blocker in-progress notes.** Only `blocker` severity is
+   guaranteed delivery mid-review; `nit`/`concern` raised while a review is in progress are
+   acknowledged to the advisor but never reach the primary session. Do not rely on every advisor
+   note appearing in the transcript.
+10. **Advisor completion has no push signal.** Reviews run asynchronously after `turn_end`; advisor
+    state and usage must be polled (this project polls every 5 seconds) rather than awaited.
 
 ## Updating the bundled OMP
 

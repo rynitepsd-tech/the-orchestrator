@@ -17,9 +17,9 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RuntimeManager } from "../packages/engine/src/runtime-manager";
 import { ompAgentDir } from "../packages/omp-adapter/src";
 import type { ProductEvent } from "../packages/protocol/src";
-import { RuntimeManager } from "../packages/engine/src/runtime-manager";
 
 const ONLY = process.argv[2];
 
@@ -35,7 +35,9 @@ const finishedFor = (id: string) =>
   >;
 const textFor = (id: string) =>
   eventsFor(id)
-    .filter((e): e is Extract<ProductEvent, { type: "assistant.text" }> => e.type === "assistant.text")
+    .filter(
+      (e): e is Extract<ProductEvent, { type: "assistant.text" }> => e.type === "assistant.text",
+    )
     .map((e) => e.delta)
     .join("");
 
@@ -149,7 +151,11 @@ await run("primary", async () => {
   const live = manager.list().find((x) => x.sessionId === s.sessionId);
   check("session persisted where OMP can find it", Boolean(live?.ompSessionPath?.includes(".omp")));
   const usage = await manager.sessionUsage(s.sessionId);
-  check("usage recorded", usage.total.inputTokens > 0, `${usage.total.inputTokens} in / ${usage.total.outputTokens} out`);
+  check(
+    "usage recorded",
+    usage.total.inputTokens > 0,
+    `${usage.total.inputTokens} in / ${usage.total.outputTokens} out`,
+  );
   check("cost reported or honestly absent", usage.total.cost === undefined || usage.total.cost > 0);
 });
 
@@ -182,22 +188,28 @@ await run("advisor", async () => {
   check("turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0, 240_000));
 
   const states = eventsFor(s.sessionId).filter((e) => e.type === "advisor.state") as any[];
-  check("advisor initialized", states.some((e) => e.advisorName === "Reviewer"));
+  check(
+    "advisor initialized",
+    states.some((e) => e.advisorName === "Reviewer"),
+  );
   check(
     "advisor identity correct",
     states.every((e) => e.sessionId === s.sessionId && e.advisorId === "advisor:Reviewer"),
   );
 
   // Advisor reviews are asynchronous; give it a beat after the turn.
-  await waitFor(
-    () => eventsFor(s.sessionId).some((e) => e.type === "advisor.message"),
-    120_000,
-  );
+  await waitFor(() => eventsFor(s.sessionId).some((e) => e.type === "advisor.message"), 120_000);
   const notes = eventsFor(s.sessionId).filter((e) => e.type === "advisor.message") as any[];
   check("advisor produced a note", notes.length > 0, notes[0]?.text?.slice(0, 60));
   if (notes.length) {
-    check("note attributed to Reviewer", notes.some((n) => n.advisorName === "Reviewer"));
-    check("severity is an upstream value", ["nit", "concern", "blocker", "unknown"].includes(notes[0].severity));
+    check(
+      "note attributed to Reviewer",
+      notes.some((n) => n.advisorName === "Reviewer"),
+    );
+    check(
+      "severity is an upstream value",
+      ["nit", "concern", "blocker", "unknown"].includes(notes[0].severity),
+    );
   }
 
   // Advisor usage lands on the worker's 5s poll; wait for the row.
@@ -209,7 +221,11 @@ await run("advisor", async () => {
     return usage.advisors.some((a) => a.actorName === "Reviewer");
   }, 60_000);
   const adv = usage.advisors.find((a) => a.actorName === "Reviewer");
-  check("advisor usage attributed separately", Boolean(adv), adv ? `${adv.tokens.inputTokens + adv.tokens.outputTokens} tokens` : "no advisor row");
+  check(
+    "advisor usage attributed separately",
+    Boolean(adv),
+    adv ? `${adv.tokens.inputTokens + adv.tokens.outputTokens} tokens` : "no advisor row",
+  );
   check(
     "advisor usage not counted as primary",
     usage.primary.inputTokens + usage.primary.outputTokens > 0 &&
@@ -264,7 +280,8 @@ await run("multi-advisor", async () => {
       return !m || m[1] === n.advisorName;
     }),
   );
-  if (noteNames.size >= 2) check("notes from two distinct advisors", true, [...noteNames].join(", "));
+  if (noteNames.size >= 2)
+    check("notes from two distinct advisors", true, [...noteNames].join(", "));
 
   const usage = await manager.sessionUsage(s.sessionId);
   check(
@@ -310,7 +327,10 @@ await run("subagent", async () => {
     sessionId: s.sessionId,
     text: "Reply 'still here' and nothing else.",
   });
-  check("parent continues after subagent", await waitFor(() => finishedFor(s.sessionId).length >= 2, 120_000));
+  check(
+    "parent continues after subagent",
+    await waitFor(() => finishedFor(s.sessionId).length >= 2, 120_000),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -351,9 +371,13 @@ await run("resume", async () => {
     approvalMode: "yolo",
     resumeSessionPath: path,
   });
-  const replay = await manager.route<{ events: ProductEvent[] }>(resumed.sessionId, "session.transcript", {
-    sessionId: resumed.sessionId,
-  });
+  const replay = await manager.route<{ events: ProductEvent[] }>(
+    resumed.sessionId,
+    "session.transcript",
+    {
+      sessionId: resumed.sessionId,
+    },
+  );
   check(
     "history replayed on resume",
     replay.events.some((e) => e.type === "user.message" && (e as any).text.includes("PERSIMMON")),
@@ -412,8 +436,14 @@ await run("concurrent", async () => {
     text: "Reply with the single word: bravo",
   });
 
-  check("B finishes while A may still run", await waitFor(() => finishedFor(b.sessionId).length > 0, 240_000));
-  check("A finishes independently", await waitFor(() => finishedFor(a.sessionId).length > 0, 300_000));
+  check(
+    "B finishes while A may still run",
+    await waitFor(() => finishedFor(b.sessionId).length > 0, 240_000),
+  );
+  check(
+    "A finishes independently",
+    await waitFor(() => finishedFor(a.sessionId).length > 0, 300_000),
+  );
   check("A streamed", textFor(a.sessionId).length > 0);
   check("B streamed", textFor(b.sessionId).toLowerCase().includes("bravo"));
   check(
@@ -475,16 +505,20 @@ await run("fork", async () => {
     sessionId: fork.sessionId,
     text: "What is the codeword? Answer with just the codeword.",
   });
-  check("fork turn completed", await waitFor(() => finishedFor(fork.sessionId).length > 0, 180_000));
-  check("fork inherited history", textFor(fork.sessionId).includes("QUINCE"), textFor(fork.sessionId).slice(0, 40));
+  check(
+    "fork turn completed",
+    await waitFor(() => finishedFor(fork.sessionId).length > 0, 180_000),
+  );
+  check(
+    "fork inherited history",
+    textFor(fork.sessionId).includes("QUINCE"),
+    textFor(fork.sessionId).slice(0, 40),
+  );
 
   // Global usage: fork history must not double-count the source's tokens.
   await manager.reindexUsage();
   const index = manager.usageIndex();
-  const rows = index
-    .records()
-    .filter((r) => r.ompSessionId && [s, fork].some((x) => true))
-    .length;
+  const rows = index.records().filter((r) => r.ompSessionId && [s, fork].some((x) => true)).length;
   check("usage index reindexed without error", rows >= 0);
 });
 

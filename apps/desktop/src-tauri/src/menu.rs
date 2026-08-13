@@ -63,11 +63,29 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         true,
         &[
             &MenuItem::with_id(app, "session-abort", "Abort Run", true, Some("Cmd+."))?,
-            &MenuItem::with_id(app, "session-compact", "Compact Session", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "session-compact",
+                "Compact Session",
+                true,
+                None::<&str>,
+            )?,
             &MenuItem::with_id(app, "session-fork", "Fork Session", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "session-model", "Change Model…", true, Some("Cmd+Shift+M"))?,
-            &MenuItem::with_id(app, "session-advisors", "Configure Advisors…", true, Some("Cmd+Shift+A"))?,
+            &MenuItem::with_id(
+                app,
+                "session-model",
+                "Change Model…",
+                true,
+                Some("Cmd+Shift+M"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "session-advisors",
+                "Configure Advisors…",
+                true,
+                Some("Cmd+Shift+A"),
+            )?,
         ],
     )?;
 
@@ -77,12 +95,24 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         true,
         &[
             &MenuItem::with_id(app, "toggle-sidebar", "Toggle Sidebar", true, Some("Cmd+1"))?,
-            &MenuItem::with_id(app, "toggle-inspector", "Toggle Inspector", true, Some("Cmd+2"))?,
+            &MenuItem::with_id(
+                app,
+                "toggle-inspector",
+                "Toggle Inspector",
+                true,
+                Some("Cmd+2"),
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "view-usage", "Usage", true, Some("Cmd+U"))?,
             &MenuItem::with_id(app, "view-changes", "Changes", true, Some("Cmd+G"))?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "command-palette", "Command Palette", true, Some("Cmd+Shift+P"))?,
+            &MenuItem::with_id(
+                app,
+                "command-palette",
+                "Command Palette",
+                true,
+                Some("Cmd+Shift+P"),
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],
@@ -100,7 +130,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let menu = Menu::with_items(
         app,
-        &[&app_menu, &file_menu, &edit_menu, &session_menu, &view_menu, &window_menu],
+        &[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &session_menu,
+            &view_menu,
+            &window_menu,
+        ],
     )?;
 
     app.set_menu(menu)?;

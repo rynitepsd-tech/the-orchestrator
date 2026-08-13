@@ -4,7 +4,8 @@ Operational procedure for cutting a release of The Orchestrator. This document d
 repository actually does today, not a target state. Where something is not implemented, it says so.
 
 Scope of a release today: macOS on Apple Silicon, ad-hoc signed, distributed as a DMG attached to a
-GitHub Release. There is no auto-updater, no notarization, and no CI release pipeline in this build.
+GitHub Release, built by a tag-triggered CI workflow. There is no auto-updater and no notarization
+in this build.
 
 Related reading: [ARCHITECTURE.md](./ARCHITECTURE.md), [OMP_COMPATIBILITY.md](./OMP_COMPATIBILITY.md),
 [USAGE_MODEL.md](./USAGE_MODEL.md).
@@ -26,8 +27,8 @@ Notes:
 
 - `apps/desktop/package.json` also carries a `version`, but it is a private workspace member and
   does not reach any artifact. Keeping it in step is optional and harmless.
-- `tauri.conf.json` `"version"` is what names the DMG. At `0.1.0` the bundler produces
-  `The Orchestrator_0.1.0_aarch64.dmg`.
+- `tauri.conf.json` `"version"` is what names the DMG. At `0.2.0` the bundler produces
+  `The Orchestrator_0.2.0_aarch64.dmg`.
 - After editing `Cargo.toml`, run one Rust build (step 5 below) so `Cargo.lock` records the new
   version; commit the lockfile change with the bump.
 - Confirm the bump landed everywhere:
@@ -82,10 +83,10 @@ What each step is for:
 |---|---|---|
 | `bun install` | Restore the workspace from `bun.lock`, including the native addon package. | Clean install, no lockfile churn. |
 | `bun run typecheck` | `tsc --build --force` across the workspace. | No errors. |
-| `bun test` | Usage de-duplication tests plus the concurrency suite, which drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | 20 passing. |
-| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~85 MB) and `pi_natives.darwin-arm64.node` (~136 MB) in `resources/engine/`. |
+| `bun test` | Usage de-duplication, concurrency, adapter, and protocol suites across 8 test files. The concurrency suite drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | 67 passing. |
+| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~89 MB) and `pi_natives.darwin-arm64.node` (~143 MB) in `resources/engine/`. |
 | `bunx tauri build` | Builds the Vite frontend, compiles the Rust binary, and bundles `resources/engine` into the app as `Contents/Resources/engine`. | `The Orchestrator.app` and `The Orchestrator_<version>_aarch64.dmg` under `apps/desktop/src-tauri/target/release/bundle/`. |
-| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 12/12 checks passed. |
+| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 24/24 checks passed. |
 
 The engine build must run before `tauri build`. `tauri.conf.json` declares
 `"resources": { "../../../resources/engine": "engine" }`, so the bundler copies whatever is in that
@@ -100,11 +101,13 @@ and cannot resolve at bundle time; removing the flags breaks the compile.
 
 `scripts/smoke-packaged.ts` is the only test that exercises the shipping artifact. It catches the
 class of failure that does not exist in a source checkout: a missing native addon, an architecture
-mismatch, a bundler-stripped dynamic import, or config discovery that only worked from the repo. It
-checks engine architecture against the host, addon presence beside the binary, boot to
+mismatch, a bundler-stripped dynamic import, or config discovery that only worked from the repo. Its
+24 checks cover engine architecture against the host, addon presence beside the binary, boot to
 `engine.ready`, the reported OMP version, OMP agent-directory discovery, model registry load,
-provider resolution from existing credentials, project open, session discovery, shutdown ack, and
-clean exit.
+provider resolution from existing credentials, project open, session discovery, the approval bridge
+(a gated tool call actually stops and waits for `approval.respond`), transcript replay on resume,
+session fork, shutdown ack, and clean exit — all driven against the engine binary inside the built
+`.app`, not the source tree.
 
 It accepts an app path as its first argument, which is how you test a DMG-installed copy:
 
@@ -115,9 +118,11 @@ bun run scripts/smoke-packaged.ts "/Applications/The Orchestrator.app"
 Do this at least once per release against the app mounted from the DMG you are about to publish,
 not only against the build tree.
 
-> Note: `package.json` exposes `"app": "bun run scripts/build-app.ts"`, and the smoke test's error
-> hint mentions `bun run app`, but `scripts/build-app.ts` is not present in the repository. Use
-> `cd apps/desktop && bunx tauri build` as given above.
+> `package.json` also exposes `"app": "bun run build:engine && cd apps/desktop && bunx tauri build"`
+> — `bun run app` does the engine build and the Tauri build in one step, equivalent to running the
+> two commands above in order. `bun run release:check` goes one step further and chains
+> `check` (lint + typecheck + `bun test`), the engine build, the app build, and the packaged smoke
+> test into a single command.
 
 ---
 
@@ -242,7 +247,7 @@ Compute SHA-256 over every artifact you publish, from the exact files you are ab
 
 ```sh
 cd apps/desktop/src-tauri/target/release/bundle/dmg
-shasum -a 256 "The Orchestrator_0.1.0_aarch64.dmg" | tee SHA256SUMS.txt
+shasum -a 256 "The Orchestrator_0.2.0_aarch64.dmg" | tee SHA256SUMS.txt
 ```
 
 Attach to the GitHub Release:
@@ -254,7 +259,7 @@ Put the checksum in the release body as well as in the file, so a reader can ver
 downloading a second artifact. Tell users how to check it:
 
 ```sh
-shasum -a 256 ~/Downloads/"The Orchestrator_0.1.0_aarch64.dmg"
+shasum -a 256 ~/Downloads/"The Orchestrator_0.2.0_aarch64.dmg"
 ```
 
 Release body should state, at minimum:
@@ -264,11 +269,12 @@ Release body should state, at minimum:
   Windows and Linux are not supported.
 - Signing status: ad-hoc signed, not notarized — with the first-launch instructions from section 6.
 - SHA-256 of the DMG.
-- Known gaps in this build, so nobody discovers them as bugs: no session fork, no GUI provider
-  sign-in (users run `omp` once in a terminal to connect a provider), no MCP status surfacing, no
-  slash-command completion, no extension UI bridge, no global usage centre, no approval UI bridge,
-  and the Changes panel is a placeholder.
-- No telemetry, no analytics, no cloud backend, no accounts. Credentials remain in OMP's own store.
+- Known gaps in this build, so nobody discovers them as bugs: Intel (x64) is untested, no
+  notarization, same-session CLI+GUI concurrent writes are unsupported (sequential handoff is
+  fine), and an extension's fully custom UI components (outside the standard confirm/select/input/
+  editor/notify set) are not renderable and surface an "unsupported interaction" card instead.
+- No telemetry, no analytics, no cloud backend, no accounts. Credentials remain in OMP's own store;
+  connecting a provider can be done from Settings → Providers, which runs OMP's own OAuth flow.
 
 The `.app` does not need to be attached separately; it is inside the DMG. If you do attach it, ship
 it as a zip created with `ditto -c -k --keepParent` so the signature survives, and checksum that too.
@@ -364,8 +370,10 @@ removed from the release notes.
 
 ## 9. CI secrets (not required today)
 
-There is no release workflow in this repository, and **local development and local release builds
-require no secrets at all**. If a signed, notarized CI pipeline is added later, it needs:
+`.github/workflows/release.yml` builds and drafts the release on a `v*` tag push, but it signs
+ad-hoc like every other build path — **it requires no secrets today**, and neither do local
+development or local release builds. If Developer ID signing and notarization are wired into that
+workflow later, it needs:
 
 | Secret | Contents |
 |---|---|
@@ -387,9 +395,10 @@ The Tauri updater signing keypair is deliberately absent — see section 10.
 
 ## 10. Updates
 
-"Check for Updates" queries the GitHub Releases API for this repository and opens the release page
-in the user's browser. It reports whether a newer version exists and then hands off; it does not
-download, verify, install, or execute anything.
+**There is no update checking in the app today**, in-app or otherwise — no "Check for Updates"
+menu item, no background version poll, nothing. Checking for a new release is entirely manual:
+watch the GitHub Releases page (or subscribe to release notifications on the repository) and
+repeat the install steps in [README.md](../README.md#installation) when a new DMG is published.
 
 **The Tauri updater is not enabled in this build.** `apps/desktop/src-tauri/Cargo.toml` declares no
 `tauri-plugin-updater`, `tauri.conf.json` has no `plugins.updater` block, and the window capability
@@ -415,11 +424,13 @@ Constraints that must hold for any future change here:
 - [ ] Version identical in `package.json`, `tauri.conf.json`, `Cargo.toml`; `Cargo.lock` updated.
 - [ ] OMP pin coherent across the engine dependency, `scripts/build-engine.ts`, and the smoke test.
 - [ ] `bun run typecheck` clean.
-- [ ] `bun test` — 20 passing.
+- [ ] `bun test` — 67 passing across 8 files.
 - [ ] `bun run build:engine` — engine plus matching `.node` present in `resources/engine/`.
 - [ ] `bunx tauri build` — `.app` and `.dmg` produced.
 - [ ] `file -b` agrees on architecture for the Rust binary and the engine sidecar.
-- [ ] `bun run scripts/smoke-packaged.ts` — 12/12, run against the DMG-installed app.
+- [ ] `bun run scripts/smoke-packaged.ts` — 24/24, run against the DMG-installed app.
+- [ ] `bun run validate:live` — live validation passes against configured providers (optional but
+      recommended before a release: primary/advisor/multi-advisor/subagent/resume/concurrent/fork).
 - [ ] `shasum -a 256` computed; `SHA256SUMS.txt` written.
 - [ ] Release notes state OMP version, architecture, ad-hoc signing, first-launch steps, known gaps.
 - [ ] Git tag matches the version; DMG and checksums attached to the GitHub Release.

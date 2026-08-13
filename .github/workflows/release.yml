@@ -163,13 +163,16 @@ jobs:
             dist-release/*.dmg
             dist-release/SHA256SUMS.txt
           body: |
-            macOS, Apple Silicon (arm64). Requires macOS 10.15 or later.
+            macOS, Apple Silicon (arm64). Requires macOS 11.0 or later.
 
-            This build is ad-hoc signed and not notarized. On first launch,
-            open it from Finder with right-click > Open, or clear the quarantine
-            attribute:
+            This build is ad-hoc signed and not notarized. On first launch
+            macOS will block it; approve it the supported way:
 
-                xattr -dr com.apple.quarantine "/Applications/The Orchestrator.app"
+            1. Drag the app into Applications and try to open it once.
+            2. Open System Settings → Privacy & Security, scroll to the
+               "blocked" notice, and click **Open Anyway**.
+
+            (Do not disable Gatekeeper globally; per-app approval is enough.)
 
             Verify the download against `SHA256SUMS.txt`:
 

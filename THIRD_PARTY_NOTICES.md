@@ -123,6 +123,7 @@ requires Bun >= 1.3.14.
 | `@tauri-apps/plugin-notification` | Apache-2.0 OR MIT | Bundled |
 | `@tauri-apps/plugin-opener` | Apache-2.0 OR MIT | Bundled |
 | Tauri 2 Rust crates (`tauri`, plugin crates, and their dependency tree) | Apache-2.0 OR MIT | Bundled — linked into the native binary |
+| `env_logger` / `log` | Apache-2.0 OR MIT | Bundled — linked into the native binary |
 | `react` | MIT | Bundled — in the built frontend |
 | `react-dom` | MIT | Bundled — in the built frontend |
 | `zustand` | MIT | Bundled — in the built frontend |

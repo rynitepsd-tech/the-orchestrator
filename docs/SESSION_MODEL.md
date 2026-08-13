@@ -131,8 +131,8 @@ stateDiagram-v2
     thinking --> tool: tool_execution_start
     streaming --> tool: tool_execution_start
     tool --> thinking: tool_execution_end
-    thinking --> waiting: approval required (not emitted in this build)
-    waiting --> thinking: approval resolved
+    thinking --> waiting: approval or extension prompt pending
+    waiting --> thinking: approval/prompt resolved
 
     thinking --> completed: agent_end (isTerminal)
     streaming --> completed: agent_end (isTerminal)
@@ -166,9 +166,11 @@ Where each transition comes from:
 - `queued` and `stopping` are set by the worker's command loop when it accepts a prompt or
   begins an abort.
 - `interrupted` is set by the abort path, or by the supervisor when a worker process dies.
-- `waiting` is defined in the protocol and handled by the UI, but nothing emits it in this
-  build: the approval UI bridge is not implemented (`approval.respond` returns `{ ok: false }`).
-  It is reserved, not live.
+- `waiting` is emitted whenever a prompt is pending against the session: an upstream
+  `ClientBridge.requestPermission` approval, or an extension UI request (select/confirm/input/
+  editor/notify). It clears back to `thinking` when the prompt resolves — via `approval.respond`,
+  `extension.ui.respond`, or an abort, which cancels any prompt pending on that session rather than
+  leaving it stuck in `waiting` forever.
 
 ### Aborted turns must report `interrupted`, never `completed`
 
@@ -293,6 +295,13 @@ downstream — model resolution, advisors, event mapping — is identical. Resum
 mechanism behind reopening a session after quitting the app: the Orchestrator session id is
 new (new process), the OMP session id and path are the old ones.
 
+The sidebar surfaces this directly: `sessions.discover` lists persisted sessions under a
+"Previous sessions" section, and opening one starts a new worker with `resumeSessionPath` set.
+On boot, that worker seeds a **transcript replay** from `SessionManager.getBranch()` so the
+prior conversation renders immediately rather than starting blank. `session.transcript` also
+serves the worker's bounded (20,000-event) history on demand, which the UI uses both for reload
+and to reconcile a detected sequence gap (see [ARCHITECTURE.md](./ARCHITECTURE.md)).
+
 **Interoperability with the OMP CLI.** The Orchestrator and `omp` are two interfaces over one
 environment. The app reads OMP's agent directory, credential store, model registry, settings,
 advisor discovery (`discoverAdvisorConfigs`) and session store directly; it never creates a
@@ -300,23 +309,29 @@ competing store. Consequences:
 
 - A session started in the CLI appears in this app's discovery list and can be resumed here.
 - A session started here appears to `omp` and can be resumed there once this app has closed it.
-- Provider credentials are shared. GUI sign-in is not implemented — `providers.login` throws
-  with an actionable message telling the user to run `omp` once to connect a provider.
+- Provider credentials are shared. `providers.login` runs OMP's own OAuth flow
+  (`AuthStorage.login`) and emits `engine.auth` lifecycle events carrying the browser URL for the
+  host to open; the engine never sees the resulting secret, since OMP writes it straight into its
+  own credential store. Manual-code OAuth flows are refused with an actionable message rather than
+  attempted. `providers.logout` still intentionally refuses — disconnecting a provider requires
+  running `omp logout` once in a terminal.
 - Sequential handoff is supported. Simultaneous use of the same session file is not, for the
   reason in §5.
 
-**Fork is not implemented.** `SessionLaunchConfig.forkFromSessionPath` and
-`DiscoveredSession.parentSessionPath` exist in the protocol, but the request handler is
-explicit:
+**Fork.** `session.fork` uses upstream `SessionManager.forkFrom(sourcePath, cwd, sessionDir)`,
+which copies the source session's entries and artifacts into a new file, stamps a
+`parentSession` header recording the lineage, and writes the fork atomically before returning.
+The source session is only ever read, never mutated:
 
-```ts
-case "session.fork":
-  throw Object.assign(new Error("Fork is not implemented in this build."), {
-    kind: "configuration",
-  });
-```
+- Forking a **live** session (one this app currently has a worker for) reads from that worker's
+  persisted file — the on-disk snapshot at fork time, not an in-memory transcript — so the fork
+  reflects what has actually been written so far.
+- Forking a **discovered** (not-currently-open) session reads the file directly.
+- The new session is immediately runnable, including on a different model than the source.
 
-There is no branch-a-transcript feature in this build. Nothing in the UI offers it.
+The UI exposes Fork in the sidebar's per-session context menu, the menu bar, and the command
+palette. `DiscoveredSession.parentSessionPath` carries the lineage back into the discovery
+listing so a forked session's ancestry is visible there too.
 
 ## 7. Disposal ordering and crash recovery
 
@@ -359,6 +374,15 @@ emit({ type: "session.finished", sessionId, runState: "interrupted" });
 The user sees the failure in the transcript and the session settles in `interrupted`, not
 `completed`. The `.jsonl` written up to the crash is intact — the error message says so
 explicitly ("Its transcript is preserved").
+
+The dead worker is also **removed from the routing map**, not left dangling — a crashed session
+does not stay addressable. Its `SessionSummary` is kept so the sidebar can still show it, and any
+further request against that session id fails with an actionable "resume" error rather than
+hanging or silently no-op'ing, pointing the user at reopening the persisted file (§6). Worker
+stderr is captured at `info` level into a bounded 40-line diagnostic ring that is surfaced
+verbatim in the create/crash error, so "why did this session die" does not require digging through
+log files. Every event a worker emits is ownership-checked against the session id it was spawned
+for, so a worker cannot speak for a session it does not own.
 
 **The whole engine dies.** `engine-client` reports a supervisor `exited` lifecycle event and
 `App.tsx` responds by moving the engine to `offline` and calling:

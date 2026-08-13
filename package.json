@@ -1,7 +1,7 @@
 {
   "name": "the-orchestrator",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "packageManager": "bun@1.3.14",
   "description": "An unofficial native macOS desktop harness for OhMyPi (OMP)",
@@ -11,7 +11,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun run --filter '@orchestrator/desktop' dev",
+    "dev": "ORCHESTRATOR_ENGINE_ENTRY=$PWD/packages/engine/src/main.ts bun run --filter @orchestrator/desktop dev",
     "build": "bun run build:engine && bun run --filter '@orchestrator/desktop' build",
     "build:engine": "bun run scripts/build-engine.ts",
     "tauri": "bun run --filter '@orchestrator/desktop' tauri",

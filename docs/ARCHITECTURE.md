@@ -70,9 +70,13 @@ way, and the concurrency tests assert against the supervisor's public API rather
 
 ### Costs accepted
 
-- ~150–250 MB RSS per live session.
-- MCP servers and LSP pools are per-session rather than shared.
-- Both are why MCP/LSP are opt-in per session rather than always-on.
+- ~320 MB RSS per live worker, packaged (~350 MB in dev). See
+  [PERFORMANCE.md](./PERFORMANCE.md) for the full measured breakdown, including how RSS scales
+  across concurrent workers.
+- MCP servers and LSP pools are per-session rather than shared: each worker starts its own, so N
+  sessions in the same project each pay their own connection cost rather than sharing one pool.
+  MCP is enabled per worker in normal operation and disabled only in test mode
+  (`ORCHESTRATOR_TEST_MODE=1`) — there is no per-session UI toggle for it.
 
 ## Concurrency model
 
@@ -106,7 +110,9 @@ Rules the implementation enforces:
 
 - **stdout carries protocol frames only.** `console.*` is rebound to stderr at startup, so a stray
   log from any dependency cannot desynchronise the decoder.
-- **Monotonic `sequence`** lets the host detect dropped frames after a crash.
+- **Monotonic `sequence`** lets the host detect dropped frames after a crash. This is wired end to
+  end: on a detected gap the UI calls `session.transcript` to refetch the worker's bounded
+  (20,000-event) history and reconcile, rather than silently rendering a hole.
 - **Malformed frames are reported, never fatal.**
 - **Everything outbound is redacted** (`packages/protocol/src/redact.ts`).
 - **Text and reasoning deltas are coalesced** at ~30 fps so streaming stays live without flooding

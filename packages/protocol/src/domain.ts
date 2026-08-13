@@ -355,6 +355,8 @@ export interface DiscoveredSession {
   parentSessionPath?: string;
   /** True when this app currently has the session open in a runtime. */
   openInThisApp: boolean;
+  /** Set when the session's working directory no longer exists on disk. */
+  cwdMissing?: boolean;
 }
 
 export interface ProjectInfo {

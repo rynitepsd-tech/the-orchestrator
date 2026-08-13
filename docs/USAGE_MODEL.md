@@ -113,6 +113,38 @@ Normalised usage index
 On restart the index is rebuilt from persisted data. Because keys are deterministic, rebuilding
 produces exactly the same totals — it does not accumulate on top of what was already counted.
 
+## Global usage index
+
+R1/R2 describe how records within a single session's ledger are kept honest. There is also a
+second, engine-wide layer above that, because "which model is consuming my usage" is a
+cross-session question:
+
+- A persistent `UsageIndex` lives at
+  `~/Library/Application Support/The Orchestrator/usage/records.jsonl`, outside any OMP directory.
+  Every worker emits `usage.records` events into it as sessions run, and the `usage.query` request
+  filters the accumulated records by time range, project, provider, model, and actor for the usage
+  centre (⌘U).
+- **Identity is global, not per-session.** A record that carries a provider `responseId` dedups
+  against *every other record with that id anywhere in the index* — not just within its own
+  session. This is what R1 already established for a single session's ledger; the global index
+  applies the same rule at engine scope.
+- That global rule is what makes **fork** and **reindex** safe rather than a source of double
+  counting: a forked session's copied history shares `responseId`s with its source, so counting
+  both the source and the fork does not double the tokens they share. Observing the same response
+  once live and once later via reindex likewise collapses to one record, not two.
+- **Provider retries are not deduplicated away** — a retry gets a fresh `responseId` from the
+  provider, so it accumulates as genuinely new usage, which is correct: a retried call really did
+  spend tokens.
+- **Cumulative advisor snapshots stay scoped per `ompSessionId` + actor.** Unlike primary usage,
+  `PerAdvisorStat.cost` is a cumulative counter reported by OMP itself (see
+  [OMP_COMPATIBILITY.md](./OMP_COMPATIBILITY.md)), not a set of individually-keyed responses, so it
+  is tracked per session-and-advisor rather than deduplicated by response identity.
+- **`usage.reindex`** parses OMP's own session `.jsonl` files directly and treats them as the
+  authoritative `"omp-session"` source — the same authority ranking as R2, at the top. Reindexing is
+  idempotent: running it twice does not change the totals, because record identity is deterministic.
+  Measured on a real environment: **197 session files reindexed into 1,967 records in 101 ms**. See
+  [PERFORMANCE.md](./PERFORMANCE.md) for the full measurement.
+
 ## Tests
 
 `packages/usage/test/accumulator.test.ts` encodes the acceptance scenario:

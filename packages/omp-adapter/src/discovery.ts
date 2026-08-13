@@ -174,18 +174,33 @@ export async function discoverSessions(projectPath?: string): Promise<Discovered
     ? await (SessionManager as any).list(projectPath)
     : await (SessionManager as any).listAll();
 
-  return (raw ?? []).map((s) => ({
-    ompSessionId: String(s.id ?? ""),
-    path: String(s.path ?? ""),
-    cwd: String(s.cwd ?? ""),
-    title: String(s.title ?? "").trim() || "Untitled session",
-    created: toIso(s.created),
-    modified: toIso(s.modified),
-    messageCount: Number(s.messageCount ?? 0),
-    sizeBytes: Number(s.size ?? 0),
-    parentSessionPath: s.parentSessionPath ? String(s.parentSessionPath) : undefined,
-    openInThisApp: false,
-  }));
+  const cwdExists = new Map<string, boolean>();
+  const checkCwd = (cwd: string): boolean => {
+    const hit = cwdExists.get(cwd);
+    if (hit !== undefined) return hit;
+    const ok = Boolean(cwd) && existsSync(cwd);
+    cwdExists.set(cwd, ok);
+    return ok;
+  };
+
+  return (raw ?? []).map((s) => {
+    const cwd = String(s.cwd ?? "");
+    return {
+      ompSessionId: String(s.id ?? ""),
+      path: String(s.path ?? ""),
+      cwd,
+      title: String(s.title ?? "").trim() || "Untitled session",
+      created: toIso(s.created),
+      modified: toIso(s.modified),
+      messageCount: Number(s.messageCount ?? 0),
+      sizeBytes: Number(s.size ?? 0),
+      parentSessionPath: s.parentSessionPath ? String(s.parentSessionPath) : undefined,
+      openInThisApp: false,
+      // A session whose project folder is gone (deleted checkout, temp dir)
+      // cannot be resumed; the UI hides it rather than offering a dead Resume.
+      cwdMissing: !checkCwd(cwd) || undefined,
+    };
+  });
 }
 
 function toIso(v: unknown): string | undefined {

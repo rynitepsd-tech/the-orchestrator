@@ -54,7 +54,7 @@ export class EngineServer {
   info(): EngineInfo {
     return {
       protocolVersion: PROTOCOL_VERSION,
-      engineVersion: process.env.ORCHESTRATOR_VERSION ?? "0.1.0",
+      engineVersion: process.env.ORCHESTRATOR_VERSION ?? "0.2.0",
       ompVersion: ompVersion(),
       bunVersion: typeof Bun !== "undefined" ? Bun.version : "n/a",
       arch: process.arch,

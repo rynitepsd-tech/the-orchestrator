@@ -57,13 +57,23 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Typecheck
+      - name: Lint
+        run: bunx biome check .
+
+      - name: Typecheck (packages + scripts)
         run: bun run typecheck
 
+      - name: Typecheck (desktop app)
+        # The root tsconfig deliberately excludes the React app; check it
+        # explicitly so UI type errors cannot slip past CI.
+        working-directory: apps/desktop
+        run: bunx tsc --noEmit
+
       - name: Test
-        # 20 tests: usage de-duplication plus a concurrency suite driven by a
-        # local mock provider speaking the OpenAI SSE wire format. No network
-        # calls, no provider credits are spent.
+        # Protocol framing/redaction, event mapping, usage identity (incl.
+        # fork/retry), approvals, transcript replay, crash containment, and a
+        # concurrency suite — all driven by a local mock provider speaking the
+        # OpenAI SSE wire format. No network calls, no provider credits spent.
         run: bun test
 
       - name: cargo fmt --check
