@@ -19,17 +19,21 @@ export function ModelPicker({
   value,
   onChange,
   autoFocus,
+  startExpanded,
 }: {
   models: ModelInfo[];
   value?: string;
   onChange: (key: string | undefined, model?: ModelInfo) => void;
   autoFocus?: boolean;
+  /** Open the search list immediately instead of the collapsed summary row. */
+  startExpanded?: boolean;
 }): JSX.Element {
   const prefs = useStore((s) => s.prefs);
   const updatePrefs = useStore((s) => s.updatePrefs);
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [limit, setLimit] = useState(PAGE);
+  const [expanded, setExpanded] = useState(Boolean(startExpanded));
   const listRef = useRef<HTMLDivElement>(null);
 
   const q = query.trim().toLowerCase();
@@ -70,6 +74,34 @@ export function ModelPicker({
     });
   };
 
+  const pick = (key: string | undefined, model?: ModelInfo) => {
+    onChange(key, model);
+    // The choice is made — get the list out of the way.
+    setExpanded(false);
+    setQuery("");
+  };
+
+  // Collapsed: one quiet row stating the current choice; click to change.
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="model-picker-collapsed"
+        onClick={() => setExpanded(true)}
+        aria-label="Change model"
+      >
+        <span className="model-name">{selected ? selected.name : "OMP default model"}</span>
+        <span className="hint">
+          {selected
+            ? `${selected.provider}${selected.authenticated ? "" : " · not connected"}`
+            : "whatever your OMP config resolves"}
+        </span>
+        <span className="spacer" />
+        <span className="chevron">▼</span>
+      </button>
+    );
+  }
+
   return (
     <div className="model-picker">
       <input
@@ -80,7 +112,7 @@ export function ModelPicker({
           setQuery(e.target.value);
           setLimit(PAGE);
         }}
-        autoFocus={autoFocus}
+        autoFocus={autoFocus || !startExpanded}
         aria-label="Search models"
       />
       <div
@@ -97,16 +129,13 @@ export function ModelPicker({
           }
         }}
       >
-        <button
-          className={`model-row${!value ? " selected" : ""}`}
-          onClick={() => onChange(undefined)}
-        >
+        <button className={`model-row${!value ? " selected" : ""}`} onClick={() => pick(undefined)}>
           <span className="model-name">OMP default model</span>
           <span className="hint">whatever your OMP config resolves</span>
         </button>
         {shown.map((m) => (
           <div key={m.key} className={`model-row${m.key === value ? " selected" : ""}`}>
-            <button className="model-main" onClick={() => onChange(m.key, m)}>
+            <button className="model-main" onClick={() => pick(m.key, m)}>
               <span className="model-name">
                 {m.name}
                 {!m.authenticated && <span className="hint"> · not connected</span>}

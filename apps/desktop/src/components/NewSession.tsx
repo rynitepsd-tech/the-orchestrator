@@ -41,6 +41,9 @@ export function NewSession({
   const [advisorsLoading, setAdvisorsLoading] = useState(false);
   const [advisorsSource, setAdvisorsSource] = useState<"project" | "session">("project");
   const [editingAdvisor, setEditingAdvisor] = useState<string | null>(null);
+  // WKWebView has no window.prompt(); names are collected with inline inputs.
+  const [advisorDraft, setAdvisorDraft] = useState<string | null>(null);
+  const [presetDraft, setPresetDraft] = useState<string | null>(null);
 
   const selectedModel = modelKey ? models.find((m) => m.key === modelKey) : undefined;
   const efforts = selectedModel?.thinking?.efforts ?? [];
@@ -96,14 +99,15 @@ export function NewSession({
   };
 
   const saveAsPreset = () => {
-    const name = prompt("Preset name");
-    if (!name?.trim()) return;
+    const name = presetDraft?.trim();
+    if (!name) return;
     addPreset({
-      name: name.trim(),
+      name,
       model: modelKey,
       thinkingLevel: effort || undefined,
       advisors,
     });
+    setPresetDraft(null);
   };
 
   const patchAdvisor = (id: string, patch: Partial<AdvisorConfig>) => {
@@ -114,13 +118,14 @@ export function NewSession({
   };
 
   const addCustomAdvisor = () => {
-    const name = prompt("Advisor name (session only)");
-    if (!name?.trim()) return;
-    const id = `advisor:${name.trim()}`;
+    const name = advisorDraft?.trim();
+    if (!name) return;
+    const id = `advisor:${name}`;
     if (advisors.some((a) => a.id === id)) return;
-    setAdvisors((list) => [...list, { id, name: name.trim(), enabled: true, origin: "session" }]);
+    setAdvisors((list) => [...list, { id, name, enabled: true, origin: "session" }]);
     setAdvisorsSource("session");
     setEditingAdvisor(id);
+    setAdvisorDraft(null);
   };
 
   const recentProjects = useMemo(
@@ -247,10 +252,35 @@ export function NewSession({
               {advisorsSource === "session" ? "Session override" : "Project default"}
             </span>
             <span className="spacer" />
-            <button className="btn btn-ghost" onClick={addCustomAdvisor}>
-              + Add advisor
+            <button
+              className="btn btn-ghost"
+              onClick={() => setAdvisorDraft(advisorDraft === null ? "" : null)}
+            >
+              {advisorDraft === null ? "+ Add advisor" : "Cancel"}
             </button>
           </div>
+
+          {advisorDraft !== null && (
+            <div className="inline-add">
+              <input
+                className="input"
+                value={advisorDraft}
+                placeholder="Advisor name (session only)"
+                autoFocus
+                onChange={(e) => setAdvisorDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addCustomAdvisor();
+                  if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setAdvisorDraft(null);
+                  }
+                }}
+              />
+              <button className="btn" disabled={!advisorDraft.trim()} onClick={addCustomAdvisor}>
+                Add
+              </button>
+            </div>
+          )}
 
           {!projectPath.trim() ? (
             <div className="hint">Choose a project to discover its advisors.</div>
@@ -309,9 +339,32 @@ export function NewSession({
         </div>
 
         <div className="row modal-actions">
-          <button className="btn btn-ghost" onClick={saveAsPreset}>
-            Save as preset
-          </button>
+          {presetDraft === null ? (
+            <button className="btn btn-ghost" onClick={() => setPresetDraft("")}>
+              Save as preset
+            </button>
+          ) : (
+            <span className="inline-add" style={{ marginTop: 0 }}>
+              <input
+                className="input"
+                style={{ width: 180 }}
+                value={presetDraft}
+                placeholder="Preset name"
+                autoFocus
+                onChange={(e) => setPresetDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveAsPreset();
+                  if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setPresetDraft(null);
+                  }
+                }}
+              />
+              <button className="btn" disabled={!presetDraft.trim()} onClick={saveAsPreset}>
+                Save
+              </button>
+            </span>
+          )}
           <span className="spacer" />
           <button className="btn" onClick={onCancel}>
             Cancel

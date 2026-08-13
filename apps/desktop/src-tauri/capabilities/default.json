@@ -12,7 +12,10 @@
     "dialog:allow-open",
     "dialog:allow-message",
     "dialog:allow-confirm",
+    "dialog:allow-ask",
     "notification:default",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

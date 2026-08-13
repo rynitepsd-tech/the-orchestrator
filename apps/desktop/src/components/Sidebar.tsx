@@ -12,6 +12,7 @@ import type { JSX } from "react";
 import { useMemo, useState } from "react";
 import { engine } from "../engine-client";
 import { isActive, modelBasename, runStateLabel, type SessionView, useStore } from "../store";
+import { ResizeHandle } from "./ResizeHandle";
 
 export function Sidebar({
   onResume,
@@ -74,8 +75,16 @@ export function Sidebar({
 
   const archivedCount = discovered.filter((d) => prefs.archivedSessions.includes(d.path)).length;
 
+  const updatePrefs = useStore((s) => s.updatePrefs);
+  const setNewSession = useStore((s) => s.setNewSession);
+
   return (
     <aside className="sidebar" onClick={() => setMenu(null)}>
+      <div className="sidebar-head">
+        <button className="btn btn-primary" onClick={() => setNewSession(true)}>
+          + New Session
+        </button>
+      </div>
       <div className="sidebar-search">
         <input
           className="input"
@@ -154,6 +163,14 @@ export function Sidebar({
           onFork={onFork}
         />
       )}
+
+      <ResizeHandle
+        side="right"
+        width={prefs.sidebarWidth}
+        min={200}
+        max={440}
+        onResize={(w) => updatePrefs({ sidebarWidth: w })}
+      />
     </aside>
   );
 }
@@ -248,6 +265,7 @@ function SessionMenu({
   const updatePrefs = useStore((s) => s.updatePrefs);
   const prefs = useStore((s) => s.prefs);
   const removeSession = useStore((s) => s.removeSession);
+  const setRenameTarget = useStore((s) => s.setRenameTarget);
   if (!view) return null;
   const s = view.summary;
   const running = isActive(s.runState);
@@ -260,15 +278,7 @@ function SessionMenu({
 
   return (
     <div className="context-menu" style={{ left: x, top: y }} onClick={(e) => e.stopPropagation()}>
-      <button
-        className="menu-item"
-        onClick={act(() => {
-          const title = prompt("Session title", s.title);
-          if (title?.trim()) {
-            void engine.request("session.setTitle", { sessionId, title: title.trim() });
-          }
-        })}
-      >
+      <button className="menu-item" onClick={act(() => setRenameTarget(sessionId))}>
         Rename…
       </button>
       <button

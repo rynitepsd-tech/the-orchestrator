@@ -4,8 +4,9 @@ Operational procedure for cutting a release of The Orchestrator. This document d
 repository actually does today, not a target state. Where something is not implemented, it says so.
 
 Scope of a release today: macOS on Apple Silicon, ad-hoc signed, distributed as a DMG attached to a
-GitHub Release, built by a tag-triggered CI workflow. There is no auto-updater and no notarization
-in this build.
+GitHub Release, built by a tag-triggered CI workflow. In-app updates are delivered through the Tauri
+updater (minisign-verified `latest.json` feed on the GitHub Release — see section 10). There is no
+notarization in this build.
 
 Related reading: [ARCHITECTURE.md](./ARCHITECTURE.md), [OMP_COMPATIBILITY.md](./OMP_COMPATIBILITY.md),
 [USAGE_MODEL.md](./USAGE_MODEL.md).
@@ -370,10 +371,20 @@ removed from the release notes.
 
 ## 9. CI secrets (not required today)
 
-`.github/workflows/release.yml` builds and drafts the release on a `v*` tag push, but it signs
-ad-hoc like every other build path — **it requires no secrets today**, and neither do local
-development or local release builds. If Developer ID signing and notarization are wired into that
-workflow later, it needs:
+`.github/workflows/release.yml` builds and drafts the release on a `v*` tag push. Apple signing is
+ad-hoc like every other build path, but the workflow **requires one secret**:
+
+| Secret | Contents |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Contents of the Tauri updater private key (`~/.tauri/orchestrator-updater.key` on the maintainer's machine). Signs the `.app.tar.gz` updater artifact. The matching public key is committed in `tauri.conf.json`. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The key's password. Optional — omit if the key has none. |
+
+Without `TAURI_SIGNING_PRIVATE_KEY` the build fails deliberately: a release without signed updater
+artifacts would strand every existing install on its current version. If the private key is ever
+lost, generate a new pair, ship one manually-installed release with the new public key, and accept
+that older installs must update by hand that once.
+
+If Developer ID signing and notarization are wired into the workflow later, it additionally needs:
 
 | Secret | Contents |
 |---|---|
@@ -389,33 +400,44 @@ Runner requirements: macOS with Xcode command line tools, Bun `>= 1.3.14`, and a
 meeting `rust-version = 1.77.2`. The job must import the certificate into a temporary keychain and
 delete it in a cleanup step that runs even on failure. Never echo any of these values into logs.
 
-The Tauri updater signing keypair is deliberately absent — see section 10.
-
 ---
 
 ## 10. Updates
 
-**There is no update checking in the app today**, in-app or otherwise — no "Check for Updates"
-menu item, no background version poll, nothing. Checking for a new release is entirely manual:
-watch the GitHub Releases page (or subscribe to release notifications on the repository) and
-repeat the install steps in [README.md](../README.md#installation) when a new DMG is published.
+**The Tauri updater is enabled.** The app checks
+`https://github.com/rynitepsd-tech/the-orchestrator/releases/latest/download/latest.json` silently at
+startup and every 4 hours. When the feed advertises a newer version, a chip appears in the titlebar;
+clicking it downloads the `.app.tar.gz` from the release, verifies its minisign signature, installs,
+and offers a restart. Settings → About also has a manual "Check for Updates" button. A failed or
+impossible check (no network, no published release yet, dev build) is silent and changes nothing.
 
-**The Tauri updater is not enabled in this build.** `apps/desktop/src-tauri/Cargo.toml` declares no
-`tauri-plugin-updater`, `tauri.conf.json` has no `plugins.updater` block, and the window capability
-set grants only `dialog`, `notification`, and `opener:allow-open-url`. There is no update endpoint,
-no signing keypair, and no silent-install path. Updating is a deliberate user action: download the
-new DMG, verify its checksum, replace the app.
+How the chain of trust works:
 
-Constraints that must hold for any future change here:
+- The updater public key is committed in `tauri.conf.json` (`plugins.updater.pubkey`) and baked into
+  the binary at build time — it is **not** fetched from the update channel.
+- CI signs the `.app.tar.gz` with the private key (repo secret `TAURI_SIGNING_PRIVATE_KEY`; the
+  maintainer's copy lives at `~/.tauri/orchestrator-updater.key`, generated with
+  `bunx tauri signer generate`). The updater refuses any payload whose signature does not verify
+  against the baked-in key, so a compromised download channel cannot substitute a payload.
+- Apple signing remains ad-hoc; the minisign verification above is what authenticates updates.
 
-- **Never execute unsigned downloaded code.** An in-app updater is only acceptable once artifacts
-  are Developer ID signed and notarized, and the updater verifies a signature it did not fetch from
-  the same untrusted channel as the payload.
-- Enabling the Tauri updater means adding a signing keypair, a CI secret for the private key, and an
-  update manifest per release. Until that whole chain exists, opening the release page is the honest
-  behaviour.
-- The app has no telemetry; an update check must not become a usage beacon. It is user-initiated
-  only.
+Release mechanics (all automated in `release.yml`):
+
+- `tauri.conf.json` sets `bundle.createUpdaterArtifacts: true`, so `tauri build` emits
+  `The Orchestrator.app.tar.gz` + `.sig` alongside the DMG.
+- The workflow composes `latest.json` (version, pub date, `darwin-aarch64` URL + signature) and
+  attaches all three to the release.
+- The feed URL only resolves for the **latest published** release — a draft release does not update
+  anyone. Publishing the draft is the moment the fleet is offered the update.
+- Never delete `latest.json`, the `.app.tar.gz`, or the `.sig` from a published release, and never
+  re-tag: existing installs poll that exact URL.
+
+Constraints that must hold:
+
+- The app has no telemetry; the update check sends no identifying payload and must never become a
+  usage beacon. It fetches a static JSON file, nothing more.
+- If the endpoint repo moves, the `endpoints` URL in `tauri.conf.json` must change in a release that
+  still ships from the old URL, or existing installs never see the move.
 
 ---
 
@@ -434,3 +456,6 @@ Constraints that must hold for any future change here:
 - [ ] `shasum -a 256` computed; `SHA256SUMS.txt` written.
 - [ ] Release notes state OMP version, architecture, ad-hoc signing, first-launch steps, known gaps.
 - [ ] Git tag matches the version; DMG and checksums attached to the GitHub Release.
+- [ ] `TAURI_SIGNING_PRIVATE_KEY` secret present in the repo (updater artifact signing).
+- [ ] Release has `latest.json`, `.app.tar.gz`, and `.app.tar.gz.sig` attached before publishing —
+      publishing is what triggers in-app update offers.

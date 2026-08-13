@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.0
+
+Quality-of-life release: first-run setup, real dialogs, and self-updating.
+
+### Setup and presets
+
+- **First-run setup flow.** New installs get a short wizard: connect your
+  providers, create a default preset (primary model + two advisors), and
+  optionally a second preset. Skippable; everything it writes is local.
+- **Settings → Presets.** Create, edit, rename, and delete session presets
+  after setup. Presets remain one-click templates in New Session.
+
+### Fixes
+
+- **Dialogs are centred.** New Session (and every other dialog) opened in the
+  top-left corner because the backdrop CSS class was never defined. Fixed.
+- **"Add advisor", "Save as preset", and "Rename session" work.** They relied
+  on `window.prompt()`, which macOS WKWebView silently ignores. All three now
+  use real inputs.
+- **The window can be dragged by its titlebar.** The titlebar used Electron's
+  `-webkit-app-region`; Tauri needs `data-tauri-drag-region`. Double-click to
+  zoom works too.
+- **The model picker collapses once you pick.** It shows a compact summary row
+  and expands on click, instead of a permanently open list.
+
+### Convenience
+
+- Sidebar and inspector are resizable by dragging their edges (widths persist).
+- "+ New Session" button at the top of the sidebar; titlebar buttons for
+  sidebar, inspector, and settings.
+- Settings opens as an overlay instead of replacing the main view.
+- Escape consistently dismisses the topmost surface; Escape in the composer
+  stops a running turn; the composer refocuses when switching sessions.
+
+### Updates
+
+- **In-app auto-update.** The app checks the GitHub Releases feed at startup
+  and every 4 hours; when a new version is published, an Update chip appears
+  in the titlebar — one click downloads, verifies the minisign signature,
+  installs, and offers a restart. Manual check in Settings → About. No
+  telemetry: the check fetches a static JSON file.
+
 ## 0.2.0
 
 The daily-driver release: everything between "OMP can run in a desktop app"

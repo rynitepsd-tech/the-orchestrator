@@ -12,6 +12,7 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { engine } from "../engine-client";
 import { fmtCost, fmtCount, fmtTokens, isActive, type SessionView, useStore } from "../store";
+import { ResizeHandle } from "./ResizeHandle";
 import { Diff } from "./Transcript";
 
 function Row({ label, tokens, cost }: { label: string; tokens: number; cost?: number }) {
@@ -388,9 +389,18 @@ function FilesTab({ view }: { view: SessionView }): JSX.Element {
 export function Inspector({ view }: { view?: SessionView }): JSX.Element {
   const inspectorTab = useStore((s) => s.inspectorTab);
   const setInspectorTab = useStore((s) => s.setInspectorTab);
+  const inspectorWidth = useStore((s) => s.prefs.inspectorWidth);
+  const updatePrefs = useStore((s) => s.updatePrefs);
 
   return (
     <aside className="inspector" aria-label="Inspector">
+      <ResizeHandle
+        side="left"
+        width={inspectorWidth}
+        min={260}
+        max={600}
+        onResize={(w) => updatePrefs({ inspectorWidth: w })}
+      />
       <div className="tabs" role="tablist">
         {(["usage", "changes", "files"] as const).map((t) => (
           <button

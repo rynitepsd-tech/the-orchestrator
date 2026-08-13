@@ -113,7 +113,18 @@ jobs:
       - name: Build app
         # `tauri build` runs the frontend build itself (beforeBuildCommand ->
         # vite:build) and bundles resources/engine into the .app.
+        #
+        # TAURI_SIGNING_PRIVATE_KEY signs the auto-updater artefact
+        # (.app.tar.gz.sig). This is the minisign updater key, NOT Apple code
+        # signing. Generate locally with:
+        #   bunx tauri signer generate -w ~/.tauri/orchestrator-updater.key
+        # then add the private key file's CONTENTS as the repo secret
+        # TAURI_SIGNING_PRIVATE_KEY. Without it the build fails (deliberately:
+        # a release without updater artefacts would strand existing installs).
         working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bunx tauri build
 
       - name: Packaged smoke test
@@ -143,13 +154,42 @@ jobs:
           fi
           cp "${dmgs[@]}" dist-release/
 
+          # Updater artefacts: the compressed .app plus its minisign signature
+          # (produced because createUpdaterArtifacts is on and the signing key
+          # was provided at build time).
+          cp "$BUNDLE"/macos/*.app.tar.gz "$BUNDLE"/macos/*.app.tar.gz.sig dist-release/
+
           # Record what actually shipped, so an architecture mismatch is
           # visible in the release log rather than in a user's crash report.
           file -b "$BUNDLE/macos/The Orchestrator.app/Contents/Resources/engine/orchestrator-engine"
           ls -l "$BUNDLE/macos/The Orchestrator.app/Contents/Resources/engine"
 
           cd dist-release
-          shasum -a 256 *.dmg | tee SHA256SUMS.txt
+          shasum -a 256 *.dmg *.app.tar.gz | tee SHA256SUMS.txt
+
+      - name: Generate updater feed (latest.json)
+        # The app polls releases/latest/download/latest.json. GitHub replaces
+        # spaces with dots in uploaded asset names, so the URL must use the
+        # normalized name.
+        run: |
+          set -euo pipefail
+          cd dist-release
+          TARBALL=$(basename ./*.app.tar.gz)
+          ASSET_NAME=${TARBALL// /.}
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 - "$VERSION" "$(cat "${TARBALL}.sig")" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${ASSET_NAME}" <<'EOF'
+          import json, sys, datetime
+          version, signature, url = sys.argv[1:4]
+          feed = {
+              "version": version,
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "platforms": {"darwin-aarch64": {"signature": signature, "url": url}},
+          }
+          with open("latest.json", "w") as f:
+              json.dump(feed, f, indent=2)
+          print(json.dumps(feed, indent=2))
+          EOF
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -161,9 +201,17 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist-release/*.dmg
+            dist-release/*.app.tar.gz
+            dist-release/*.app.tar.gz.sig
+            dist-release/latest.json
             dist-release/SHA256SUMS.txt
           body: |
             macOS, Apple Silicon (arm64). Requires macOS 11.0 or later.
+
+            Existing installs update themselves: once this release is
+            published (not draft), running apps show an "Update" button in
+            the titlebar. `latest.json`, the `.app.tar.gz`, and its `.sig`
+            are the updater feed — do not delete them from the release.
 
             This build is ad-hoc signed and not notarized. On first launch
             macOS will block it; approve it the supported way:

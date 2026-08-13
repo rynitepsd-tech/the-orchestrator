@@ -36,6 +36,8 @@ export interface Prefs {
   sidebarWidth: number;
   usageRange: "today" | "7d" | "30d" | "all";
   keepRunningOnClose: boolean;
+  /** First-run setup finished (or explicitly skipped). */
+  setupComplete: boolean;
 }
 
 const KEY = "orchestrator.prefs.v1";
@@ -53,6 +55,7 @@ export const DEFAULT_PREFS: Prefs = {
   sidebarWidth: 260,
   usageRange: "7d",
   keepRunningOnClose: true,
+  setupComplete: false,
 };
 
 export function loadPrefs(): Prefs {

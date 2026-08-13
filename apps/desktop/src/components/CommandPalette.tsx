@@ -96,11 +96,7 @@ export function CommandPalette(): JSX.Element {
         {
           id: "rename",
           label: "Rename Session…",
-          run: () => {
-            const title = prompt("Session title", view.summary.title);
-            if (title?.trim())
-              void engine.request("session.setTitle", { sessionId: id, title: title.trim() });
-          },
+          run: () => store.setRenameTarget(id),
         },
       );
       if (view.summary.ompSessionPath) {

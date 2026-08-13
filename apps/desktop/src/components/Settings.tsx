@@ -11,9 +11,12 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { JSX } from "react";
 import { useEffect, useState } from "react";
 import { engine } from "../engine-client";
+import type { SessionPreset } from "../lib/prefs";
+import { checkForUpdates, installUpdate } from "../lib/updater";
 import { useStore } from "../store";
+import { PresetForm } from "./PresetForm";
 
-type Section = "general" | "providers" | "mcp" | "engine" | "about";
+type Section = "general" | "presets" | "providers" | "mcp" | "engine" | "about";
 
 export function Settings({ onClose }: { onClose: () => void }): JSX.Element {
   const [section, setSection] = useState<Section>("general");
@@ -30,6 +33,7 @@ export function Settings({ onClose }: { onClose: () => void }): JSX.Element {
           {(
             [
               ["general", "General"],
+              ["presets", "Presets"],
               ["providers", "Providers"],
               ["mcp", "MCP"],
               ["engine", "Engine"],
@@ -47,6 +51,7 @@ export function Settings({ onClose }: { onClose: () => void }): JSX.Element {
         </div>
         <div className="settings-body">
           {section === "general" && <General />}
+          {section === "presets" && <Presets />}
           {section === "providers" && <Providers />}
           {section === "mcp" && <Mcp />}
           {section === "engine" && <Engine />}
@@ -114,7 +119,82 @@ function General(): JSX.Element {
   );
 }
 
-function Providers(): JSX.Element {
+function Presets(): JSX.Element {
+  const prefs = useStore((s) => s.prefs);
+  const models = useStore((s) => s.models);
+  const addPreset = useStore((s) => s.addPreset);
+  const removePreset = useStore((s) => s.removePreset);
+  // Name of the preset being edited, or "" for a brand-new one, or null.
+  const [editing, setEditing] = useState<string | null>(null);
+
+  const save = (original: string | null) => (p: SessionPreset) => {
+    // Renaming: drop the old entry so it doesn't linger beside the new name.
+    if (original && original !== p.name) removePreset(original);
+    addPreset(p);
+    setEditing(null);
+  };
+
+  return (
+    <div>
+      <div className="row">
+        <h3 style={{ margin: 0 }}>Presets</h3>
+        <span className="spacer" />
+        <button className="btn" onClick={() => setEditing("")}>
+          New preset
+        </button>
+      </div>
+      <div className="hint" style={{ margin: "8px 0 12px" }}>
+        Presets are one-click session templates: a primary model plus advisors. We recommend keeping
+        at least two — a deep one and a quick one. Stored locally; OMP config is never modified.
+      </div>
+
+      {editing === "" && (
+        <div className="preset-card">
+          <PresetForm models={models} onSave={save(null)} onCancel={() => setEditing(null)} />
+        </div>
+      )}
+
+      {prefs.presets.length === 0 && editing === null && (
+        <div className="empty">No presets yet. Create one to speed up New Session.</div>
+      )}
+
+      {prefs.presets.map((p) => (
+        <div key={p.name} className="preset-card">
+          {editing === p.name ? (
+            <PresetForm
+              models={models}
+              initial={p}
+              onSave={save(p.name)}
+              onCancel={() => setEditing(null)}
+            />
+          ) : (
+            <div className="preset-card-head">
+              <span className="preset-card-name">{p.name}</span>
+              <span className="hint">
+                {p.model ?? "OMP default"}
+                {p.thinkingLevel && ` · ${p.thinkingLevel}`}
+                {p.advisors.filter((a) => a.enabled).length > 0 &&
+                  ` · advisors: ${p.advisors
+                    .filter((a) => a.enabled)
+                    .map((a) => a.name)
+                    .join(", ")}`}
+              </span>
+              <span className="spacer" />
+              <button className="btn btn-ghost" onClick={() => setEditing(p.name)}>
+                Edit
+              </button>
+              <button className="btn btn-ghost" onClick={() => removePreset(p.name)}>
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function Providers(): JSX.Element {
   const providers = useStore((s) => s.providers);
   const setCatalogue = useStore((s) => s.setCatalogue);
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
@@ -409,6 +489,19 @@ function Engine(): JSX.Element {
 
 function About(): JSX.Element {
   const info = useStore((s) => s.engineInfo);
+  const updateAvailable = useStore((s) => s.updateAvailable);
+  const updateBusy = useStore((s) => s.updateBusy);
+  const [checking, setChecking] = useState(false);
+
+  const checkNow = async () => {
+    setChecking(true);
+    try {
+      await checkForUpdates({ silent: false });
+    } finally {
+      setChecking(false);
+    }
+  };
+
   return (
     <div>
       <h3>About The Orchestrator</h3>
@@ -437,7 +530,30 @@ function About(): JSX.Element {
           </tr>
         </tbody>
       </table>
-      <div className="row" style={{ marginTop: 10 }}>
+      <div className="section-label">Updates</div>
+      {updateAvailable ? (
+        <div className="row">
+          <span>Version {updateAvailable.version} is available.</span>
+          <span className="spacer" />
+          <button
+            className="btn btn-primary"
+            disabled={updateBusy}
+            onClick={() => void installUpdate()}
+          >
+            {updateBusy ? "Installing…" : "Install and Restart"}
+          </button>
+        </div>
+      ) : (
+        <div className="row">
+          <span className="hint">Updates are fetched from GitHub Releases.</span>
+          <span className="spacer" />
+          <button className="btn" disabled={checking} onClick={() => void checkNow()}>
+            {checking ? "Checking…" : "Check for Updates"}
+          </button>
+        </div>
+      )}
+
+      <div className="row" style={{ marginTop: 14 }}>
         <button className="btn" onClick={() => void openUrl("https://github.com/can1357/oh-my-pi")}>
           OhMyPi (upstream)
         </button>

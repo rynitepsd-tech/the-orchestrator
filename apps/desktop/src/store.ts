@@ -160,6 +160,12 @@ interface AppState {
   paletteMode: "commands" | "sessions";
   newSessionOpen: boolean;
   quitConfirm?: { running: number };
+  /** Session id being renamed via the rename dialog (WKWebView has no prompt()). */
+  renameTarget?: string;
+
+  // updater
+  updateAvailable?: { version: string; notes?: string };
+  updateBusy: boolean;
 
   // actions
   setEngineStage(stage: EngineStage | "offline", message?: string): void;
@@ -186,6 +192,9 @@ interface AppState {
   setPalette(open: boolean, mode?: "commands" | "sessions"): void;
   setNewSession(open: boolean): void;
   setQuitConfirm(q?: { running: number }): void;
+  setRenameTarget(id?: string): void;
+  setUpdateAvailable(u?: { version: string; notes?: string }): void;
+  setUpdateBusy(busy: boolean): void;
   markAllInterrupted(reason: string): void;
 }
 
@@ -218,6 +227,7 @@ export const useStore = create<AppState>((set, get) => ({
   paletteOpen: false,
   paletteMode: "commands",
   newSessionOpen: false,
+  updateBusy: false,
 
   setEngineStage: (engineStage, engineMessage) => set({ engineStage, engineMessage }),
   setEngineError: (engineError) => set({ engineError }),
@@ -301,6 +311,9 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => ({ paletteOpen, paletteMode: paletteMode ?? s.paletteMode })),
   setNewSession: (newSessionOpen) => set({ newSessionOpen }),
   setQuitConfirm: (quitConfirm) => set({ quitConfirm }),
+  setRenameTarget: (renameTarget) => set({ renameTarget }),
+  setUpdateAvailable: (updateAvailable) => set({ updateAvailable }),
+  setUpdateBusy: (updateBusy) => set({ updateBusy }),
 
   updatePrefs: (patch) =>
     set((s) => {

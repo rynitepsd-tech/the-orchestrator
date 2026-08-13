@@ -21,12 +21,15 @@ import { CommandPalette } from "./components/CommandPalette";
 import { Composer } from "./components/Composer";
 import { Inspector } from "./components/Inspector";
 import { NewSession } from "./components/NewSession";
+import { Onboarding } from "./components/Onboarding";
+import { PromptDialog } from "./components/PromptDialog";
 import { QuitDialog } from "./components/QuitDialog";
 import { Settings } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { UsageCenter } from "./components/UsageCenter";
 import { engine } from "./engine-client";
+import { checkForUpdates, installUpdate } from "./lib/updater";
 import { fmtTokens, isActive, modelBasename, useStore } from "./store";
 
 export function App(): JSX.Element {
@@ -55,6 +58,15 @@ export function App(): JSX.Element {
     if (s.prefs.theme === "system") root.removeAttribute("data-theme");
     else root.setAttribute("data-theme", s.prefs.theme);
   }, [s.prefs.theme]);
+
+  // ---- updates ------------------------------------------------------------
+  // Silent check at startup and every 4 hours; the titlebar chip appears when
+  // a release is available. Failures (dev build, no feed yet) are invisible.
+  useEffect(() => {
+    void checkForUpdates({ silent: true });
+    const t = setInterval(() => void checkForUpdates({ silent: true }), 4 * 60 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
 
   // ---- engine wiring ------------------------------------------------------
   useEffect(() => {
@@ -334,8 +346,13 @@ export function App(): JSX.Element {
       } else if (meta && e.key.toLowerCase() === "u") {
         e.preventDefault();
         st.setMainView(st.mainView === "usage" ? "sessions" : "usage");
-      } else if (e.key === "Escape" && !st.paletteOpen && !st.newSessionOpen && !st.quitConfirm) {
-        if (st.mainView !== "sessions") st.setMainView("sessions");
+      } else if (e.key === "Escape") {
+        // One consistent rule: Escape dismisses the topmost surface.
+        if (st.paletteOpen) st.setPalette(false);
+        else if (st.renameTarget) st.setRenameTarget(undefined);
+        else if (st.newSessionOpen) st.setNewSession(false);
+        else if (st.quitConfirm) st.setQuitConfirm(undefined);
+        else if (st.mainView !== "sessions") st.setMainView("sessions");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -366,24 +383,50 @@ export function App(): JSX.Element {
   const enabledAdvisors = view?.advisors.filter((a) => a.enabled) ?? [];
   const pendingTotal = Object.values(s.sessions).reduce((n, v) => n + v.pendingInteractions, 0);
 
+  const showInspector = s.inspectorOpen && s.mainView !== "usage";
+
   return (
     <div
       className="app"
       style={{
-        gridTemplateColumns: `${s.sidebarOpen ? "var(--sidebar-w)" : "0px"} 1fr ${
-          s.inspectorOpen && s.mainView === "sessions" ? "auto" : "0px"
+        gridTemplateColumns: `${s.sidebarOpen ? `${s.prefs.sidebarWidth}px` : "0px"} 1fr ${
+          showInspector ? `${s.prefs.inspectorWidth}px` : "0px"
         }`,
       }}
     >
-      <header className="titlebar">
-        <span className="titlebar-title">The Orchestrator</span>
-        <span className="titlebar-sub">
+      {/* data-tauri-drag-region is what actually makes the window draggable
+          in Tauri; -webkit-app-region is an Electron-ism and does nothing. */}
+      <header className="titlebar" data-tauri-drag-region>
+        <button
+          className={`icon-btn${s.sidebarOpen ? " on" : ""}`}
+          title="Toggle sidebar (⌘1)"
+          onClick={() => s.toggleSidebar()}
+        >
+          ◧
+        </button>
+        <span className="titlebar-title" data-tauri-drag-region>
+          The Orchestrator
+        </span>
+        <span className="titlebar-sub" data-tauri-drag-region>
           {s.engineStage === "ready"
             ? s.engineInfo
               ? `OMP ${s.engineInfo.ompVersion}`
               : ""
             : (stageLabel[s.engineStage] ?? s.engineStage)}
         </span>
+        {s.updateAvailable && (
+          <button
+            className="chip update"
+            title={
+              s.updateBusy
+                ? "Downloading update…"
+                : `Version ${s.updateAvailable.version} is available — click to install`
+            }
+            onClick={() => void installUpdate()}
+          >
+            {s.updateBusy ? "Updating…" : `Update to ${s.updateAvailable.version}`}
+          </button>
+        )}
         {pendingTotal > 0 && (
           <button
             className="chip attention chip-btn"
@@ -397,7 +440,7 @@ export function App(): JSX.Element {
             {pendingTotal} needs input
           </button>
         )}
-        <span className="spacer" />
+        <span className="spacer" data-tauri-drag-region />
         {view?.context && (
           <span
             className="chip"
@@ -423,6 +466,20 @@ export function App(): JSX.Element {
             </strong>
           </button>
         )}
+        <button
+          className={`icon-btn${showInspector ? " on" : ""}`}
+          title="Toggle inspector (⌘2)"
+          onClick={() => s.toggleInspector()}
+        >
+          ◨
+        </button>
+        <button
+          className="icon-btn"
+          title="Settings (⌘,)"
+          onClick={() => s.setMainView(s.mainView === "settings" ? "sessions" : "settings")}
+        >
+          ⚙
+        </button>
       </header>
 
       {s.sidebarOpen && (
@@ -432,10 +489,6 @@ export function App(): JSX.Element {
       <main className="main">
         {s.mainView === "usage" ? (
           <UsageCenter />
-        ) : s.mainView === "settings" ? (
-          <div className="settings-page">
-            <Settings onClose={() => s.setMainView("sessions")} />
-          </div>
         ) : (
           <>
             {s.engineStage === "offline" && (
@@ -551,7 +604,24 @@ export function App(): JSX.Element {
         )}
       </main>
 
-      {s.inspectorOpen && s.mainView === "sessions" && <Inspector view={view} />}
+      {showInspector && <Inspector view={view} />}
+
+      {s.mainView === "settings" && <Settings onClose={() => s.setMainView("sessions")} />}
+
+      {s.renameTarget && (
+        <PromptDialog
+          title="Rename session"
+          initial={s.sessions[s.renameTarget]?.summary.title}
+          placeholder="Session title"
+          submitLabel="Rename"
+          onCancel={() => s.setRenameTarget(undefined)}
+          onSubmit={(title) => {
+            const sessionId = s.renameTarget;
+            s.setRenameTarget(undefined);
+            if (sessionId) void engine.request("session.setTitle", { sessionId, title });
+          }}
+        />
+      )}
 
       {s.newSessionOpen && (
         <NewSession
@@ -572,6 +642,8 @@ export function App(): JSX.Element {
           onQuit={() => void quitNow()}
         />
       )}
+
+      {!s.prefs.setupComplete && <Onboarding />}
     </div>
   );
 }

@@ -44,6 +44,8 @@ export function Composer({
   useEffect(() => {
     commandsCache.current = null;
     setSlash(null);
+    // Switching sessions should land you ready to type, like every chat app.
+    taRef.current?.focus();
   }, [sessionId]);
 
   const refreshSlash = async (prefix: string) => {
@@ -148,6 +150,11 @@ export function Composer({
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send(e.metaKey || e.ctrlKey ? "queue" : "steer");
+            }
+            // The Stop button advertises Esc; honour it.
+            if (e.key === "Escape" && busy) {
+              e.preventDefault();
+              onAbort();
             }
           }}
         />
