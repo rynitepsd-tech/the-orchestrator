@@ -1,0 +1,31 @@
+{
+  "name": "the-orchestrator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "description": "An unofficial native macOS desktop harness for OhMyPi (OMP)",
+  "license": "MIT",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '@orchestrator/desktop' dev",
+    "build": "bun run build:engine && bun run --filter '@orchestrator/desktop' build",
+    "build:engine": "bun run scripts/build-engine.ts",
+    "tauri": "bun run --filter '@orchestrator/desktop' tauri",
+    "app": "bun run scripts/build-app.ts",
+    "test": "bun test",
+    "test:concurrency": "bun test packages/engine/test/concurrency.test.ts",
+    "typecheck": "tsc --build --force",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "fmt": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@types/bun": "^1.3.14",
+    "typescript": "^5.9.3"
+  }
+}

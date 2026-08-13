@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+out/
+target/
+*.tsbuildinfo
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+resources/engine/
+resources/bun
+
+# Tauri bundles
+*.dmg
+*.app
+*.app.zip
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+bun-debug.log*
+
+# Environment / secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+secrets.json
+.apple-credentials
+
+# Personal OMP config / transcripts — never commit
+.omp/
+**/WATCHDOG.local.*
+*.jsonl
+!test/fixtures/**/*.jsonl
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# Test / coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Scratch
+scratch/
+tmp/
+.tmp/
