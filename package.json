@@ -23,7 +23,10 @@
     "lint:fix": "biome check --write .",
     "fmt": "biome format --write .",
     "smoke": "bun run scripts/smoke-packaged.ts",
-    "icon": "python3 scripts/make_icon.py"
+    "icon": "python3 scripts/make_icon.py",
+    "validate:live": "bun run scripts/live-validation.ts",
+    "check": "biome check . && tsc --build --force && bun test",
+    "release:check": "bun run check && bun run build:engine && bun run app && bun run smoke"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",

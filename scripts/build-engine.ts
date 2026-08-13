@@ -20,7 +20,7 @@
  * Usage:
  *   bun run scripts/build-engine.ts [--target=arm64|x64|both]
  */
-import { existsSync, mkdirSync, rmSync, copyFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");

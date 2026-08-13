@@ -547,6 +547,8 @@ function checkPersisted(): void {
  * when the advisor compacts. Snapshots therefore REPLACE prior records rather
  * than adding to them.
  */
+const lastAdvisorState = new Map<string, string>();
+
 function refreshAdvisors(): void {
   let stats: any;
   try {
@@ -577,6 +579,11 @@ function refreshAdvisors(): void {
                 : per?.status === "error"
                   ? "failed"
                   : "idle";
+
+    // Polled on a timer while advisors review asynchronously; only state
+    // CHANGES are emitted so the transcript is not spammed with idle ticks.
+    if (lastAdvisorState.get(id) === state) continue;
+    lastAdvisorState.set(id, state);
 
     emit({
       type: "advisor.state",
@@ -641,6 +648,13 @@ session.subscribe((ev: any) => {
     checkPersisted();
   }
 });
+
+// Advisors review ASYNCHRONOUSLY after turns settle, so their usage and
+// state changes cannot be captured from turn events alone. Poll while any
+// advisor is configured; refreshAdvisors only emits on change.
+setInterval(() => {
+  if (advisors.size > 0 || (session as any).isAdvisorActive?.()) refreshAdvisors();
+}, 5_000).unref?.();
 
 // ---------------------------------------------------------------------------
 // Subagent channels (see task/types.ts upstream)
@@ -724,7 +738,30 @@ async function applyAdvisors(list: AdvisorConfig[]): Promise<AdvisorConfig[]> {
   for (const a of list) advisors.set(a.id, a);
   const s: any = session;
   if (typeof s.applyAdvisorConfigs === "function") {
-    await s.applyAdvisorConfigs(list.filter((a) => a.enabled).map(toOmpAdvisor));
+    const enabled = list.filter((a) => a.enabled);
+    await s.applyAdvisorConfigs(enabled.map(toOmpAdvisor), undefined);
+    // applyAdvisorConfigs only STORES the roster; the runtime builds when the
+    // session-level advisor toggle flips on (session-advisors.ts upstream).
+    // Enabling with an empty roster would start OMP's default advisor, so the
+    // toggle tracks whether this session actually has enabled advisors.
+    s.setAdvisorEnabled?.(enabled.length > 0);
+    if (enabled.length > 0 && !s.isAdvisorActive?.()) {
+      // The toggle was flipped but no runtime came up — usually the advisor
+      // model could not resolve. Say so instead of showing idle advisors.
+      for (const a of enabled) {
+        emit({
+          type: "advisor.failed",
+          sessionId: boot.sessionId,
+          advisorId: a.id,
+          advisorName: a.name,
+          error: {
+            kind: "model-unavailable",
+            message: `${a.name} advisor could not start — its model${a.model ? ` (${a.model})` : ""} did not resolve.`,
+          },
+          primaryUnaffected: true,
+        });
+      }
+    }
   } else if (list.some((a) => a.enabled)) {
     // Never show advisors as configured when the runtime cannot actually run
     // them — that would be a silent lie about what is reviewing the session.
