@@ -3,12 +3,16 @@
  *
  * The Usage tab is the product's answer to "which models are consuming my
  * usage". It never invents a number: absent cost or quota is stated plainly
- * rather than shown as zero.
+ * rather than shown as zero. The Changes tab shows the WHOLE working tree —
+ * labelled as such, because concurrent sessions share it.
  */
+
+import type { GitDiff, ProviderQuota } from "@orchestrator/protocol";
 import type { JSX } from "react";
-import { useEffect, useState } from "react";
-import type { ProviderQuota } from "@orchestrator/protocol";
-import { fmtCost, fmtTokens, useStore, type SessionView } from "../store";
+import { useCallback, useEffect, useState } from "react";
+import { engine } from "../engine-client";
+import { fmtCost, fmtCount, fmtTokens, isActive, type SessionView, useStore } from "../store";
+import { Diff } from "./Transcript";
 
 function Row({ label, tokens, cost }: { label: string; tokens: number; cost?: number }) {
   const c = fmtCost(cost);
@@ -23,6 +27,15 @@ function Row({ label, tokens, cost }: { label: string; tokens: number; cost?: nu
   );
 }
 
+function sumT(t: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}) {
+  return t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens;
+}
+
 function UsageTab({ view }: { view: SessionView }): JSX.Element {
   const u = view.usage;
   const ctx = view.context;
@@ -30,8 +43,6 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
   if (!u) {
     return <div className="empty">No usage recorded yet.</div>;
   }
-
-  const total = u.total.inputTokens + u.total.outputTokens + u.total.cacheReadTokens + u.total.cacheWriteTokens;
 
   return (
     <div>
@@ -58,42 +69,27 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
         <tbody>
           <Row
             label={`Primary${view.summary.model ? ` · ${view.summary.model.split("/").pop()}` : ""}`}
-            tokens={
-              u.primary.inputTokens +
-              u.primary.outputTokens +
-              u.primary.cacheReadTokens +
-              u.primary.cacheWriteTokens
-            }
+            tokens={sumT(u.primary)}
             cost={u.primary.cost}
           />
           {u.advisors.map((a) => (
             <Row
               key={a.actorId}
               label={`  ${a.actorName ?? a.actorId}`}
-              tokens={
-                a.tokens.inputTokens +
-                a.tokens.outputTokens +
-                a.tokens.cacheReadTokens +
-                a.tokens.cacheWriteTokens
-              }
+              tokens={sumT(a.tokens)}
               cost={a.cost}
             />
           ))}
           {u.subagents.runs > 0 && (
             <Row
               label={`  Subagents (${u.subagents.runs} run${u.subagents.runs === 1 ? "" : "s"})`}
-              tokens={
-                u.subagents.tokens.inputTokens +
-                u.subagents.tokens.outputTokens +
-                u.subagents.tokens.cacheReadTokens +
-                u.subagents.tokens.cacheWriteTokens
-              }
+              tokens={sumT(u.subagents.tokens)}
               cost={u.subagents.cost}
             />
           )}
           <tr className="total">
             <td>Total</td>
-            <td className="num">{fmtTokens(total)}</td>
+            <td className="num">{fmtTokens(sumT(u.total))}</td>
             <td className="num">{fmtCost(u.total.cost) ?? "—"}</td>
           </tr>
         </tbody>
@@ -110,8 +106,12 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
         <tbody>
           <Row label="Input" tokens={u.total.inputTokens} />
           <Row label="Output" tokens={u.total.outputTokens} />
-          {u.total.cacheReadTokens > 0 && <Row label="Cache read" tokens={u.total.cacheReadTokens} />}
-          {u.total.cacheWriteTokens > 0 && <Row label="Cache write" tokens={u.total.cacheWriteTokens} />}
+          {u.total.cacheReadTokens > 0 && (
+            <Row label="Cache read" tokens={u.total.cacheReadTokens} />
+          )}
+          {u.total.cacheWriteTokens > 0 && (
+            <Row label="Cache write" tokens={u.total.cacheWriteTokens} />
+          )}
         </tbody>
       </table>
 
@@ -124,12 +124,7 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
                 <Row
                   key={`${m.provider}/${m.model}`}
                   label={m.model}
-                  tokens={
-                    m.tokens.inputTokens +
-                    m.tokens.outputTokens +
-                    m.tokens.cacheReadTokens +
-                    m.tokens.cacheWriteTokens
-                  }
+                  tokens={sumT(m.tokens)}
                   cost={m.cost}
                 />
               ))}
@@ -143,7 +138,7 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
   );
 }
 
-function QuotaSection(): JSX.Element | null {
+export function QuotaSection(): JSX.Element | null {
   const quotas = useStore((s) => s.quotas);
   if (quotas.length === 0) return null;
 
@@ -182,39 +177,217 @@ function QuotaSection(): JSX.Element | null {
 }
 
 function ChangesTab({ view }: { view: SessionView }): JSX.Element {
-  const [files, setFiles] = useState<Array<{ path: string; status: string }> | null>(null);
+  const changes = useStore((s) => s.changes[view.summary.projectId]);
+  const setChanges = useStore((s) => s.setChanges);
+  const sessions = useStore((s) => s.sessions);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [diff, setDiff] = useState<GitDiff | null>(null);
+  const [loading, setLoading] = useState(false);
 
+  const refresh = useCallback(async () => {
+    try {
+      const c = await engine.request("project.changes", { path: view.summary.projectPath });
+      setChanges(view.summary.projectId, c);
+    } catch {
+      /* non-git projects render the empty state */
+    }
+  }, [view.summary.projectId, view.summary.projectPath, setChanges]);
+
+  // Refresh when the panel opens and again whenever this project's sessions
+  // settle (a finished turn usually means files changed).
   useEffect(() => {
-    // Git status is read through the engine so the webview needs no fs access.
-    setFiles(null);
-  }, [view.summary.projectPath]);
+    void refresh();
+  }, [refresh]);
+  const projectRunStates = Object.values(sessions)
+    .filter((v) => v.summary.projectId === view.summary.projectId)
+    .map((v) => v.summary.runState)
+    .join(",");
+  useEffect(() => {
+    void refresh();
+  }, [projectRunStates, refresh]);
 
-  if (!files) {
+  const openDiff = async (file: string) => {
+    setSelected(file);
+    setLoading(true);
+    setDiff(null);
+    try {
+      setDiff(await engine.request("project.diff", { path: view.summary.projectPath, file }));
+    } catch {
+      setDiff(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const activeHere = Object.values(sessions).filter(
+    (v) => v.summary.projectId === view.summary.projectId && isActive(v.summary.runState),
+  ).length;
+
+  if (!changes || changes.files.length === 0) {
     return (
-      <div className="empty">
-        <h3>Changes</h3>
-        Git status for {view.summary.projectPath.split("/").pop()} appears here once the session
-        modifies files.
+      <div>
+        <div className="row">
+          <span className="section-label" style={{ margin: 0 }}>
+            Working tree changes
+          </span>
+          <span className="spacer" />
+          <button className="btn btn-ghost" onClick={() => void refresh()}>
+            Refresh
+          </button>
+        </div>
+        <div className="empty">
+          {changes ? "The working tree is clean." : "Not a git repository, or git is unavailable."}
+        </div>
       </div>
     );
   }
 
   return (
-    <table className="usage-table">
-      <tbody>
-        {files.map((f) => (
-          <tr key={f.path}>
-            <td className="mono">{f.path}</td>
-            <td className="num">{f.status}</td>
-          </tr>
+    <div>
+      <div className="row">
+        <span className="section-label" style={{ margin: 0 }}>
+          Working tree · {fmtCount(changes.files.length)}
+        </span>
+        {changes.branch && <span className="chip mono">{changes.branch}</span>}
+        <span className="spacer" />
+        <button className="btn btn-ghost" onClick={() => void refresh()}>
+          Refresh
+        </button>
+      </div>
+      {activeHere > 1 && (
+        <div className="hint" style={{ margin: "6px 0" }}>
+          {activeHere} active sessions share this working tree — changes are not attributable to one
+          session.
+        </div>
+      )}
+      <div className="changes-list">
+        {changes.files.map((f) => (
+          <button
+            key={f.path}
+            className={`change-row${selected === f.path ? " selected" : ""}`}
+            onClick={() => void openDiff(f.path)}
+            title={f.renamedFrom ? `from ${f.renamedFrom}` : f.path}
+          >
+            <span className={`status-badge s-${f.status === "?" ? "u" : f.status.toLowerCase()}`}>
+              {f.status}
+            </span>
+            <span className="mono change-path">{f.path}</span>
+          </button>
         ))}
-      </tbody>
-    </table>
+      </div>
+      {selected && (
+        <div className="diff-pane">
+          <div className="row">
+            <span className="mono hint">{selected}</span>
+            <span className="spacer" />
+            {diff && !diff.binary && (
+              <span className="diffstat">
+                <span className="add">+{diff.additions}</span>{" "}
+                <span className="del">-{diff.deletions}</span>
+              </span>
+            )}
+          </div>
+          {loading ? (
+            <div className="hint">Loading diff…</div>
+          ) : diff?.binary ? (
+            <div className="hint">Binary file — no text diff.</div>
+          ) : diff?.diff ? (
+            <>
+              {diff.untracked && <div className="hint">Untracked file — full content shown.</div>}
+              <Diff diff={diff.diff} />
+              {diff.truncated && <div className="hint">Diff truncated for display.</div>}
+            </>
+          ) : (
+            <div className="hint">No textual changes.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilesTab({ view }: { view: SessionView }): JSX.Element {
+  const [query, setQuery] = useState("");
+  const [files, setFiles] = useState<string[]>([]);
+  const [truncated, setTruncated] = useState(false);
+  const [preview, setPreview] = useState<{
+    file: string;
+    content: string;
+    binary: boolean;
+    truncated: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void engine
+        .request("project.files", {
+          path: view.summary.projectPath,
+          query: query.trim() || undefined,
+          limit: 500,
+        })
+        .then((r) => {
+          if (!cancelled) {
+            setFiles(r.files);
+            setTruncated(r.truncated);
+          }
+        })
+        .catch(() => {});
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [view.summary.projectPath, query]);
+
+  return (
+    <div>
+      <input
+        className="input"
+        placeholder="Filter files…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      <div className="files-list">
+        {files.map((f) => (
+          <button
+            key={f}
+            className={`change-row${preview?.file === f ? " selected" : ""}`}
+            onClick={() =>
+              void engine
+                .request("project.readFile", { path: view.summary.projectPath, file: f })
+                .then(setPreview)
+                .catch(() => {})
+            }
+          >
+            <span className="mono change-path">{f}</span>
+          </button>
+        ))}
+        {truncated && <div className="hint">List truncated — refine the filter.</div>}
+        {files.length === 0 && <div className="empty">No files match.</div>}
+      </div>
+      {preview && (
+        <div className="diff-pane">
+          <div className="mono hint">{preview.file}</div>
+          {preview.binary ? (
+            <div className="hint">Binary file.</div>
+          ) : preview.content ? (
+            <>
+              <pre className="tool-output file-preview">{preview.content}</pre>
+              {preview.truncated && <div className="hint">Preview truncated.</div>}
+            </>
+          ) : (
+            <div className="hint">Empty or unreadable.</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
 export function Inspector({ view }: { view?: SessionView }): JSX.Element {
-  const { inspectorTab, setInspectorTab } = useStore();
+  const inspectorTab = useStore((s) => s.inspectorTab);
+  const setInspectorTab = useStore((s) => s.setInspectorTab);
 
   return (
     <aside className="inspector" aria-label="Inspector">
@@ -240,10 +413,7 @@ export function Inspector({ view }: { view?: SessionView }): JSX.Element {
         ) : inspectorTab === "changes" ? (
           <ChangesTab view={view} />
         ) : (
-          <div className="empty">
-            <h3>Files</h3>
-            {view.summary.projectPath}
-          </div>
+          <FilesTab view={view} />
         )}
       </div>
     </aside>

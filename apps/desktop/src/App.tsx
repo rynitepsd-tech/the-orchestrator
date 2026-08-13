@@ -5,43 +5,82 @@
  * is driven by engine events, so unmounting a view never affects a running
  * agent. Switching the visible session is a pure UI selection.
  */
-import type { JSX } from "react";
-import { useCallback, useEffect, useState } from "react";
+
+import type { AdvisorConfig, DiscoveredSession, SessionLaunchConfig } from "@orchestrator/protocol";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import type { AdvisorConfig, SessionLaunchConfig } from "@orchestrator/protocol";
-import { engine } from "./engine-client";
-import { fmtTokens, useStore } from "./store";
-import { Sidebar } from "./components/Sidebar";
-import { Transcript } from "./components/Transcript";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { JSX } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CommandPalette } from "./components/CommandPalette";
 import { Composer } from "./components/Composer";
 import { Inspector } from "./components/Inspector";
 import { NewSession } from "./components/NewSession";
-import { CommandPalette } from "./components/CommandPalette";
+import { QuitDialog } from "./components/QuitDialog";
+import { Settings } from "./components/Settings";
+import { Sidebar } from "./components/Sidebar";
+import { Transcript } from "./components/Transcript";
+import { UsageCenter } from "./components/UsageCenter";
+import { engine } from "./engine-client";
+import { fmtTokens, isActive, modelBasename, useStore } from "./store";
 
 export function App(): JSX.Element {
   const s = useStore();
   const [creating, setCreating] = useState(false);
-  const [notifyOk, setNotifyOk] = useState(false);
+  const notifyOk = useRef(false);
 
   const view = s.visibleSessionId ? s.sessions[s.visibleSessionId] : undefined;
 
+  // ---- notifications ------------------------------------------------------
+  useEffect(() => {
+    void (async () => {
+      let ok = await isPermissionGranted();
+      if (!ok) ok = (await requestPermission()) === "granted";
+      notifyOk.current = ok;
+    })();
+  }, []);
+
+  const notify = useCallback((title: string, body: string) => {
+    if (notifyOk.current) sendNotification({ title, body });
+  }, []);
+
+  // ---- theme --------------------------------------------------------------
+  useEffect(() => {
+    const root = document.documentElement;
+    if (s.prefs.theme === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", s.prefs.theme);
+  }, [s.prefs.theme]);
+
   // ---- engine wiring ------------------------------------------------------
   useEffect(() => {
-    let disposed = false;
-
     engine.onEvent = (e) => {
-      const before = useStore.getState().sessions[e.sessionId];
-      useStore.getState().apply(e);
+      const st = useStore.getState();
+      const before = st.sessions[e.sessionId];
+      st.apply(e);
 
-      // Native notification when a BACKGROUND session finishes or is blocked.
-      if (!disposed && before) {
-        const visible = useStore.getState().visibleSessionId === e.sessionId;
-        if (!visible && e.type === "session.finished" && e.runState === "completed") {
-          notify(`${before.summary.title} finished`, "The session completed.");
+      // Native notifications for BACKGROUND sessions only, per user prefs.
+      if (before && st.visibleSessionId !== e.sessionId) {
+        const n = st.prefs.notifications;
+        const title = before.summary.title;
+        if (e.type === "session.finished" && e.runState === "completed" && n.completion) {
+          notify(`${title} finished`, "The session completed.");
         }
-        if (!visible && e.type === "advisor.message" && e.severity === "blocker") {
-          notify(`${e.advisorName} raised a blocker`, before.summary.title);
+        if (e.type === "session.failed" && n.errors) {
+          notify(`${title} failed`, e.error.message);
+        }
+        if (e.type === "approval.request" && n.needsInput) {
+          notify(`${title} needs your approval`, e.summary);
+        }
+        if (e.type === "extension.ui.request" && e.ui.kind !== "notification" && n.needsInput) {
+          notify(`${title} needs input`, "An extension is waiting for a response.");
+        }
+        if (e.type === "advisor.message" && e.severity === "blocker" && n.advisorBlockers) {
+          notify(`${e.advisorName} raised a blocker`, title);
         }
       }
     };
@@ -56,10 +95,19 @@ export function App(): JSX.Element {
           engineVersion: e.info.engineVersion,
           arch: e.info.arch,
           protocolVersion: e.info.protocolVersion,
+          agentDir: e.info.agentDir,
         });
         void loadCatalogue();
+        void loadDiscovered();
       }
       if (e.type === "engine.error") st.setEngineError(e.error);
+      if (e.type === "engine.auth") {
+        // The engine never opens a browser itself; the OAuth URL arrives here.
+        if (e.status === "browser" && e.url) void openUrl(e.url);
+        if (e.status === "failed" && e.message) {
+          st.setEngineError({ kind: "auth", message: e.message });
+        }
+      }
     };
 
     engine.onSupervisor = (ev) => {
@@ -82,28 +130,16 @@ export function App(): JSX.Element {
       if (ev.kind === "ready") st.setEngineStage("starting");
     };
 
-    void engine.connect();
-    return () => {
-      disposed = true;
-      engine.dispose();
+    // Dropped frames: refetch the authoritative transcript for the visible
+    // session instead of living with a silently incomplete view.
+    engine.onSequenceGap = () => {
+      const id = useStore.getState().visibleSessionId;
+      if (id) void refetchTranscript(id);
     };
-  }, []);
 
-  // ---- notifications ------------------------------------------------------
-  useEffect(() => {
-    void (async () => {
-      let ok = await isPermissionGranted();
-      if (!ok) ok = (await requestPermission()) === "granted";
-      setNotifyOk(ok);
-    })();
-  }, []);
-
-  const notify = useCallback(
-    (title: string, body: string) => {
-      if (notifyOk) sendNotification({ title, body });
-    },
-    [notifyOk],
-  );
+    void engine.connect();
+    return () => engine.dispose();
+  }, [notify]);
 
   const loadCatalogue = async () => {
     try {
@@ -123,30 +159,88 @@ export function App(): JSX.Element {
     }
   };
 
+  const loadDiscovered = async () => {
+    try {
+      const res = await engine.request("sessions.discover", {});
+      useStore.getState().setDiscovered(res.sessions);
+    } catch {
+      /* discovery is progressive enhancement */
+    }
+  };
+
+  const refetchTranscript = async (sessionId: string) => {
+    try {
+      const res = await engine.request("session.transcript", { sessionId });
+      if (res.events.length) useStore.getState().hydrateTranscript(sessionId, res.events);
+    } catch {
+      /* a dead worker has no transcript to refetch */
+    }
+  };
+
   // ---- actions ------------------------------------------------------------
   const createSession = async (config: SessionLaunchConfig) => {
     setCreating(true);
     try {
-      const res = await engine.request("sessions.create", config);
+      // Open the project FIRST: if the folder is bad we fail before a worker
+      // exists, so a failed create can never orphan a process.
       const proj = await engine.request("project.open", { path: config.projectPath });
+      const res = await engine.request("sessions.create", config);
       useStore.getState().addProject(proj.project);
       useStore.getState().addSession(res.session, config.advisors ?? []);
       useStore.getState().setNewSession(false);
     } catch (e) {
-      useStore.getState().setEngineError(e as any);
+      useStore.getState().setEngineError(e as never);
     } finally {
       setCreating(false);
     }
   };
 
-  const discoverAdvisors = useCallback(async (projectPath: string): Promise<AdvisorConfig[]> => {
+  const resumeSession = async (d: DiscoveredSession) => {
+    setCreating(true);
     try {
-      const env = await engine.request("project.environment", { path: projectPath });
-      return env.advisors;
-    } catch {
-      return [];
+      const proj = await engine.request("project.open", { path: d.cwd });
+      const res = await engine.request("sessions.create", {
+        projectPath: d.cwd,
+        title: d.title,
+        advisors: [],
+        resumeSessionPath: d.path,
+      });
+      useStore.getState().addProject(proj.project);
+      useStore.getState().addSession(res.session, []);
+      // Pull the persisted conversation into the view.
+      await refetchTranscript(res.session.sessionId);
+      void loadDiscovered();
+    } catch (e) {
+      useStore.getState().setEngineError(e as never);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const forkSession = useCallback(async (sessionId: string) => {
+    const st = useStore.getState();
+    const src = st.sessions[sessionId];
+    if (!src?.summary.ompSessionPath) return;
+    try {
+      const res = await engine.request("session.fork", {
+        sessionId,
+        title: `${src.summary.title} (fork)`,
+      });
+      st.addSession(res.session, src.advisors);
+      await refetchTranscript(res.session.sessionId);
+    } catch (e) {
+      st.setEngineError(e as never);
     }
   }, []);
+
+  useEffect(() => {
+    const onFork = (e: Event) => {
+      const id = (e as CustomEvent).detail?.sessionId;
+      if (id) void forkSession(id);
+    };
+    window.addEventListener("orchestrator:fork", onFork);
+    return () => window.removeEventListener("orchestrator:fork", onFork);
+  }, [forkSession]);
 
   const send = (text: string, whenBusy: "steer" | "queue") => {
     if (!s.visibleSessionId) return;
@@ -164,57 +258,103 @@ export function App(): JSX.Element {
     });
   };
 
-  const abort = () => {
-    if (!s.visibleSessionId) return;
-    void engine.request("session.abort", { sessionId: s.visibleSessionId }).catch(() => {});
-  };
+  const abort = useCallback(() => {
+    const id = useStore.getState().visibleSessionId;
+    if (id) void engine.request("session.abort", { sessionId: id }).catch(() => {});
+  }, []);
 
-  // ---- menus & shortcuts --------------------------------------------------
+  // ---- quit flow ----------------------------------------------------------
+  const quitNow = useCallback(async () => {
+    try {
+      await engine.request("engine.shutdown", { force: false }, 20_000);
+    } catch {
+      /* the engine may already be gone */
+    }
+    await invoke("app_quit").catch(() => {});
+  }, []);
+
   useEffect(() => {
+    const un = listen("app://exit-requested", () => {
+      const st = useStore.getState();
+      const running = Object.values(st.sessions).filter((v) => isActive(v.summary.runState)).length;
+      if (running > 0) st.setQuitConfirm({ running });
+      else void quitNow();
+    });
+    return () => void un.then((f) => f());
+  }, [quitNow]);
+
+  // ---- menus --------------------------------------------------------------
+  useEffect(() => {
+    const st = () => useStore.getState();
     const uns: Array<Promise<() => void>> = [
-      listen("menu://new-session", () => useStore.getState().setNewSession(true)),
-      listen("menu://command-palette", () => useStore.getState().setPalette(true)),
-      listen("menu://toggle-sidebar", () => useStore.getState().toggleSidebar()),
-      listen("menu://toggle-inspector", () => useStore.getState().toggleInspector()),
+      listen("menu://new-session", () => st().setNewSession(true)),
+      listen("menu://open-project", () => st().setNewSession(true)),
+      listen("menu://command-palette", () => st().setPalette(true, "commands")),
+      listen("menu://toggle-sidebar", () => st().toggleSidebar()),
+      listen("menu://toggle-inspector", () => st().toggleInspector()),
       listen("menu://session-abort", () => abort()),
-      listen("menu://settings", () => useStore.getState().setSettings(true)),
-      listen("menu://view-usage", () => {
-        useStore.getState().setInspectorTab("usage");
+      listen("menu://session-compact", () => {
+        const id = st().visibleSessionId;
+        if (id) void engine.request("session.compact", { sessionId: id }).catch(() => {});
       }),
-      listen("menu://view-changes", () => {
-        useStore.getState().setInspectorTab("changes");
+      listen("menu://session-fork", () => {
+        const id = st().visibleSessionId;
+        if (id) void forkSession(id);
       }),
+      listen("menu://session-model", () => st().setPalette(true, "commands")),
+      listen("menu://session-advisors", () => st().setPalette(true, "commands")),
+      listen("menu://settings", () => st().setMainView("settings")),
+      listen("menu://view-usage", () => st().setMainView("usage")),
+      listen("menu://view-changes", () => st().setInspectorTab("changes")),
     ];
     return () => {
-      void Promise.all(uns).then((fns) => fns.forEach((f) => f()));
+      void Promise.all(uns).then((fns) => {
+        for (const f of fns) f();
+      });
     };
-  }, [s.visibleSessionId]);
+  }, [abort, forkSession]);
 
+  // ---- keyboard -----------------------------------------------------------
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
-      if (meta && e.key.toLowerCase() === "n") {
+      const st = useStore.getState();
+      if (meta && !e.shiftKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
-        useStore.getState().setNewSession(true);
+        st.setNewSession(true);
       } else if (meta && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        useStore.getState().setPalette(true);
+        st.setPalette(true, "commands");
       } else if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        useStore.getState().setPalette(true);
+        st.setPalette(true, "sessions");
       } else if (meta && e.key === ",") {
         e.preventDefault();
-        useStore.getState().setSettings(true);
+        st.setMainView(st.mainView === "settings" ? "sessions" : "settings");
+      } else if (meta && e.key.toLowerCase() === "u") {
+        e.preventDefault();
+        st.setMainView(st.mainView === "usage" ? "sessions" : "usage");
+      } else if (e.key === "Escape" && !st.paletteOpen && !st.newSessionOpen && !st.quitConfirm) {
+        if (st.mainView !== "sessions") st.setMainView("sessions");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const discoverAdvisors = useCallback(async (projectPath: string): Promise<AdvisorConfig[]> => {
+    try {
+      const env = await engine.request("project.environment", { path: projectPath });
+      return env.advisors;
+    } catch {
+      return [];
+    }
+  }, []);
+
   // ---- render -------------------------------------------------------------
   const stageLabel: Record<string, string> = {
-    starting: "Starting OMP",
-    "loading-config": "Loading configuration",
+    starting: "Starting engine",
+    "loading-config": "Loading OMP configuration",
     "loading-models": "Loading models",
     "loading-extensions": "Loading extensions",
     ready: "Ready",
@@ -223,12 +363,15 @@ export function App(): JSX.Element {
     offline: "Engine offline",
   };
 
+  const enabledAdvisors = view?.advisors.filter((a) => a.enabled) ?? [];
+  const pendingTotal = Object.values(s.sessions).reduce((n, v) => n + v.pendingInteractions, 0);
+
   return (
     <div
       className="app"
       style={{
         gridTemplateColumns: `${s.sidebarOpen ? "var(--sidebar-w)" : "0px"} 1fr ${
-          s.inspectorOpen ? "auto" : "0px"
+          s.inspectorOpen && s.mainView === "sessions" ? "auto" : "0px"
         }`,
       }}
     >
@@ -239,16 +382,37 @@ export function App(): JSX.Element {
             ? s.engineInfo
               ? `OMP ${s.engineInfo.ompVersion}`
               : ""
-            : stageLabel[s.engineStage] ?? s.engineStage}
+            : (stageLabel[s.engineStage] ?? s.engineStage)}
         </span>
+        {pendingTotal > 0 && (
+          <button
+            className="chip attention chip-btn"
+            title="Sessions waiting for your input"
+            onClick={() => {
+              const st = useStore.getState();
+              const waiting = Object.values(st.sessions).find((v) => v.pendingInteractions > 0);
+              if (waiting) st.select(waiting.summary.sessionId);
+            }}
+          >
+            {pendingTotal} needs input
+          </button>
+        )}
         <span className="spacer" />
         {view?.context && (
-          <span className="chip" title={`${view.context.usedTokens} / ${view.context.maxTokens} tokens`}>
+          <span
+            className="chip"
+            title={`${view.context.usedTokens} / ${view.context.maxTokens} tokens in the model's context window`}
+          >
             Context <strong>{Math.round(view.context.fraction * 100)}%</strong>
           </span>
         )}
         {view?.usage && (
-          <span className="chip" title="Session usage">
+          <button
+            className="chip chip-btn"
+            title="Cumulative session usage — open breakdown"
+            onClick={() => s.setInspectorTab("usage")}
+          >
+            Usage{" "}
             <strong>
               {fmtTokens(
                 view.usage.total.inputTokens +
@@ -257,77 +421,137 @@ export function App(): JSX.Element {
                   view.usage.total.cacheWriteTokens,
               )}
             </strong>
-          </span>
+          </button>
         )}
       </header>
 
-      {s.sidebarOpen && <Sidebar />}
+      {s.sidebarOpen && (
+        <Sidebar onResume={(d) => void resumeSession(d)} onFork={(id) => void forkSession(id)} />
+      )}
 
       <main className="main">
-        {s.engineStage === "offline" && (
-          <div className="banner" style={{ margin: 12 }}>
-            <strong>The OMP engine is not running.</strong>
-            <div style={{ marginTop: 4 }}>
-              {s.engineError?.message ?? "It exited unexpectedly."}
-              {s.engineError?.detail && (
-                <details style={{ marginTop: 6 }}>
-                  <summary className="hint">Diagnostics</summary>
-                  <pre className="tool-output" style={{ marginTop: 6 }}>
-                    {s.engineError.detail}
-                  </pre>
-                </details>
-              )}
-            </div>
-            <button className="btn" style={{ marginTop: 8 }} onClick={() => void engine.restart()}>
-              Restart engine
-            </button>
+        {s.mainView === "usage" ? (
+          <UsageCenter />
+        ) : s.mainView === "settings" ? (
+          <div className="settings-page">
+            <Settings onClose={() => s.setMainView("sessions")} />
           </div>
-        )}
-
-        {view ? (
-          <>
-            <div className="session-header">
-              <span className="titlebar-title">{view.summary.title}</span>
-              <span className="chip">
-                {view.summary.model?.split("/").pop() ?? "OMP default"}
-                {view.summary.thinkingLevel ? ` · ${view.summary.thinkingLevel}` : ""}
-              </span>
-              {view.advisors.filter((a) => a.enabled).length > 0 && (
-                <span className="chip">
-                  {view.advisors.filter((a) => a.enabled).length} advisor
-                  {view.advisors.filter((a) => a.enabled).length > 1 ? "s" : ""}
-                </span>
-              )}
-              <span className="chip mono" title={view.summary.projectPath}>
-                {view.summary.projectPath.split("/").pop()}
-              </span>
-              <span className="spacer" />
-              <span className="hint">{view.summary.runState}</span>
-            </div>
-
-            <Transcript items={view.transcript} />
-
-            <Composer
-              runState={view.summary.runState}
-              onSend={send}
-              onAbort={abort}
-              disabled={s.engineStage === "offline"}
-            />
-          </>
         ) : (
-          <div className="empty" style={{ marginTop: "18vh" }}>
-            <h3>No session selected</h3>
-            Choose a project and start an OMP session.
-            <div style={{ marginTop: 14 }}>
-              <button className="btn btn-primary" onClick={() => s.setNewSession(true)}>
-                New Session
-              </button>
-            </div>
-          </div>
+          <>
+            {s.engineStage === "offline" && (
+              <div className="banner" style={{ margin: 12 }}>
+                <strong>The OMP engine is not running.</strong>
+                <div style={{ marginTop: 4 }}>
+                  {s.engineError?.message ?? "It exited unexpectedly."}
+                  {s.engineError?.detail && (
+                    <details style={{ marginTop: 6 }}>
+                      <summary className="hint">Details</summary>
+                      <pre className="tool-output" style={{ marginTop: 6 }}>
+                        {s.engineError.detail}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+                <button
+                  className="btn"
+                  style={{ marginTop: 8 }}
+                  onClick={() => void engine.restart()}
+                >
+                  Restart engine
+                </button>
+              </div>
+            )}
+
+            {s.engineError && s.engineStage !== "offline" && (
+              <div className="banner" style={{ margin: "8px 12px 0" }}>
+                {s.engineError.message}
+                <button
+                  className="btn btn-ghost"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => s.setEngineError(undefined)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {view ? (
+              <>
+                <div className="session-header">
+                  <span className="titlebar-title">{view.summary.title}</span>
+                  <span className="chip">
+                    {modelBasename(view.summary.model)}
+                    {view.summary.thinkingLevel ? ` · ${view.summary.thinkingLevel}` : ""}
+                  </span>
+                  {enabledAdvisors.length > 0 && (
+                    <span
+                      className="chip"
+                      title={enabledAdvisors
+                        .map((a) => {
+                          const st = view.advisorStates[a.id];
+                          return `${a.name}${st ? ` — ${st}` : ""}`;
+                        })
+                        .join("\n")}
+                    >
+                      {enabledAdvisors.length} advisor{enabledAdvisors.length > 1 ? "s" : ""}
+                      {Object.values(view.advisorStates).some((st) => st === "reviewing") &&
+                        " · reviewing"}
+                    </span>
+                  )}
+                  <span className="chip mono" title={view.summary.projectPath}>
+                    {view.summary.projectPath.split("/").pop()}
+                  </span>
+                  <span className="spacer" />
+                  {view.interrupted && view.summary.ompSessionPath ? (
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        const d: DiscoveredSession = {
+                          ompSessionId: view.summary.ompSessionId ?? "",
+                          path: view.summary.ompSessionPath!,
+                          cwd: view.summary.projectPath,
+                          title: view.summary.title,
+                          messageCount: view.summary.messageCount,
+                          sizeBytes: 0,
+                          openInThisApp: false,
+                        };
+                        useStore.getState().removeSession(view.summary.sessionId);
+                        void resumeSession(d);
+                      }}
+                    >
+                      Resume Session
+                    </button>
+                  ) : (
+                    <span className="hint">{view.summary.activity ?? view.summary.runState}</span>
+                  )}
+                </div>
+
+                <Transcript items={view.transcript} sessionId={view.summary.sessionId} />
+
+                <Composer
+                  sessionId={view.summary.sessionId}
+                  runState={view.summary.runState}
+                  onSend={send}
+                  onAbort={abort}
+                  disabled={s.engineStage === "offline" || Boolean(view.interrupted)}
+                />
+              </>
+            ) : (
+              <div className="empty" style={{ marginTop: "18vh" }}>
+                <h3>No session selected</h3>
+                Choose a project and start an OMP session.
+                <div style={{ marginTop: 14 }}>
+                  <button className="btn btn-primary" onClick={() => s.setNewSession(true)}>
+                    New Session
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </main>
 
-      {s.inspectorOpen && <Inspector view={view} />}
+      {s.inspectorOpen && s.mainView === "sessions" && <Inspector view={view} />}
 
       {s.newSessionOpen && (
         <NewSession
@@ -335,11 +559,19 @@ export function App(): JSX.Element {
           discoverAdvisors={discoverAdvisors}
           busy={creating}
           onCancel={() => s.setNewSession(false)}
-          onCreate={createSession}
+          onCreate={(c) => void createSession(c)}
         />
       )}
 
       {s.paletteOpen && <CommandPalette />}
+
+      {s.quitConfirm && (
+        <QuitDialog
+          running={s.quitConfirm.running}
+          onCancel={() => s.setQuitConfirm(undefined)}
+          onQuit={() => void quitNow()}
+        />
+      )}
     </div>
   );
 }

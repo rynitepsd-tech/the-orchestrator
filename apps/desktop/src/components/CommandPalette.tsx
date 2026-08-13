@@ -1,106 +1,198 @@
 /**
- * Command palette.
+ * Command palette (⌘⇧P) and quick session switcher (⌘K).
  *
- * One keyboard-searchable list over the app's verbs, including jumping to any
- * running session. Selecting a session here is the same pure UI selection the
- * sidebar performs — nothing is paused.
+ * One component, two modes. Commands are registered centrally here; every
+ * entry performs a real action — no dead rows.
  */
 import type { JSX } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { useStore } from "../store";
+import { isActive, modelBasename, runStateLabel, useStore } from "../store";
 
-interface Cmd {
+interface Command {
   id: string;
   label: string;
   hint?: string;
-  run(): void;
+  run: () => void;
 }
 
 export function CommandPalette(): JSX.Element {
-  const s = useStore();
-  const [q, setQ] = useState("");
-  const [i, setI] = useState(0);
+  const store = useStore();
+  const mode = store.paletteMode;
+  const [query, setQuery] = useState("");
+  const [sel, setSel] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const close = () => s.setPalette(false);
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
 
-  const commands = useMemo<Cmd[]>(() => {
-    const base: Cmd[] = [
-      { id: "new", label: "New Session", hint: "⌘N", run: () => s.setNewSession(true) },
-      { id: "usage", label: "Open Usage", run: () => s.setInspectorTab("usage") },
-      { id: "changes", label: "Open Changes", run: () => s.setInspectorTab("changes") },
-      { id: "sidebar", label: "Toggle Sidebar", hint: "⌘1", run: () => s.toggleSidebar() },
-      { id: "inspector", label: "Toggle Inspector", hint: "⌘2", run: () => s.toggleInspector() },
-      { id: "settings", label: "Settings", hint: "⌘,", run: () => s.setSettings(true) },
-      { id: "restart", label: "Restart Engine", run: () => void engine.restart() },
+  const close = () => store.setPalette(false);
+
+  const view = store.visibleSessionId ? store.sessions[store.visibleSessionId] : undefined;
+
+  const commands = useMemo((): Command[] => {
+    const cmds: Command[] = [
+      { id: "new-session", label: "New Session", hint: "⌘N", run: () => store.setNewSession(true) },
+      {
+        id: "switch-session",
+        label: "Switch Session…",
+        hint: "⌘K",
+        run: () => store.setPalette(true, "sessions"),
+      },
+      {
+        id: "usage",
+        label: "Open Usage Center",
+        hint: "⌘U",
+        run: () => store.setMainView("usage"),
+      },
+      { id: "settings", label: "Settings", hint: "⌘,", run: () => store.setMainView("settings") },
+      {
+        id: "toggle-sidebar",
+        label: "Toggle Sidebar",
+        hint: "⌘1",
+        run: () => store.toggleSidebar(),
+      },
+      {
+        id: "toggle-inspector",
+        label: "Toggle Inspector",
+        hint: "⌘2",
+        run: () => store.toggleInspector(),
+      },
+      {
+        id: "view-changes",
+        label: "Open Changes",
+        hint: "⌘G",
+        run: () => store.setInspectorTab("changes"),
+      },
+      {
+        id: "view-files",
+        label: "Open Files",
+        run: () => store.setInspectorTab("files"),
+      },
+      {
+        id: "restart-engine",
+        label: "Restart Engine",
+        hint: "stops all sessions",
+        run: () => void engine.restart(),
+      },
     ];
-
-    if (s.visibleSessionId) {
-      const id = s.visibleSessionId;
-      base.splice(1, 0,
-        { id: "abort", label: "Abort Run", hint: "⌘.", run: () => void engine.request("session.abort", { sessionId: id }).catch(() => {}) },
-        { id: "compact", label: "Compact Session", run: () => void engine.request("session.compact", { sessionId: id }).catch(() => {}) },
+    if (view) {
+      const id = view.summary.sessionId;
+      if (isActive(view.summary.runState)) {
+        cmds.push({
+          id: "abort",
+          label: "Abort Session",
+          hint: "⌘.",
+          run: () => void engine.request("session.abort", { sessionId: id }).catch(() => {}),
+        });
+      }
+      cmds.push(
+        {
+          id: "compact",
+          label: "Compact Session Context",
+          run: () => void engine.request("session.compact", { sessionId: id }).catch(() => {}),
+        },
+        {
+          id: "rename",
+          label: "Rename Session…",
+          run: () => {
+            const title = prompt("Session title", view.summary.title);
+            if (title?.trim())
+              void engine.request("session.setTitle", { sessionId: id, title: title.trim() });
+          },
+        },
       );
+      if (view.summary.ompSessionPath) {
+        cmds.push({
+          id: "fork",
+          label: "Fork Session",
+          run: () => {
+            window.dispatchEvent(
+              new CustomEvent("orchestrator:fork", { detail: { sessionId: id } }),
+            );
+          },
+        });
+      }
     }
+    return cmds;
+  }, [store, view]);
 
-    for (const sid of s.order) {
-      const v = s.sessions[sid];
-      if (!v) continue;
-      base.push({
-        id: `go:${sid}`,
-        label: `Switch to: ${v.summary.title}`,
-        hint: v.summary.runState,
-        run: () => s.select(sid),
-      });
+  const q = query.trim().toLowerCase();
+
+  const rows = useMemo(() => {
+    if (mode === "sessions") {
+      const views = store.order
+        .map((id) => store.sessions[id])
+        .filter(Boolean)
+        .filter(
+          (v) =>
+            !q ||
+            v.summary.title.toLowerCase().includes(q) ||
+            v.summary.projectPath.toLowerCase().includes(q) ||
+            (v.summary.model ?? "").toLowerCase().includes(q),
+        );
+      return views.map((v) => ({
+        id: v.summary.sessionId,
+        label: v.summary.title,
+        hint: `${v.summary.projectPath.split("/").pop()} · ${modelBasename(v.summary.model)} · ${runStateLabel(v.summary.runState)}`,
+        run: () => store.select(v.summary.sessionId),
+      }));
     }
-    return base;
-  }, [s]);
+    return commands.filter((c) => !q || c.label.toLowerCase().includes(q));
+  }, [mode, q, commands, store]);
 
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return needle ? commands.filter((c) => c.label.toLowerCase().includes(needle)) : commands;
-  }, [commands, q]);
+  useEffect(() => setSel(0), [q, mode]);
 
-  const pick = (n: number) => {
-    const c = filtered[n];
-    if (!c) return;
-    c.run();
+  const runSel = (i: number) => {
+    const row = rows[i];
+    if (!row) return;
     close();
+    row.run();
   };
 
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Command palette">
-        <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
-          <input
-            className="input"
-            autoFocus
-            placeholder="Type a command…"
-            aria-label="Command"
-            value={q}
-            onChange={(e) => { setQ(e.target.value); setI(0); }}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") close();
-              if (e.key === "ArrowDown") { e.preventDefault(); setI((x) => Math.min(x + 1, filtered.length - 1)); }
-              if (e.key === "ArrowUp") { e.preventDefault(); setI((x) => Math.max(x - 1, 0)); }
-              if (e.key === "Enter") { e.preventDefault(); pick(i); }
-            }}
-          />
-        </div>
-        <div style={{ maxHeight: "50vh", overflowY: "auto", padding: 6 }}>
-          {filtered.length === 0 && <div className="empty">No matching command.</div>}
-          {filtered.map((c, n) => (
+    <div className="modal-backdrop palette-backdrop" onMouseDown={close}>
+      <div className="palette" onMouseDown={(e) => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          className="palette-input"
+          placeholder={mode === "sessions" ? "Switch to session…" : "Run command…"}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") close();
+            else if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSel((n) => Math.min(rows.length - 1, n + 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSel((n) => Math.max(0, n - 1));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              runSel(sel);
+            }
+          }}
+        />
+        <div className="palette-list" role="listbox">
+          {rows.map((r, i) => (
             <button
-              key={c.id}
-              className="session-row"
-              style={{ gridTemplateColumns: "1fr auto", background: n === i ? "var(--bg-active)" : undefined }}
-              onMouseEnter={() => setI(n)}
-              onClick={() => pick(n)}
+              key={r.id}
+              className={`palette-item${i === sel ? " selected" : ""}`}
+              role="option"
+              aria-selected={i === sel}
+              onMouseEnter={() => setSel(i)}
+              onClick={() => runSel(i)}
             >
-              <span className="session-title">{c.label}</span>
-              {c.hint && <span className="hint">{c.hint}</span>}
+              <span>{r.label}</span>
+              {r.hint && <span className="hint">{r.hint}</span>}
             </button>
           ))}
+          {rows.length === 0 && (
+            <div className="empty">
+              {mode === "sessions" ? "No open sessions." : "No matching commands."}
+            </div>
+          )}
         </div>
       </div>
     </div>

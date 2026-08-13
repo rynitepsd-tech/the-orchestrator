@@ -8,7 +8,13 @@ mod engine;
 mod menu;
 
 use engine::EngineSupervisor;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+
+/// Set once the UI has confirmed quitting (or no sessions were running).
+/// Until then, ExitRequested is intercepted so running agents cannot be
+/// killed by a stray Cmd+Q.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 /// Send one protocol frame to the engine.
 #[tauri::command]
@@ -34,6 +40,13 @@ fn engine_running(state: tauri::State<'_, EngineSupervisor>) -> bool {
     state.is_running()
 }
 
+/// Quit for real, after the UI has confirmed (or found nothing running).
+#[tauri::command]
+fn app_quit(app: tauri::AppHandle) {
+    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
 /// Sanitized environment summary for the About window and Copy Diagnostics.
 /// Deliberately contains no credentials, paths to secrets, or env values.
 #[tauri::command]
@@ -48,6 +61,11 @@ fn app_diagnostics(app: tauri::AppHandle) -> serde_json::Value {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Without an installed logger every log::error!/debug! (including engine
+    // stderr) is silently discarded. Level via RUST_LOG, default info.
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .try_init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -58,6 +76,7 @@ pub fn run() {
             engine_restart,
             engine_running,
             app_diagnostics,
+            app_quit,
         ])
         .setup(|app| {
             let supervisor = EngineSupervisor::new(app.handle().clone());
@@ -92,10 +111,13 @@ pub fn run() {
                     let _ = w.set_focus();
                 }
             }
-            RunEvent::ExitRequested { .. } => {
-                // Ask the UI to confirm when agents are still running. The UI
-                // owns that dialog because only it knows the session states.
-                let _ = app.emit("app://exit-requested", ());
+            RunEvent::ExitRequested { api, .. } => {
+                // Intercept quit until the UI confirms: only it knows whether
+                // sessions are still running. It answers via `app_quit`.
+                if !QUIT_CONFIRMED.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    let _ = app.emit("app://exit-requested", ());
+                }
             }
             RunEvent::Exit => {
                 if let Some(s) = app.try_state::<EngineSupervisor>() {

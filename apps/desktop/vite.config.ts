@@ -1,5 +1,5 @@
-import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 // Tauri serves the built assets from ../dist and expects a fixed dev port.
 export default defineConfig({

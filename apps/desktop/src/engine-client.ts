@@ -4,20 +4,21 @@
  * The webview never touches a process. Frames go out through a Tauri command
  * and come back as Tauri events, so the security boundary stays in Rust.
  */
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
 import {
+  type EngineErrorPayload,
+  type EngineEventFrame,
   encodeFrame,
   isEngineEventFrame,
   isEngineResponse,
   PROTOCOL_VERSION,
-  type EngineErrorPayload,
-  type EngineEventFrame,
   type ProductEvent,
   type RequestPayloads,
   type RequestType,
   type ResponsePayloads,
 } from "@orchestrator/protocol";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 type EngineLifecycle = Extract<EngineEventFrame["event"], { type: `engine.${string}` }>;
 
@@ -36,8 +37,12 @@ export class EngineClient {
   onEvent: (e: ProductEvent) => void = () => {};
   onLifecycle: (e: EngineLifecycle) => void = () => {};
   /** Fired when the engine process itself starts, dies, or fails to launch. */
-  onSupervisor: (e: { kind: string; code?: number | null; message?: string; detail?: string }) => void =
-    () => {};
+  onSupervisor: (e: {
+    kind: string;
+    code?: number | null;
+    message?: string;
+    detail?: string;
+  }) => void = () => {};
   /** Fired when the event sequence skips, i.e. frames were lost. */
   onSequenceGap: (expected: number, got: number) => void = () => {};
 
