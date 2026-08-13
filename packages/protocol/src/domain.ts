@@ -53,20 +53,30 @@ export function isActiveRunState(s: RunState): boolean {
 // Advisor state machine
 // ---------------------------------------------------------------------------
 
+/**
+ * Advisor state.
+ *
+ * `reviewing`/`paused`/`failed`/`quota-exhausted`/`no-model` map 1:1 onto
+ * upstream `AdvisorRuntimeStatus` ("running" | "paused" | "quota_exhausted" |
+ * "error" | "no_model"). `disabled` and `idle` are host-side states for
+ * advisors that are configured but have no runtime yet.
+ */
 export const ADVISOR_STATES = [
   "disabled",
   "idle",
   "reviewing",
-  "steering",
   "paused",
+  "quota-exhausted",
+  "no-model",
   "failed",
 ] as const;
 export type AdvisorState = (typeof ADVISOR_STATES)[number];
 
 /**
- * Advisor severity. Mirrors upstream WATCHDOG severities; `unknown` is used
- * when upstream reports a value this build does not recognise, so a new
- * upstream severity degrades gracefully instead of being dropped.
+ * Advisor severity. Upstream defines exactly "nit" | "concern" | "blocker"
+ * (advisor/advise-tool.ts). `unknown` is host-side only, used when upstream
+ * reports a value this build does not recognise, so a future severity degrades
+ * gracefully instead of being dropped.
  */
 export const ADVISOR_SEVERITIES = ["nit", "concern", "blocker", "unknown"] as const;
 export type AdvisorSeverity = (typeof ADVISOR_SEVERITIES)[number];
@@ -231,18 +241,50 @@ export interface ProviderQuota {
 // Session configuration
 // ---------------------------------------------------------------------------
 
+/**
+ * One advisor, mirroring upstream `AdvisorConfig`
+ * (name / model / tools / instructions / enabled).
+ *
+ * `model` is an OMP model selector and may carry a `:level` thinking suffix
+ * (e.g. `x-ai/grok-code-fast:high`). This app keeps `model` and `thinkingLevel`
+ * separate for the UI and joins them when handing config back to OMP.
+ */
 export interface AdvisorConfig {
-  /** Stable id within the session. */
+  /** Stable id within the session. Derived from `name`. */
   id: string;
   name: string;
   enabled: boolean;
-  /** Model key; omitted means "OMP default for this advisor". */
+  /** Model selector without the thinking suffix. Omitted means OMP's default. */
   model?: string;
   /** Must be one of the selected model's reported efforts. */
   thinkingLevel?: string;
+  /** Subset of OMP built-in tool names. Omitted uses OMP's read/grep/glob default. */
+  tools?: string[];
   instructions?: string;
   /** Where this advisor definition came from. */
   origin: "project" | "user" | "session" | "builtin";
+}
+
+/** Join a model selector and thinking level into OMP's `model:level` form. */
+export function toOmpAdvisorSelector(model?: string, thinkingLevel?: string): string | undefined {
+  if (!model) return undefined;
+  return thinkingLevel ? `${model}:${thinkingLevel}` : model;
+}
+
+/** Split OMP's `model:level` selector back into its parts. */
+export function fromOmpAdvisorSelector(selector?: string): {
+  model?: string;
+  thinkingLevel?: string;
+} {
+  if (!selector) return {};
+  // Provider ids contain "/" and may contain "-"; the thinking suffix is the
+  // final ":"-delimited segment, and only when it is not part of a URL scheme.
+  const idx = selector.lastIndexOf(":");
+  if (idx <= 0) return { model: selector };
+  const head = selector.slice(0, idx);
+  const tail = selector.slice(idx + 1);
+  if (!tail || tail.includes("/")) return { model: selector };
+  return { model: head, thinkingLevel: tail };
 }
 
 export interface SessionLaunchConfig {
