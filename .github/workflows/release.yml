@@ -1,0 +1,179 @@
+name: Release
+
+# Tag-driven release for the macOS build.
+#
+# ARCHITECTURE INVARIANT: never ship a DMG whose engine architecture differs
+# from the app's. The engine is a `bun --compile` single-file executable built
+# for one target, and the OMP native addon beside it (pi_natives.darwin-*.node)
+# is architecture-specific. A DMG that pairs, say, an arm64 app with an x64
+# engine fails at first launch with "Failed to load pi_natives native addon".
+# Both are therefore built on the same runner, for the host arch only
+# (macos-14 = Apple Silicon), and the packaged smoke test asserts the match.
+# If an Intel (x64) release is ever produced, build it on an x64 runner and
+# publish it as a separate DMG — do not mix artefacts from two runners into one.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: "1.3.14"
+
+jobs:
+  release-macos:
+    name: build and publish (macOS, Apple Silicon)
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Bun ${{ env.BUN_VERSION }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      # ---------------------------------------------------------------------
+      # Signing and notarization (NOT USED TODAY — kept as documentation)
+      #
+      # Builds are currently ad-hoc signed (`codesign --sign -`) because the
+      # maintainer has no paid Apple Developer account. No secrets are required
+      # for the release below to succeed; users will see the standard Gatekeeper
+      # warning for an unnotarized app.
+      #
+      # To sign with a Developer ID later, add the secrets and uncomment. The
+      # engine build already honours MACOS_SIGN_IDENTITY (see
+      # scripts/build-engine.ts) and needs no other change; Tauri reads
+      # APPLE_* itself.
+      #
+      # - name: Import Developer ID certificate
+      #   env:
+      #     MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}          # base64 .p12
+      #     MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}  # .p12 password
+      #     KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      #   run: |
+      #     echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+      #     security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+      #     security default-keychain -s build.keychain
+      #     security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+      #     security import /tmp/cert.p12 -k build.keychain \
+      #       -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+      #     security set-key-partition-list -S apple-tool:,apple:,codesign: \
+      #       -s -k "$KEYCHAIN_PASSWORD" build.keychain
+      #     rm -f /tmp/cert.p12
+      #
+      # Then set these on the engine and app build steps below:
+      #     MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}   # "Developer ID Application: Name (TEAMID)"
+      #     APPLE_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }} # app-specific password
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #
+      # Notarization additionally requires hardened runtime with entitlements,
+      # including com.apple.security.cs.disable-library-validation. That one is
+      # MANDATORY: the app dlopens a .node signed under a different Team ID and
+      # without it the kernel refuses to map the addon.
+      # ---------------------------------------------------------------------
+
+      - name: Build engine (host arch)
+        # Host arch only. See the architecture invariant at the top of this file.
+        run: bun run build:engine
+
+      - name: Build app
+        # `tauri build` runs the frontend build itself (beforeBuildCommand ->
+        # vite:build) and bundles resources/engine into the .app.
+        working-directory: apps/desktop
+        run: bunx tauri build
+
+      - name: Packaged smoke test
+        # 12 checks against the engine binary INSIDE the built .app: correct
+        # architecture, addon present beside the binary, config discovery, model
+        # registry load, session create, a real tool call, persistence, quit.
+        #
+        # Advisory on CI: config discovery and the model registry expect an OMP
+        # config on the machine (locally: run `omp` once to connect a provider).
+        # A hosted runner has none, so a failure here is not necessarily a
+        # regression. Run it locally before tagging and treat the local result
+        # as authoritative; the log is kept here for the architecture checks.
+        continue-on-error: true
+        run: bun run scripts/smoke-packaged.ts
+
+      - name: Collect artefacts and checksums
+        id: artefacts
+        run: |
+          set -euo pipefail
+          BUNDLE="apps/desktop/src-tauri/target/release/bundle"
+          mkdir -p dist-release
+          shopt -s nullglob
+          dmgs=("$BUNDLE"/dmg/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "no DMG produced under $BUNDLE/dmg" >&2
+            exit 1
+          fi
+          cp "${dmgs[@]}" dist-release/
+
+          # Record what actually shipped, so an architecture mismatch is
+          # visible in the release log rather than in a user's crash report.
+          file -b "$BUNDLE/macos/The Orchestrator.app/Contents/Resources/engine/orchestrator-engine"
+          ls -l "$BUNDLE/macos/The Orchestrator.app/Contents/Resources/engine"
+
+          cd dist-release
+          shasum -a 256 *.dmg | tee SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist-release/*.dmg
+            dist-release/SHA256SUMS.txt
+          body: |
+            macOS, Apple Silicon (arm64). Requires macOS 10.15 or later.
+
+            This build is ad-hoc signed and not notarized. On first launch,
+            open it from Finder with right-click > Open, or clear the quarantine
+            attribute:
+
+                xattr -dr com.apple.quarantine "/Applications/The Orchestrator.app"
+
+            Verify the download against `SHA256SUMS.txt`:
+
+                shasum -a 256 -c SHA256SUMS.txt
+
+            An Intel (x64) build is not published: the build script supports
+            `--target=x64` but that configuration has not been built or tested.

@@ -1,0 +1,98 @@
+name: CI
+
+# The Orchestrator is macOS-only (Tauri 2 + a bun --compile engine sidecar that
+# ships an OMP native addon beside it). Apple Silicon runners only: macos-14 is
+# the arm64 image. Windows and Linux are not supported and are not built here.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep this in lockstep with packageManager in package.json. OMP 17.3.1
+  # requires Bun >= 1.3.14.
+  BUN_VERSION: "1.3.14"
+
+jobs:
+  build:
+    name: typecheck, test, build
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Bun ${{ env.BUN_VERSION }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        # 20 tests: usage de-duplication plus a concurrency suite driven by a
+        # local mock provider speaking the OpenAI SSE wire format. No network
+        # calls, no provider credits are spent.
+        run: bun test
+
+      - name: cargo fmt --check
+        # Formatting is deterministic, so this is a hard failure.
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all --check
+
+      - name: cargo clippy
+        # Advisory for now: lint findings are reported but do not block the run.
+        # Remove continue-on-error (and keep -D warnings) to make it blocking.
+        continue-on-error: true
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: bunx vite build
+
+      - name: Build engine
+        # Host arch only (arm64 on macos-14). --target=x64 exists in
+        # scripts/build-engine.ts but that path is unbuilt and untested, and it
+        # needs @oh-my-pi/pi-natives-darwin-x64 installed.
+        run: bun run build:engine
+
+      - name: Verify engine layout
+        # The native addon must sit in the SAME directory as the compiled
+        # engine: the addon loader's last search path is the executable's own
+        # directory. If this check fails the packaged app cannot boot.
+        run: |
+          set -euo pipefail
+          test -x "resources/engine/orchestrator-engine"
+          test -f "resources/engine/pi_natives.darwin-arm64.node"
+          file -b "resources/engine/orchestrator-engine"
+          codesign --verify --verbose "resources/engine/orchestrator-engine"

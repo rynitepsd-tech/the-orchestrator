@@ -49,11 +49,23 @@ check("native addon ships beside the engine", existsSync(addon));
 const project = mkdtempSync(join(tmpdir(), "orch-smoke-"));
 writeFileSync(join(project, "SMOKE.txt"), "packaged smoke test\n");
 
+// A local mock provider so the packaged app can run a REAL session, with a
+// real tool call, without spending a cent of the user's API credit.
+const { startMockProvider } = await import("../packages/engine/test/mock-provider");
+const mock = startMockProvider();
+
 const proc = Bun.spawn([enginePath], {
   stdin: "pipe",
   stdout: "pipe",
   stderr: "pipe",
-  env: { ...process.env, ORCHESTRATOR_LOG_LEVEL: "warn" },
+  env: {
+    ...process.env,
+    ORCHESTRATOR_LOG_LEVEL: "warn",
+    ORCHESTRATOR_TEST_MODE: "1",
+    ORCHESTRATOR_TEST_PROVIDERS: JSON.stringify([
+      { name: "mockprov", baseUrl: mock.url, apiKey: "mock-key", modelIds: ["mock-smoke"] },
+    ]),
+  },
 });
 
 const frames: any[] = [];
@@ -152,7 +164,58 @@ try {
     `${disc?.result?.sessions?.length ?? 0} found`,
   );
 
-  // 7. clean shutdown
+  // 7. THE REAL TEST: create a session in the packaged app and run a tool.
+  send(
+    "sessions.create",
+    { projectPath: project, title: "Smoke", model: "mockprov/mock-smoke", advisors: [] },
+    "c1",
+  );
+  await waitFor(() => !!findResp("c1"), 90_000);
+  const created = findResp("c1");
+  check("creates a session in a worker process", created?.ok === true, created?.error?.message);
+
+  if (created?.ok) {
+    const sid = created.result.session.sessionId;
+
+    send("session.prompt", { sessionId: sid, text: "smoke", whenBusy: "steer" }, "pr1");
+    await waitFor(() => !!findResp("pr1"), 30_000);
+    check("accepts a prompt", findResp("pr1")?.ok === true);
+
+    const finished = await waitFor(
+      () => frames.some((f) => f.event?.type === "session.finished"),
+      120_000,
+    );
+    check("streams a turn to completion", finished);
+
+    const toolEnd = frames.find((f) => f.event?.type === "tool.end");
+    check(
+      "executes a real tool inside the packaged app",
+      !!toolEnd && toolEnd.event.ok === true,
+      toolEnd ? `${toolEnd.event.callId}` : "no tool.end event",
+    );
+    check(
+      "tool ran in the session's own project directory",
+      !!toolEnd && String(toolEnd.event.output ?? "").includes("SMOKE-FROM-TOOL"),
+    );
+
+    const persisted = frames.find((f) => f.event?.type === "session.persisted");
+    check(
+      "persists the session where OMP can find it",
+      !!persisted && String(persisted.event.ompSessionPath).includes(".omp/agent/sessions"),
+    );
+
+    send("usage.session", { sessionId: sid }, "u1");
+    await waitFor(() => !!findResp("u1"), 20_000);
+    const usage = findResp("u1");
+    const tot = usage?.result?.breakdown?.total;
+    check(
+      "attributes usage for the session",
+      usage?.ok === true && (tot?.inputTokens ?? 0) > 0,
+      tot ? `${tot.inputTokens} in / ${tot.outputTokens} out` : undefined,
+    );
+  }
+
+  // 8. clean shutdown
   send("engine.shutdown", {}, "s1");
   await waitFor(() => !!findResp("s1"), 20_000);
   check("acknowledges shutdown", findResp("s1")?.ok === true);
@@ -171,6 +234,7 @@ try {
     /* already gone */
   }
   await pump.catch(() => {});
+  mock.stop();
   rmSync(project, { recursive: true, force: true });
 }
 

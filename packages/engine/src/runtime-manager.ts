@@ -72,7 +72,7 @@ export class RuntimeManager {
     this.#supervisor = new WorkerSupervisor({
       agentDir: this.#agentDir,
       testMode: this.#opts.testMode,
-      env: this.#opts.workerEnv,
+      env: this.#opts.workerEnv ?? envTestProviders(),
       emit: (e) => this.#onSessionEvent(e),
     });
   }
@@ -225,4 +225,22 @@ export class RuntimeManager {
 
 function numOrUndef(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Test-only provider injection.
+ *
+ * Lets the PACKAGED smoke test drive a real session against a local mock
+ * provider, so packaging can be verified end to end without spending API
+ * credit. Ignored unless the variable is present, so it is inert in normal use.
+ */
+function envTestProviders(): { testProviders?: WorkerSpawnEnv["testProviders"] } | undefined {
+  const raw = process.env.ORCHESTRATOR_TEST_PROVIDERS;
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? { testProviders: parsed } : undefined;
+  } catch {
+    return undefined;
+  }
 }

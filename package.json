@@ -15,13 +15,15 @@
     "build": "bun run build:engine && bun run --filter '@orchestrator/desktop' build",
     "build:engine": "bun run scripts/build-engine.ts",
     "tauri": "bun run --filter '@orchestrator/desktop' tauri",
-    "app": "bun run scripts/build-app.ts",
+    "app": "bun run build:engine && cd apps/desktop && bunx tauri build",
     "test": "bun test",
     "test:concurrency": "bun test packages/engine/test/concurrency.test.ts",
     "typecheck": "tsc --build --force",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "fmt": "biome format --write ."
+    "fmt": "biome format --write .",
+    "smoke": "bun run scripts/smoke-packaged.ts",
+    "icon": "python3 scripts/make_icon.py"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
