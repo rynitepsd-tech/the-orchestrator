@@ -1,13 +1,14 @@
 /**
- * Owns every live session in the engine process.
+ * Engine-wide state.
  *
- * The manager is the reason `visibleSessionId !== runningSessionIds` is a
- * normal, supported state: it keeps runtimes alive independently of the UI's
- * selection, so switching sessions in the sidebar never pauses, disposes, or
- * aborts anything.
+ * Owns the read-only catalogue (models, providers, quotas, session discovery)
+ * in the supervisor process, and delegates every live session to a dedicated
+ * worker process via {@link WorkerSupervisor}.
+ *
+ * This is why `visibleSessionId !== runningSessionIds` is a normal state:
+ * session lifetime is tied to a worker process, not to what the UI is showing.
+ * Switching sessions in the sidebar never pauses, disposes, or aborts anything.
  */
-import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
 import {
   discoverAdvisors,
   discoverSessions,
@@ -17,7 +18,6 @@ import {
   newModelRegistry,
   ompAgentDir,
   openAuthStorage,
-  projectIdFor,
 } from "@orchestrator/omp-adapter";
 import type {
   AdvisorConfig,
@@ -28,27 +28,28 @@ import type {
   ProviderQuota,
   SessionLaunchConfig,
   SessionSummary,
+  UsageBreakdown,
 } from "@orchestrator/protocol";
 import { UsageAccumulator } from "@orchestrator/usage";
-import { SessionRuntime } from "./session-runtime";
+import { WorkerSupervisor, type WorkerSpawnEnv } from "./worker/supervisor";
 
 export interface RuntimeManagerOptions {
   agentDir?: string;
   emit: (event: ProductEvent) => void;
-  /** Test hook: skip MCP/LSP startup and auto-approve tools. */
+  /** Test hook: disable MCP/LSP in workers and auto-approve tools. */
   testMode?: boolean;
-  /** Test hook: inject a prepared model registry instead of discovering one. */
-  modelRegistryOverride?: unknown;
+  /** Test hook: provider registrations injected into each worker. */
+  workerEnv?: WorkerSpawnEnv;
 }
 
 export class RuntimeManager {
-  readonly #sessions = new Map<string, SessionRuntime>();
   readonly #opts: RuntimeManagerOptions;
   readonly #globalUsage = new UsageAccumulator();
+  readonly #agentDir: string;
+  #supervisor!: WorkerSupervisor;
 
   #authStorage: unknown;
   #modelRegistry: unknown;
-  #agentDir: string;
   #modelsCache: ModelInfo[] | null = null;
 
   constructor(opts: RuntimeManagerOptions) {
@@ -61,23 +62,23 @@ export class RuntimeManager {
   }
 
   async init(): Promise<void> {
-    if (this.#opts.modelRegistryOverride) {
-      this.#modelRegistry = this.#opts.modelRegistryOverride;
-      // Upstream requires options.authStorage to be the SAME instance as
-      // modelRegistry.authStorage, so adopt the registry's rather than opening
-      // a second one.
-      this.#authStorage =
-        (this.#modelRegistry as any).authStorage ?? (await openAuthStorage(this.#agentDir));
-    } else {
-      this.#authStorage = await openAuthStorage(this.#agentDir);
-      this.#modelRegistry = newModelRegistry(this.#authStorage as never);
-    }
-    // Warm the catalogue in the background; never block opening a conversation.
+    // The supervisor process only READS OMP state (catalogue, session list).
+    // It never creates an AgentSession, so process-global initializers such as
+    // the memoized Settings singleton are never engaged here.
+    this.#authStorage = await openAuthStorage(this.#agentDir);
+    this.#modelRegistry = newModelRegistry(this.#authStorage as never);
     void (this.#modelRegistry as any)?.refreshInBackground?.();
+
+    this.#supervisor = new WorkerSupervisor({
+      agentDir: this.#agentDir,
+      testMode: this.#opts.testMode,
+      env: this.#opts.workerEnv,
+      emit: (e) => this.#onSessionEvent(e),
+    });
   }
 
   // -------------------------------------------------------------------------
-  // Catalogue
+  // Catalogue (read-only, supervisor process)
   // -------------------------------------------------------------------------
 
   async models(refresh = false): Promise<ModelInfo[]> {
@@ -86,7 +87,7 @@ export class RuntimeManager {
       try {
         await (this.#modelRegistry as any)?.refresh?.();
       } catch {
-        /* keep last-known-good catalogue */
+        /* keep last-known-good catalogue rather than emptying the picker */
       }
     }
     if (!this.#modelsCache) {
@@ -102,9 +103,8 @@ export class RuntimeManager {
   /**
    * Provider subscription/quota.
    *
-   * Only reports what OMP itself exposes. Providers that report nothing come
-   * back with `unavailableReason` so the UI can say so plainly instead of
-   * inventing a percentage.
+   * Only what OMP itself reports. Providers without a usage endpoint come back
+   * with `unavailableReason` so the UI says so plainly instead of showing 0%.
    */
   async quotas(): Promise<ProviderQuota[]> {
     const raw = await fetchProviderQuotas(this.#authStorage as never);
@@ -112,13 +112,8 @@ export class RuntimeManager {
     const out: ProviderQuota[] = [];
 
     for (const r of raw as any[]) {
-      const provider = String(r?.provider ?? r?.name ?? "unknown");
       const windows: ProviderQuota["windows"] = [];
-      const candidates = Array.isArray(r?.windows)
-        ? r.windows
-        : Array.isArray(r?.limits)
-          ? r.limits
-          : [];
+      const candidates = Array.isArray(r?.windows) ? r.windows : Array.isArray(r?.limits) ? r.limits : [];
       for (const w of candidates) {
         const used = numOrUndef(w?.used ?? w?.utilization ?? w?.consumed);
         const limit = numOrUndef(w?.limit ?? w?.max ?? w?.total);
@@ -134,10 +129,10 @@ export class RuntimeManager {
         });
       }
       out.push({
-        provider,
+        provider: String(r?.provider ?? r?.name ?? "unknown"),
         accountLabel: r?.accountLabel ? String(r.accountLabel) : undefined,
         windows,
-        fetchedAt: now,
+        fetchedAt: r?.fetchedAt ? String(r.fetchedAt) : now,
         unavailableReason: windows.length === 0 ? "Usage limit not reported by provider" : undefined,
       });
     }
@@ -150,10 +145,8 @@ export class RuntimeManager {
 
   async discoverSessions(projectPath?: string): Promise<DiscoveredSession[]> {
     const found = await discoverSessions(projectPath);
-    const openPaths = new Set(
-      [...this.#sessions.values()].map((s) => s.ompSessionPath).filter(Boolean) as string[],
-    );
-    for (const s of found) s.openInThisApp = openPaths.has(s.path);
+    const open = this.#supervisor.openSessionPaths();
+    for (const s of found) s.openInThisApp = open.has(s.path);
     return found;
   }
 
@@ -162,118 +155,71 @@ export class RuntimeManager {
   }
 
   // -------------------------------------------------------------------------
-  // Session lifecycle
+  // Sessions (delegated to worker processes)
   // -------------------------------------------------------------------------
 
-  async create(config: SessionLaunchConfig): Promise<SessionSummary> {
-    const projectPath = config.projectPath;
-    if (!existsSync(projectPath) || !statSync(projectPath).isDirectory()) {
-      throw Object.assign(new Error(`Project folder not found: ${projectPath}`), {
-        kind: "filesystem-permission",
-      });
-    }
-
-    // Refuse to open the same persisted OMP session twice. Upstream gives no
-    // cross-process lock, so concurrent writers risk corrupting the transcript.
-    if (config.resumeSessionPath) {
-      const clash = [...this.#sessions.values()].find(
-        (s) => s.ompSessionPath === config.resumeSessionPath,
-      );
-      if (clash) {
-        throw Object.assign(
-          new Error("That session is already open in The Orchestrator."),
-          { kind: "session-corruption" },
-        );
-      }
-    }
-
-    const sessionId = randomUUID();
-    const model = config.model ? this.#resolveModel(config.model) : undefined;
-
-    const runtime = new SessionRuntime({
-      sessionId,
-      projectId: projectIdFor(projectPath),
-      projectPath,
-      title: config.title?.trim() || "New session",
-      agentDir: this.#agentDir,
-      authStorage: this.#authStorage,
-      modelRegistry: this.#modelRegistry,
-      model,
-      modelKey: config.model,
-      thinkingLevel: config.thinkingLevel,
-      advisors: config.advisors ?? [],
-      approvalMode: config.approvalMode,
-      resumeSessionPath: config.resumeSessionPath,
-      autoApprove: this.#opts.testMode === true,
-      enableMCP: this.#opts.testMode ? false : true,
-      enableLsp: this.#opts.testMode ? false : true,
-      emit: (e) => this.#onSessionEvent(e),
-    });
-
-    await runtime.start();
-    this.#sessions.set(sessionId, runtime);
-    return runtime.summary();
+  create(config: SessionLaunchConfig): Promise<SessionSummary> {
+    return this.#supervisor.create(config);
   }
 
-  #resolveModel(modelKey: string): unknown {
-    const idx = modelKey.indexOf("/");
-    if (idx < 0) return undefined;
-    const provider = modelKey.slice(0, idx);
-    const id = modelKey.slice(idx + 1);
-    try {
-      return (this.#modelRegistry as any)?.find?.(provider, id);
-    } catch {
-      return undefined;
-    }
+  list(): SessionSummary[] {
+    return this.#supervisor.list();
   }
 
+  has(sessionId: string): boolean {
+    return this.#supervisor.has(sessionId);
+  }
+
+  activeCount(): number {
+    return this.#supervisor.activeCount();
+  }
+
+  /** Forward a session-scoped request to the owning worker. */
+  route<T = unknown>(sessionId: string, type: string, payload: unknown): Promise<T> {
+    return this.#supervisor.route<T>(sessionId, type, payload);
+  }
+
+  async close(sessionId: string, dispose: boolean): Promise<void> {
+    this.#globalUsage.clearSession(sessionId);
+    await this.#supervisor.close(sessionId, dispose);
+  }
+
+  async shutdown(): Promise<void> {
+    await this.#supervisor?.shutdown();
+  }
+
+  // -------------------------------------------------------------------------
+  // Usage
+  // -------------------------------------------------------------------------
+
+  /**
+   * Mirror worker usage into the engine-wide index.
+   *
+   * Workers emit full breakdowns; the index keeps raw records so the Usage
+   * centre can filter and re-aggregate without asking every worker again.
+   */
   #onSessionEvent(e: ProductEvent): void {
-    // Mirror per-session usage into the global index for the Usage centre.
-    if (e.type === "usage.update") {
-      const rt = this.#sessions.get(e.sessionId);
-      if (rt) this.#globalUsage.ingestMany(rt.usageRecords?.() ?? []);
+    if (e.type === "session.persisted") {
+      this.#supervisor.noteSessionPersisted(e.sessionId, e.ompSessionPath, e.ompSessionId);
+    }
+    if (e.type === "session.state") {
+      this.#supervisor.noteRunState(e.sessionId, e.runState);
+    }
+    if (e.type === "session.finished") {
+      this.#supervisor.noteRunState(e.sessionId, e.runState);
     }
     this.#opts.emit(e);
   }
 
-  get(sessionId: string): SessionRuntime {
-    const s = this.#sessions.get(sessionId);
-    if (!s) throw new Error(`Unknown session: ${sessionId}`);
-    return s;
-  }
-
-  has(sessionId: string): boolean {
-    return this.#sessions.has(sessionId);
-  }
-
-  list(): SessionSummary[] {
-    return [...this.#sessions.values()].map((s) => s.summary());
-  }
-
-  /** Sessions currently doing work — used for the quit confirmation. */
-  activeCount(): number {
-    return [...this.#sessions.values()].filter((s) => {
-      const st = s.runState;
-      return st !== "idle" && st !== "completed" && st !== "interrupted" && st !== "error";
-    }).length;
-  }
-
-  async close(sessionId: string, dispose: boolean): Promise<void> {
-    const s = this.#sessions.get(sessionId);
-    if (!s) return;
-    this.#sessions.delete(sessionId);
-    if (dispose) await s.dispose();
-  }
-
-  /** Ordered shutdown: stop accepting work, then dispose every runtime. */
-  async shutdown(): Promise<void> {
-    const all = [...this.#sessions.values()];
-    this.#sessions.clear();
-    await Promise.allSettled(all.map((s) => s.dispose()));
-  }
-
   globalUsage(): UsageAccumulator {
     return this.#globalUsage;
+  }
+
+  async sessionUsage(sessionId: string): Promise<UsageBreakdown> {
+    const res = await this.route<{ breakdown: UsageBreakdown }>(sessionId, "usage.session", {
+      sessionId,
+    });
+    return res.breakdown;
   }
 }
 

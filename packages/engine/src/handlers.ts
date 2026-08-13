@@ -100,33 +100,25 @@ export async function handleRequest(
       return { sessions: m.list() };
 
     // --- one session -------------------------------------------------------
-    case "session.prompt": {
-      const rt = m.get(String(p.sessionId));
-      const mode = await rt.prompt(String(p.text), p.whenBusy ?? "steer");
-      return { accepted: true, mode };
-    }
+    case "session.prompt":
+      return m.route(String(p.sessionId), "session.prompt", p) as never;
 
     case "session.abort":
-      return { aborted: await m.get(String(p.sessionId)).abort() };
+      return m.route(String(p.sessionId), "session.abort", p) as never;
 
     case "session.compact":
-      return { ok: await m.get(String(p.sessionId)).compact() };
+      return m.route(String(p.sessionId), "session.compact", p) as never;
 
     case "session.fork":
       throw Object.assign(new Error("Fork is not implemented in this build."), {
         kind: "configuration",
       });
 
-    case "session.setModel": {
-      const rt = m.get(String(p.sessionId));
-      const ok = await rt.setModel(String(p.model), p.thinkingLevel);
-      return { ok, model: String(p.model) };
-    }
+    case "session.setModel":
+      return m.route(String(p.sessionId), "session.setModel", p) as never;
 
-    case "session.setTitle": {
-      m.get(String(p.sessionId)).setTitle(String(p.title));
-      return { ok: true };
-    }
+    case "session.setTitle":
+      return m.route(String(p.sessionId), "session.setTitle", p) as never;
 
     case "session.setApprovalMode":
       return { ok: false };
@@ -134,13 +126,11 @@ export async function handleRequest(
     case "session.transcript":
       return { events: [], sequence: 0 };
 
-    case "session.advisors.set": {
-      const rt = m.get(String(p.sessionId));
-      return { advisors: await rt.applyAdvisors(p.advisors ?? []) };
-    }
+    case "session.advisors.set":
+      return m.route(String(p.sessionId), "session.advisors.set", p) as never;
 
     case "session.advisors.get":
-      return { advisors: m.get(String(p.sessionId)).advisors };
+      return m.route(String(p.sessionId), "session.advisors.get", p) as never;
 
     // --- interaction bridges ----------------------------------------------
     case "approval.respond":
@@ -154,7 +144,7 @@ export async function handleRequest(
 
     // --- usage -------------------------------------------------------------
     case "usage.session":
-      return { breakdown: m.get(String(p.sessionId)).usageBreakdown() };
+      return { breakdown: await m.sessionUsage(String(p.sessionId)) };
 
     case "usage.query": {
       const acc = m.globalUsage();

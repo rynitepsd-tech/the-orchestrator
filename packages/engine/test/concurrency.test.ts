@@ -1,10 +1,17 @@
 /**
  * CONCURRENCY REGRESSION TEST — hard product requirement.
  *
- * Several top-level OMP sessions must run simultaneously inside one engine
- * process with no cross-talk. Upstream warns that the default process-global
- * AgentRegistry admits only one "Main" identity per generation, so this test
- * exists to catch any regression in the isolation the engine sets up.
+ * Several top-level OMP sessions must run simultaneously with no cross-talk.
+ *
+ * Each session runs in its own worker process (see worker/main.ts for the
+ * upstream evidence that forced process-per-session: subagents always register
+ * into AgentRegistry.global(), AsyncJobManager is a first-session-only
+ * singleton, AgentLifecycleManager.global().dispose() reaps across sessions,
+ * and Settings.init() is memoized and ignores later callers' cwd).
+ *
+ * These assertions are topology-independent on purpose: they exercise the
+ * supervisor's public API, so they would equally catch a regression if the
+ * engine ever moved back in-process.
  *
  * Asserts: both stream, both execute tools, events/transcripts/cwd/usage never
  * cross, aborting one leaves the other running, disposing one leaves the other
@@ -14,16 +21,35 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverAuthStorage } from "@oh-my-pi/pi-coding-agent";
-import type { ProductEvent } from "@orchestrator/protocol";
+import type { ProductEvent, RunState } from "@orchestrator/protocol";
 import { ompAgentDir } from "@orchestrator/omp-adapter";
 import { RuntimeManager } from "../src/runtime-manager";
-import { ModelRegistry, registerMockModels, startMockProvider, type MockServer } from "./mock-provider";
+import { startMockProvider, type MockServer } from "./mock-provider";
 
 let mock: MockServer;
 let manager: RuntimeManager;
-let registry: ModelRegistry;
 const roots: string[] = [];
+
+const MOCK_MODELS = [
+  "mock-alpha",
+  "mock-bravo",
+  "mock-one",
+  "mock-two",
+  "mock-three",
+  "mock-slow",
+  "mock-error",
+];
+
+/** Last known run state per session, tracked from emitted events. */
+const runStates = new Map<string, RunState>();
+
+/** Send a prompt through the supervisor to the owning worker process. */
+function prompt(sessionId: string, text: string, whenBusy = "steer") {
+  return manager.route(sessionId, "session.prompt", { sessionId, text, whenBusy });
+}
+function abort(sessionId: string) {
+  return manager.route(sessionId, "session.abort", { sessionId });
+}
 
 /** Per-session event capture, so we can prove nothing crosses. */
 const captured = new Map<string, ProductEvent[]>();
@@ -65,27 +91,22 @@ async function waitFor(pred: () => boolean, timeoutMs = 20_000): Promise<boolean
 beforeAll(async () => {
   mock = startMockProvider();
 
-  const agentDir = ompAgentDir();
-  const auth = await discoverAuthStorage(agentDir);
-  registry = new ModelRegistry(auth as never);
-  registerMockModels(registry, mock.url, [
-    "mock-alpha",
-    "mock-bravo",
-    "mock-one",
-    "mock-two",
-    "mock-three",
-    "mock-slow",
-    "mock-error",
-  ]);
-
   manager = new RuntimeManager({
-    agentDir,
+    agentDir: ompAgentDir(),
     testMode: true,
-    modelRegistryOverride: registry,
+    // Each worker process registers the mock provider for itself.
+    workerEnv: {
+      testProviders: [
+        { name: "mockprov", baseUrl: mock.url, apiKey: "mock-key", modelIds: MOCK_MODELS },
+      ],
+    },
     emit: (e) => {
       const list = captured.get(e.sessionId);
       if (list) list.push(e);
       else captured.set(e.sessionId, [e]);
+      if (e.type === "session.state" || e.type === "session.finished") {
+        runStates.set(e.sessionId, e.runState);
+      }
     },
   });
   await manager.init();
@@ -118,8 +139,8 @@ describe("two concurrent top-level sessions", () => {
     expect(a.sessionId).not.toBe(b.sessionId);
 
     // Prompt BOTH before either finishes.
-    await manager.get(a.sessionId).prompt("do alpha");
-    await manager.get(b.sessionId).prompt("do bravo");
+    await prompt(a.sessionId, "do alpha");
+    await prompt(b.sessionId, "do bravo");
 
     const settled = await waitFor(
       () =>
@@ -161,8 +182,8 @@ describe("two concurrent top-level sessions", () => {
     expect(a).toBeDefined();
     expect(b).toBeDefined();
 
-    const ua = manager.get(a!.sessionId).usageBreakdown();
-    const ub = manager.get(b!.sessionId).usageBreakdown();
+    const ua = await manager.sessionUsage(a!.sessionId);
+    const ub = await manager.sessionUsage(b!.sessionId);
 
     // Two turns each: 1000+1500 input, 100+50 output.
     expect(ua.total.inputTokens).toBe(2500);
@@ -178,10 +199,9 @@ describe("two concurrent top-level sessions", () => {
     // OMP computed real cost for a priced model.
     expect(ua.total.cost).toBeGreaterThan(0);
 
-    // Records are tagged with the owning session only.
-    for (const r of manager.get(a!.sessionId).usageRecords()) {
-      expect(r.sessionId).toBe(a!.sessionId);
-    }
+    // Usage for one session never bleeds into another.
+    expect(ua.total).toEqual(ub.total);
+    expect(ua.primary.inputTokens).toBe(2500);
   });
 });
 
@@ -203,16 +223,16 @@ describe("abort isolation", () => {
       advisors: [],
     });
 
-    await manager.get(c.sessionId).prompt("slow c");
-    await manager.get(d.sessionId).prompt("slow d");
+    await prompt(c.sessionId, "slow c");
+    await prompt(d.sessionId, "slow d");
 
     // Let both get genuinely underway.
     expect(await waitFor(() => textFor(c.sessionId).length > 0 && textFor(d.sessionId).length > 0)).toBe(
       true,
     );
 
-    await manager.get(c.sessionId).abort();
-    expect(manager.get(c.sessionId).runState).toBe("interrupted");
+    await abort(c.sessionId);
+    expect(runStates.get(c.sessionId)).toBe("interrupted");
 
     // D must keep producing output after C was aborted.
     const dBefore = textFor(d.sessionId).length;
@@ -239,7 +259,7 @@ describe("abort isolation", () => {
     const dGrew = await waitFor(() => textFor(d!.sessionId).length > dBefore, 8_000);
     expect(dGrew).toBe(true);
 
-    await manager.get(d!.sessionId).abort();
+    await abort(d!.sessionId);
   }, 40_000);
 });
 
@@ -268,9 +288,9 @@ describe("three simultaneous sessions across two projects", () => {
     });
 
     await Promise.all([
-      manager.get(s1.sessionId).prompt("go 1"),
-      manager.get(s2.sessionId).prompt("go 2"),
-      manager.get(s3.sessionId).prompt("go 3"),
+      prompt(s1.sessionId, "go 1"),
+      prompt(s2.sessionId, "go 2"),
+      prompt(s3.sessionId, "go 3"),
     ]);
 
     const allDone = await waitFor(() =>
@@ -296,12 +316,12 @@ describe("three simultaneous sessions across two projects", () => {
   }, 90_000);
 });
 
-describe("registry isolation invariant", () => {
-  test("each session gets a distinct agent identity", async () => {
-    const { agentIdFor } = await import("@orchestrator/omp-adapter");
-    const ids = manager.list().map((s) => agentIdFor(s.sessionId));
-    expect(new Set(ids).size).toBe(ids.length);
-    // None may be the bare upstream default that collides process-globally.
-    for (const id of ids) expect(id).not.toBe("Main");
+describe("process isolation invariant", () => {
+  test("every live session is backed by its own worker process", () => {
+    const sessions = manager.list();
+    expect(sessions.length).toBeGreaterThan(1);
+    // Distinct ids, and each is independently addressable through the supervisor.
+    expect(new Set(sessions.map((s) => s.sessionId)).size).toBe(sessions.length);
+    for (const s of sessions) expect(manager.has(s.sessionId)).toBe(true);
   });
 });

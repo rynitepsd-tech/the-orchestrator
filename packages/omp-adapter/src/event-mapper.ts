@@ -168,11 +168,12 @@ export class EventMapper {
       }
 
       case "agent_end": {
-        const terminal = ev.isTerminal !== false;
-        this.#ctx.onRunState?.(terminal ? "completed" : "idle");
-        return terminal
-          ? [{ type: "session.finished", sessionId, runState: "completed" }]
-          : [];
+        // Deliberately does NOT emit `session.finished`. Only the caller that
+        // drove the turn knows how it actually ended — an aborted run reaches
+        // agent_end too, and reporting "completed" here would clobber the
+        // real outcome. The mapper reports activity; the runtime reports fate.
+        this.#ctx.onRunState?.(ev.isTerminal !== false ? "completed" : "idle");
+        return [];
       }
 
       default:
