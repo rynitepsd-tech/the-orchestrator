@@ -321,18 +321,39 @@ export async function gitDiff(cwd: string, path: string): Promise<string> {
  * configuration.
  */
 export async function discoverAdvisors(cwd: string, agentDir: string): Promise<AdvisorConfig[]> {
-  const fn =
-    (OMP as any).discoverAdvisors ??
-    (OMP as any).loadAdvisorConfigs ??
-    (OMP as any).discoverWatchdogAdvisors;
-  if (typeof fn !== "function") return [];
-
   try {
-    const res = await fn({ cwd, agentDir });
+    // Advisor discovery is not on the package root; it lives on the `advisor`
+    // subpath, which the package exports explicitly via its `./*` mapping.
+    // Using upstream's own walker means the GUI shows exactly the roster the
+    // CLI would run, including project-over-user precedence.
+    const advisorModule = await import("@oh-my-pi/pi-coding-agent/advisor/index");
+    const discover = (advisorModule as any).discoverAdvisorConfigs;
+    if (typeof discover !== "function") return [];
+
+    // discoverAdvisorConfigs(cwd, agentDir?) -> { advisors, sharedInstructions }
+    const res = await discover(cwd, agentDir);
     const list: any[] = Array.isArray(res) ? res : (res?.advisors ?? []);
     return list.map((a, i) => normalizeAdvisor(a, i, "project"));
   } catch {
+    // A malformed WATCHDOG file must never break opening a project; upstream
+    // logs and skips, and so do we.
     return [];
+  }
+}
+
+/**
+ * Load the raw WATCHDOG config for a project, for "Save as project default".
+ *
+ * Returns null when upstream cannot provide it, so the UI can disable the
+ * action rather than silently writing a file it does not understand.
+ */
+export async function loadWatchdogConfig(cwd: string): Promise<unknown | null> {
+  try {
+    const m = await import("@oh-my-pi/pi-coding-agent/advisor/index");
+    const load = (m as any).loadWatchdogConfigFile;
+    return typeof load === "function" ? await load(cwd) : null;
+  } catch {
+    return null;
   }
 }
 
