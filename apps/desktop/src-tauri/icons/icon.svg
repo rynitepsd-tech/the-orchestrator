@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#23262E"/>
+      <stop offset="100%" stop-color="#14161B"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6E8BFF"/>
+      <stop offset="100%" stop-color="#59D4C4"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+
+  <!-- orbit arcs: the concurrent sessions -->
+  <g fill="none" stroke="url(#edge)" stroke-width="18" opacity="0.32">
+    <circle cx="512" cy="512" r="248"/>
+    <circle cx="512" cy="512" r="336"/>
+  </g>
+
+  <!-- links from conductor to each session node -->
+  <g stroke="url(#edge)" stroke-width="22" stroke-linecap="round" opacity="0.85">
+    <line x1="512" y1="512" x2="512" y2="264"/>
+    <line x1="512" y1="512" x2="727" y2="636"/>
+    <line x1="512" y1="512" x2="297" y2="636"/>
+  </g>
+
+  <!-- session nodes -->
+  <g fill="#59D4C4">
+    <circle cx="512" cy="264" r="72"/>
+    <circle cx="727" cy="636" r="72"/>
+    <circle cx="297" cy="636" r="72"/>
+  </g>
+
+  <!-- conductor -->
+  <circle cx="512" cy="512" r="104" fill="#0E1014" stroke="url(#edge)" stroke-width="26"/>
+  <circle cx="512" cy="512" r="34" fill="#6E8BFF"/>
+</svg>
