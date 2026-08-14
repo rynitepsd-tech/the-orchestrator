@@ -1,6 +1,6 @@
 [package]
 name = "the-orchestrator"
-version = "0.3.3"
+version = "0.3.4"
 description = "An unofficial native macOS desktop harness for OhMyPi"
 authors = ["The Orchestrator contributors"]
 license = "MIT"

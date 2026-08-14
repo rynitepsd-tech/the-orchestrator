@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.4
+
+- **Fix messages appearing twice.** The app showed your message optimistically
+  AND rendered the worker's echo of it as a second bubble. The echo now
+  reconciles into the original bubble.
+- **Open sessions survive relaunch in place.** Sessions you did not explicitly
+  close stay under their project group after a restart, with one-click resume.
+  Only "Close session" (or "Stop and close") moves one to Previous sessions.
+- **Whole turns condense like Codex.** Once the answer arrives, everything
+  that produced it — thinking, tool calls, subagents — collapses into a single
+  expandable "Worked for Ns · N steps" line before the answer. Work in
+  progress, advisor notes, and pending approvals stay visible.
+
 ## 0.3.3
 
 - Update checks no longer leave a 4-hour blind spot: the app rechecks a few

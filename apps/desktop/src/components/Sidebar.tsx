@@ -47,31 +47,53 @@ export function Sidebar({
       )
     : liveViews;
 
+  // Sessions that were open in this app before the last quit: they belong in
+  // their project group with one-click resume, not in "Previous sessions".
+  const openRemembered = useMemo(() => {
+    const remembered = new Set(prefs.openSessionPaths);
+    return discovered.filter(
+      (d) =>
+        remembered.has(d.path) &&
+        !openPaths.has(d.path) &&
+        !d.openInThisApp &&
+        !d.cwdMissing &&
+        (!q || d.title.toLowerCase().includes(q) || d.cwd.toLowerCase().includes(q)),
+    );
+  }, [discovered, openPaths, q, prefs.openSessionPaths]);
+
   const byProject = useMemo(() => {
-    const groups = new Map<string, SessionView[]>();
-    for (const v of filteredLive) {
-      const key = v.summary.projectPath;
-      const list = groups.get(key);
-      if (list) list.push(v);
-      else groups.set(key, [v]);
-    }
+    const groups = new Map<string, { views: SessionView[]; open: DiscoveredSession[] }>();
+    const group = (key: string) => {
+      let g = groups.get(key);
+      if (!g) {
+        g = { views: [], open: [] };
+        groups.set(key, g);
+      }
+      return g;
+    };
+    for (const v of filteredLive) group(v.summary.projectPath).views.push(v);
+    for (const d of openRemembered) group(d.cwd).open.push(d);
     return [...groups.entries()].sort((a, b) => {
       const ap = prefs.pinnedProjects.includes(a[0]) ? 0 : 1;
       const bp = prefs.pinnedProjects.includes(b[0]) ? 0 : 1;
       return ap - bp || a[0].localeCompare(b[0]);
     });
-  }, [filteredLive, prefs.pinnedProjects]);
+  }, [filteredLive, openRemembered, prefs.pinnedProjects]);
 
-  // Persisted sessions not currently open, newest first.
+  // Persisted sessions not currently open and not remembered-open, newest first.
   const resumable = useMemo(() => {
     const archived = new Set(prefs.archivedSessions);
+    const remembered = new Set(prefs.openSessionPaths);
     return discovered
-      .filter((d) => !openPaths.has(d.path) && !d.openInThisApp && !d.cwdMissing)
+      .filter(
+        (d) =>
+          !openPaths.has(d.path) && !remembered.has(d.path) && !d.openInThisApp && !d.cwdMissing,
+      )
       .filter((d) => showArchived || !archived.has(d.path))
       .filter((d) => !q || d.title.toLowerCase().includes(q) || d.cwd.toLowerCase().includes(q))
       .sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""))
       .slice(0, q ? 50 : 20);
-  }, [discovered, openPaths, q, prefs.archivedSessions, showArchived]);
+  }, [discovered, openPaths, q, prefs.archivedSessions, prefs.openSessionPaths, showArchived]);
 
   const archivedCount = discovered.filter((d) => prefs.archivedSessions.includes(d.path)).length;
 
@@ -105,9 +127,10 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-scroll">
-        {byProject.map(([projectPath, views]) => {
-          const shared = views.filter((v) => isActive(v.summary.runState)).length;
+        {byProject.map(([projectPath, g]) => {
+          const shared = g.views.filter((v) => isActive(v.summary.runState)).length;
           const collapsed = isCollapsed(projectPath);
+          const count = g.views.length + g.open.length;
           return (
             <div key={projectPath} className="project-group">
               <button
@@ -119,7 +142,7 @@ export function Sidebar({
                 <span className="group-chevron">{collapsed ? "›" : "⌄"}</span>
                 <span className="project-name">{projectPath.split("/").pop()}</span>
                 {prefs.pinnedProjects.includes(projectPath) && <span className="hint">pinned</span>}
-                {collapsed && <span className="hint">{views.length}</span>}
+                {collapsed && <span className="hint">{count}</span>}
                 {shared > 1 && (
                   <span
                     className="chip warn-chip"
@@ -130,7 +153,7 @@ export function Sidebar({
                 )}
               </button>
               {!collapsed &&
-                views.map((v) => (
+                g.views.map((v) => (
                   <SessionRow
                     key={v.summary.sessionId}
                     view={v}
@@ -138,6 +161,10 @@ export function Sidebar({
                     onSelect={() => select(v.summary.sessionId)}
                     onMenu={(x, y) => setMenu({ id: v.summary.sessionId, x, y })}
                   />
+                ))}
+              {!collapsed &&
+                g.open.map((d) => (
+                  <DiscoveredRow key={d.path} d={d} onResume={() => onResume(d)} />
                 ))}
             </div>
           );
@@ -362,8 +389,15 @@ function SessionMenu({
         className="menu-item"
         onClick={act(() => {
           // Close the live worker and drop the row. The OMP transcript is
-          // untouched and reappears under "Previous sessions".
+          // untouched and reappears under "Previous sessions" — an explicit
+          // close is the one action that demotes a session from its project
+          // group across relaunches.
           void engine.request("sessions.close", { sessionId, dispose: true }).catch(() => {});
+          if (s.ompSessionPath) {
+            updatePrefs({
+              openSessionPaths: prefs.openSessionPaths.filter((p) => p !== s.ompSessionPath),
+            });
+          }
           removeSession(sessionId);
         })}
       >

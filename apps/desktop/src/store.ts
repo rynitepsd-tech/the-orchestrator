@@ -423,12 +423,27 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
     case "session.title":
       return { ...v, summary: { ...v.summary, title: e.title } };
 
-    case "user.message":
+    case "user.message": {
+      // The UI adds an optimistic bubble at send time (id `u<timestamp>`), and
+      // the worker echoes the same message when OMP starts processing it
+      // (id `<session>:u<seq>`). Reconcile the echo into the optimistic bubble
+      // instead of rendering the message twice. Replay ids (`:ru<seq>`) never
+      // match the optimistic pattern, so history is unaffected.
+      const echoOf = lastIndex(
+        t,
+        (x) => x.kind === "user" && /^u\d+$/.test(x.id) && x.text === e.text,
+      );
+      if (echoOf >= 0) {
+        const copy = [...t];
+        copy[echoOf] = { ...copy[echoOf], id: e.messageId } as TranscriptItem;
+        return { ...v, transcript: copy };
+      }
       return {
         ...v,
         summary: { ...v.summary, messageCount: v.summary.messageCount + 1 },
         transcript: [...t, { kind: "user", id: e.messageId, text: e.text }],
       };
+    }
 
     case "assistant.text":
     case "assistant.thinking": {

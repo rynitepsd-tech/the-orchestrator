@@ -40,6 +40,12 @@ export interface Prefs {
   setupComplete: boolean;
   /** Project paths whose sidebar group is collapsed. */
   collapsedProjects: string[];
+  /**
+   * OMP session paths that were open (not explicitly closed) in this app.
+   * After a relaunch these render inside their project group with one-click
+   * resume, instead of sinking into "Previous sessions".
+   */
+  openSessionPaths: string[];
 }
 
 const KEY = "orchestrator.prefs.v1";
@@ -59,6 +65,7 @@ export const DEFAULT_PREFS: Prefs = {
   keepRunningOnClose: true,
   setupComplete: false,
   collapsedProjects: [],
+  openSessionPaths: [],
 };
 
 export function loadPrefs(): Prefs {

@@ -1072,6 +1072,33 @@ button {
   overflow: auto;
 }
 
+/* ---- condensed work groups (Codex-style "Worked for …") ---- */
+.work-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 3px 6px;
+  margin-left: -6px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.work-head:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.work-group.open .work-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 4px 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
 /* ---- pending bar (pinned above the composer) ---- */
 .pending-bar {
   margin: 0 14px 0;

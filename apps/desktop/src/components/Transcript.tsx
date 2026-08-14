@@ -69,9 +69,13 @@ export function Transcript({
               </button>
             </div>
           )}
-          {visible.map((item) => (
-            <Item key={item.id} item={item} sessionId={sessionId} />
-          ))}
+          {toNodes(visible).map((n) =>
+            n.kind === "plain" ? (
+              <Item key={n.item.id} item={n.item} sessionId={sessionId} />
+            ) : (
+              <WorkGroup key={n.key} items={n.items} sessionId={sessionId} />
+            ),
+          )}
         </div>
       </div>
       {!atBottom && (
@@ -88,6 +92,91 @@ export function Transcript({
         >
           Jump to latest ↓
         </button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Turn condensing (Codex-style)
+//
+// Once a turn's answer arrives, the work that produced it — thinking-only
+// messages, tool calls, subagents, settled approvals — condenses into one
+// "Worked for …" line before the answer. Work still in flight (no answer yet)
+// stays fully visible; advisor notes, system lines, and anything pending
+// never condense.
+// ---------------------------------------------------------------------------
+
+type RenderNode =
+  | { kind: "plain"; item: TranscriptItem }
+  | { kind: "work"; key: string; items: TranscriptItem[] };
+
+function isWorkish(i: TranscriptItem): boolean {
+  switch (i.kind) {
+    case "tool":
+    case "subagent":
+      return true;
+    case "assistant":
+      return !i.text; // thinking-only messages
+    case "approval":
+    case "interaction":
+      return i.state !== "pending";
+    default:
+      return false;
+  }
+}
+
+function toNodes(items: TranscriptItem[]): RenderNode[] {
+  const nodes: RenderNode[] = [];
+  let buf: TranscriptItem[] = [];
+  const flush = (collapse: boolean) => {
+    if (!buf.length) return;
+    if (collapse) nodes.push({ kind: "work", key: `wg-${buf[0].id}`, items: buf });
+    else for (const item of buf) nodes.push({ kind: "plain", item });
+    buf = [];
+  };
+  for (const item of items) {
+    if (isWorkish(item)) {
+      buf.push(item);
+      continue;
+    }
+    // An answer starting means the work behind it is done — condense it.
+    const isAnswer = item.kind === "assistant" && Boolean(item.text);
+    flush(isAnswer);
+    nodes.push({ kind: "plain", item });
+  }
+  flush(false); // trailing work belongs to a turn still in progress
+  return nodes;
+}
+
+function WorkGroup({
+  items,
+  sessionId,
+}: {
+  items: TranscriptItem[];
+  sessionId: string;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ms = items.reduce(
+    (n, i) => n + ((i.kind === "tool" || i.kind === "subagent") && i.durationMs ? i.durationMs : 0),
+    0,
+  );
+  const label = ms > 0 ? `Worked for ${fmtDuration(ms)}` : "Worked";
+  return (
+    <div className={`work-group${open ? " open" : ""}`}>
+      <button className="work-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <span className="tool-chevron">{open ? "▾" : "▸"}</span>
+        <span>{label}</span>
+        <span className="hint">
+          {fmtCount(items.length)} step{items.length === 1 ? "" : "s"}
+        </span>
+      </button>
+      {open && (
+        <div className="work-body">
+          {items.map((item) => (
+            <Item key={item.id} item={item} sessionId={sessionId} />
+          ))}
+        </div>
       )}
     </div>
   );

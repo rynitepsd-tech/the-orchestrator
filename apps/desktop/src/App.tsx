@@ -99,6 +99,15 @@ export function App(): JSX.Element {
       // the Usage panel doesn't show launch-time numbers all day.
       if (e.type === "session.finished") void refreshQuotas();
 
+      // Remember which sessions are open in this app, so a relaunch keeps
+      // them under their project group instead of "Previous sessions".
+      if (e.type === "session.persisted" && e.ompSessionPath) {
+        const open = st.prefs.openSessionPaths;
+        if (!open.includes(e.ompSessionPath)) {
+          st.updatePrefs({ openSessionPaths: [...open, e.ompSessionPath].slice(-100) });
+        }
+      }
+
       // Native notifications for BACKGROUND sessions only, per user prefs.
       if (before && st.visibleSessionId !== e.sessionId) {
         const n = st.prefs.notifications;
@@ -216,7 +225,14 @@ export function App(): JSX.Element {
   const loadDiscovered = async () => {
     try {
       const res = await engine.request("sessions.discover", {});
-      useStore.getState().setDiscovered(res.sessions);
+      const st = useStore.getState();
+      st.setDiscovered(res.sessions);
+      // Prune remembered-open paths whose session files no longer exist.
+      const known = new Set(res.sessions.map((d) => d.path));
+      const pruned = st.prefs.openSessionPaths.filter((p) => known.has(p));
+      if (pruned.length !== st.prefs.openSessionPaths.length) {
+        st.updatePrefs({ openSessionPaths: pruned });
+      }
     } catch {
       /* discovery is progressive enhancement */
     }
@@ -299,8 +315,9 @@ export function App(): JSX.Element {
   const send = (text: string, whenBusy: "steer" | "queue") => {
     if (!s.visibleSessionId) return;
     const id = s.visibleSessionId;
-    // Optimistically show the user's message; the engine echoes nothing back
-    // for it, so this is the single source for that bubble.
+    // Optimistically show the user's message immediately; the worker echoes it
+    // once OMP picks it up, and the store reconciles that echo into this
+    // bubble by id pattern + text (see reduce "user.message").
     useStore.getState().apply({
       type: "user.message",
       sessionId: id,
