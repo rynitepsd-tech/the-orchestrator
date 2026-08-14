@@ -213,14 +213,23 @@ jobs:
             the titlebar. `latest.json`, the `.app.tar.gz`, and its `.sig`
             are the updater feed — do not delete them from the release.
 
-            This build is ad-hoc signed and not notarized. On first launch
-            macOS will block it; approve it the supported way:
+            **First launch.** This build is ad-hoc signed (no Apple Developer
+            account) and not notarized, so macOS reports the downloaded app
+            as "damaged" — it is not; verify the checksum below if in doubt.
+            Approve this one app without touching Gatekeeper globally:
 
-            1. Drag the app into Applications and try to open it once.
-            2. Open System Settings → Privacy & Security, scroll to the
-               "blocked" notice, and click **Open Anyway**.
+            1. Drag **The Orchestrator** into Applications (click Cancel on
+               the "damaged" dialog — don't move it to the Trash).
+            2. In Terminal, clear the download-quarantine flag for this app
+               only:
 
-            (Do not disable Gatekeeper globally; per-app approval is enough.)
+                   xattr -dr com.apple.quarantine "/Applications/The Orchestrator.app"
+
+            3. Open the app normally. You only do this once — in-app updates
+               are signature-verified and are not quarantined.
+
+            (Never disable Gatekeeper system-wide; the single-app command
+            above is the entire workaround.)
 
             Verify the download against `SHA256SUMS.txt`:
 

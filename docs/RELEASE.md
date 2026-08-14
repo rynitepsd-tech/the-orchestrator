@@ -213,32 +213,37 @@ it is not a build failure.
 
 ## 6. Gatekeeper: what users see, and the correct fix
 
-Because the app is ad-hoc signed and not notarized, first launch is blocked. On current macOS the
-user double-clicks the app and gets a dialog saying the app was not opened because Apple could not
-verify it is free of malware, with buttons to move it to the Trash or cancel. Nothing in that dialog
-opens the app.
+Because the app is ad-hoc signed and not notarized, a **downloaded** copy is blocked on first
+launch. Measured behaviour with the real artifact (v0.3.0, Apple Silicon): macOS reports
+*"The Orchestrator" is damaged and can't be opened. You should move it to the Trash.* The file is
+not damaged — the checksum matches CI's output byte for byte. "Damaged" is what Gatekeeper says
+about a quarantined app with no signing identity; there is **no "Open Anyway" entry** in
+Privacy & Security for this case (that flow exists only for identified-developer signatures).
+Sealing the bundle properly (ad-hoc `signingIdentity: "-"`, which we do) makes `codesign --verify`
+pass but does not change the Gatekeeper verdict — only Developer ID + notarization does
+(section 8).
 
-Include this in the release notes verbatim:
+The only working approval is removing the quarantine flag from **this one app**:
 
-> **First launch**
->
-> 1. Drag **The Orchestrator** to `/Applications`.
-> 2. Double-click it. macOS will block it and say it cannot verify the developer. Click **Done** (or
->    **Cancel**) — do not move it to the Trash.
-> 3. Open **System Settings → Privacy & Security**, scroll to the Security section. A message names
->    The Orchestrator as blocked. Click **Open Anyway**.
-> 4. Authenticate, then confirm **Open Anyway** in the dialog that follows.
->
-> You only do this once. The app is ad-hoc signed because the project has no paid Apple Developer
-> account; it is not notarized, and Gatekeeper reports that accurately.
+```sh
+xattr -dr com.apple.quarantine "/Applications/The Orchestrator.app"
+```
 
-**Never instruct users to disable Gatekeeper.** Do not publish `sudo spctl --master-disable`, and do
-not recommend blanket `xattr -dr com.apple.quarantine` sweeps as the standard path. Those weaken
-system-wide protection permanently to solve a one-time, per-app prompt that "Open Anyway" solves
-correctly. The "Open Anyway" flow is the supported mechanism and it is sufficient.
+Include this in the release notes (the release workflow's body template already carries it), with
+the "damaged is expected, verify the checksum if in doubt" framing so users don't re-download in a
+loop.
 
-If a user reports that "Open Anyway" does not appear, the usual cause is that they never attempted
-the launch — the entry only appears in Privacy & Security after macOS has blocked an attempt.
+Scope discipline still applies:
+
+- **Never instruct users to disable Gatekeeper.** No `sudo spctl --master-disable`, ever.
+- The `xattr` command is scoped to the single installed app — do not publish blanket
+  `~/Downloads`-wide sweeps.
+- Local builds never hit this: quarantine is applied by browsers at download time, which is why
+  `tauri build` output always launched fine on the build machine.
+- In-app updates do not re-trigger it: the updater's own writes are not quarantined, and payloads
+  are verified against the baked-in minisign key instead.
+
+This section stops being needed the day the project has Developer ID signing and notarization.
 
 ---
 
