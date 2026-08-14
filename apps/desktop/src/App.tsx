@@ -22,6 +22,7 @@ import { Composer } from "./components/Composer";
 import { Inspector } from "./components/Inspector";
 import { NewSession } from "./components/NewSession";
 import { Onboarding } from "./components/Onboarding";
+import { PendingBar } from "./components/PendingBar";
 import { PromptDialog } from "./components/PromptDialog";
 import { QuitDialog } from "./components/QuitDialog";
 import { Settings } from "./components/Settings";
@@ -74,6 +75,10 @@ export function App(): JSX.Element {
       const st = useStore.getState();
       const before = st.sessions[e.sessionId];
       st.apply(e);
+
+      // A finished turn moved the provider's usage needle — refetch limits so
+      // the Usage panel doesn't show launch-time numbers all day.
+      if (e.type === "session.finished") void refreshQuotas();
 
       // Native notifications for BACKGROUND sessions only, per user prefs.
       if (before && st.visibleSessionId !== e.sessionId) {
@@ -170,6 +175,24 @@ export function App(): JSX.Element {
       /* quota is optional; absence is rendered as "not reported" */
     }
   };
+
+  const refreshQuotas = async () => {
+    try {
+      const q = await engine.request("providers.quota", {});
+      useStore.getState().setQuotas(q.quotas);
+    } catch {
+      /* quota is optional; keep the last known values */
+    }
+  };
+
+  // Periodic quota refresh so limits stay current even without local activity
+  // (other machines and the CLI consume the same windows).
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (useStore.getState().engineStage === "ready") void refreshQuotas();
+    }, 600_000);
+    return () => clearInterval(t);
+  }, []);
 
   const loadDiscovered = async () => {
     try {
@@ -580,6 +603,8 @@ export function App(): JSX.Element {
                 </div>
 
                 <Transcript items={view.transcript} sessionId={view.summary.sessionId} />
+
+                {view.pendingInteractions > 0 && <PendingBar view={view} />}
 
                 <Composer
                   sessionId={view.summary.sessionId}

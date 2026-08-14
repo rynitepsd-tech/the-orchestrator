@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.2
+
+- **Approvals can't hide any more.** A pending approval pins a bar above the
+  composer — tool, exact command, and the Allow/Reject buttons right there —
+  until you answer. Extension prompts pin too, with a jump to their card.
+  "Needs review" is now impossible to miss.
+- **Tool calls are one line each.** Every command/edit/read collapses to a
+  single header line (name + argument + status); click to expand output or
+  diff. Failures auto-expand.
+- **Provider limits actually show numbers.** The engine read usage quantities
+  from the wrong level of OMP's usage reports, so every window rendered "—".
+  It now mirrors OMP's own fraction resolution (explicit fraction, used/limit,
+  percent, inverted remaining) and reports reset times. Limits also refresh
+  after every finished turn and every 10 minutes, instead of only at launch.
+
 ## 0.3.1
 
 Feedback round from real use.

@@ -125,30 +125,53 @@ export class RuntimeManager {
 
     for (const r of raw as any[]) {
       const windows: ProviderQuota["windows"] = [];
-      const candidates = Array.isArray(r?.windows)
-        ? r.windows
-        : Array.isArray(r?.limits)
-          ? r.limits
+      const candidates = Array.isArray(r?.limits)
+        ? r.limits
+        : Array.isArray(r?.windows)
+          ? r.windows
           : [];
       for (const w of candidates) {
-        const used = numOrUndef(w?.used ?? w?.utilization ?? w?.consumed);
-        const limit = numOrUndef(w?.limit ?? w?.max ?? w?.total);
-        let fraction = numOrUndef(w?.fraction ?? w?.percent);
-        if (fraction !== undefined && fraction > 1) fraction = fraction / 100;
+        // OMP's UsageLimit nests quantities under `amount` and the reset
+        // timestamp under `window` (pi-ai usage.ts). Read those first; the
+        // flat fallbacks keep older/foreign report shapes working.
+        const amount = (w?.amount ?? {}) as Record<string, unknown>;
+        const used = numOrUndef(amount.used ?? w?.used ?? w?.utilization ?? w?.consumed);
+        const limit = numOrUndef(amount.limit ?? w?.limit ?? w?.max ?? w?.total);
+
+        // Fraction precedence mirrors pi-ai's resolveUsedFraction: explicit
+        // fraction > used/limit > percent-unit used > inverted remaining.
+        // A fraction above 1 is genuine overage — never rescale it.
+        let fraction = numOrUndef(amount.usedFraction);
         if (fraction === undefined && used !== undefined && limit) fraction = used / limit;
+        if (fraction === undefined && amount.unit === "percent" && used !== undefined) {
+          fraction = used / 100;
+        }
+        if (fraction === undefined) {
+          const remaining = numOrUndef(amount.remainingFraction);
+          if (remaining !== undefined) fraction = Math.max(0, 1 - remaining);
+        }
+        if (fraction === undefined) {
+          // Legacy flat shapes reported percent as 0..100.
+          let legacy = numOrUndef(w?.fraction ?? w?.percent);
+          if (legacy !== undefined && legacy > 1) legacy = legacy / 100;
+          fraction = legacy;
+        }
+
+        const resetsMs = numOrUndef(w?.window?.resetsAt ?? w?.resetsAt);
         windows.push({
-          label: String(w?.label ?? w?.name ?? w?.window ?? "usage"),
+          label: String(w?.label ?? w?.window?.label ?? w?.name ?? "usage"),
           fraction,
           used,
           limit,
-          resetsAt: w?.resetsAt ? String(w.resetsAt) : undefined,
+          resetsAt: resetsMs !== undefined ? new Date(resetsMs).toISOString() : undefined,
         });
       }
+      const fetchedMs = numOrUndef(r?.fetchedAt);
       out.push({
         provider: String(r?.provider ?? r?.name ?? "unknown"),
         accountLabel: r?.accountLabel ? String(r.accountLabel) : undefined,
         windows,
-        fetchedAt: r?.fetchedAt ? String(r.fetchedAt) : now,
+        fetchedAt: fetchedMs !== undefined ? new Date(fetchedMs).toISOString() : now,
         unavailableReason:
           windows.length === 0 ? "Usage limit not reported by provider" : undefined,
       });

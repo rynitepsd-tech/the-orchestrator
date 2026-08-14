@@ -200,9 +200,20 @@ const ToolCard = memo(function ToolCard({
 }): JSX.Element {
   const { label, mcp } = toolTitle(item.name);
   const d = item.detail;
+  // One quiet line per tool call; output/diff only on request. Errors
+  // auto-expand — those are the ones worth reading.
+  const [openState, setOpen] = useState<boolean | null>(null);
+  const hasBody = Boolean(
+    (d?.kind === "edit" && d.diff) || item.output || (item.error && item.state === "error"),
+  );
+  const open = openState ?? item.state === "error";
   return (
     <div className={`tool-card ${item.state}`}>
-      <div className="tool-head">
+      <div
+        className={`tool-head${hasBody ? " expandable" : ""}`}
+        onClick={hasBody ? () => setOpen((v) => !(v ?? item.state === "error")) : undefined}
+      >
+        {hasBody && <span className="tool-chevron">{open ? "▾" : "▸"}</span>}
         {mcp && <span className="chip mcp-chip">MCP · {mcp}</span>}
         <span className="tool-name">{label}</span>
         <span className="tool-arg mono" title={argSummary(item.name, item.args, d)}>
@@ -226,13 +237,17 @@ const ToolCard = memo(function ToolCard({
           <span className="hint">{fmtDuration(item.durationMs)}</span>
         )}
       </div>
-      {d?.kind === "edit" && d.diff ? (
-        <Diff diff={d.diff} />
-      ) : item.output ? (
-        <Output text={item.output} error={item.state === "error"} />
-      ) : null}
-      {item.error && item.state === "error" && !item.output && (
-        <div className="banner">{item.error.slice(0, 600)}</div>
+      {open && (
+        <>
+          {d?.kind === "edit" && d.diff ? (
+            <Diff diff={d.diff} />
+          ) : item.output ? (
+            <Output text={item.output} error={item.state === "error"} />
+          ) : null}
+          {item.error && item.state === "error" && !item.output && (
+            <div className="banner">{item.error.slice(0, 600)}</div>
+          )}
+        </>
       )}
     </div>
   );
@@ -422,7 +437,7 @@ const ApprovalCard = memo(function ApprovalCard({
   }
 
   return (
-    <div className="approval-card">
+    <div className="approval-card" id={`titem-${item.id}`}>
       <div className="approval-head">
         <span className="approval-title">Approval needed</span>
         <span className="chip">{item.toolName}</span>
@@ -490,7 +505,7 @@ const InteractionCard = memo(function InteractionCard({
 
   const ui = item.ui;
   return (
-    <div className="approval-card">
+    <div className="approval-card" id={`titem-${item.id}`}>
       <div className="approval-head">
         <span className="approval-title">
           {ui.kind === "unsupported" ? "Unsupported interaction" : "Input needed"}

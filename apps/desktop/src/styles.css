@@ -1036,6 +1036,16 @@ button {
   gap: 8px;
   min-width: 0;
 }
+.tool-head.expandable {
+  cursor: pointer;
+  user-select: none;
+}
+.tool-chevron {
+  color: var(--text-faint);
+  font-size: 10px;
+  flex: none;
+  width: 10px;
+}
 .tool-name {
   font-weight: 600;
   font-size: 12px;
@@ -1060,6 +1070,29 @@ button {
 .file-preview {
   max-height: 320px;
   overflow: auto;
+}
+
+/* ---- pending bar (pinned above the composer) ---- */
+.pending-bar {
+  margin: 0 14px 0;
+  border: 2px solid var(--warn);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  padding: 10px 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18);
+}
+.pending-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pending-bar-summary {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---- approvals & interactions ---- */
