@@ -677,6 +677,9 @@ button {
   font-family: var(--mono);
   font-size: 13.5px;
   white-space: nowrap;
+  /* Adjacent right-aligned columns (tokens | cost) must never read as one
+   * glued number like "190.5M$168.85". */
+  padding-left: 14px;
 }
 
 .usage-table tr.total td {
@@ -1715,6 +1718,7 @@ button {
 }
 .usage-table th.num {
   text-align: right;
+  padding-left: 14px;
 }
 
 /* ---- changes / files ---- */

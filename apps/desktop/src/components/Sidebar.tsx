@@ -201,8 +201,11 @@ export function Sidebar({
                   </span>
                 )}
               </button>
-              {!collapsed &&
-                g.views.map((v) => (
+              {/* A collapsed group still shows the session you are IN — folding
+                  the project you're working in must never hide your place. */}
+              {g.views
+                .filter((v) => !collapsed || v.summary.sessionId === visibleId)
+                .map((v) => (
                   <SessionRow
                     key={v.summary.sessionId}
                     view={v}

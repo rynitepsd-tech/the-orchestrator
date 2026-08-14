@@ -31,7 +31,7 @@ import { Transcript } from "./components/Transcript";
 import { UsageCenter } from "./components/UsageCenter";
 import { engine } from "./engine-client";
 import { checkForUpdates, installUpdate } from "./lib/updater";
-import { fmtTokens, isActive, modelBasename, useStore } from "./store";
+import { fmtTokens, isActive, modelBasename, runStateLabel, useStore } from "./store";
 
 export function App(): JSX.Element {
   const s = useStore();
@@ -661,7 +661,14 @@ export function App(): JSX.Element {
                       Resume Session
                     </button>
                   ) : (
-                    <span className="hint">{view.summary.activity ?? view.summary.runState}</span>
+                    <span className="hint">
+                      {/* "Finished" while an advisor is still reading would be a
+                          lie — the reviewer may send the agent back to work. */}
+                      {!isActive(view.summary.runState) &&
+                      Object.values(view.advisorStates).some((st) => st === "reviewing")
+                        ? "Advisors reviewing…"
+                        : (view.summary.activity ?? runStateLabel(view.summary.runState))}
+                    </span>
                   )}
                 </div>
 

@@ -765,9 +765,24 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         transcript: [...t, { kind: "system", id: nextId(), text: e.error.message, tone: "error" }],
       };
 
-    case "session.finished":
+    case "session.finished": {
+      // A clear end-of-turn marker in the transcript, honest about advisors:
+      // "done" with a reviewer still reading is not done yet.
+      const reviewing = Object.values(v.advisorStates).some((st) => st === "reviewing");
+      const marker: TranscriptItem | null =
+        e.runState === "completed"
+          ? {
+              kind: "system",
+              id: nextId(),
+              tone: "info",
+              text: reviewing
+                ? "✓ Turn finished — advisors are still reviewing and may add notes"
+                : "✓ Done",
+            }
+          : null;
       return {
         ...v,
+        transcript: marker ? [...v.transcript, marker] : v.transcript,
         summary: {
           ...v.summary,
           runState: e.runState,
@@ -776,6 +791,7 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
           unread: !visible,
         },
       };
+    }
 
     default:
       return v;

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.7
+
+- **You can tell when it's done.** Every completed turn ends with a "✓ Done"
+  marker in the transcript — or "✓ Turn finished — advisors are still
+  reviewing and may add notes" when a reviewer hasn't weighed in yet. The
+  session header likewise shows "Advisors reviewing…" instead of a premature
+  "Finished".
+- **Turn condensing, all the way.** A finished turn is now ONE expandable
+  "Worked" line: intermediate narration, thinking, and tool batches all fold
+  in; only the final answer stays out. If the agent resumes after an advisor
+  blocker, the new work streams below — and folds too once the next answer
+  lands.
+- **Usage numbers unglued.** Token and cost columns had zero spacing between
+  them ("190.5M\.85"); columns now keep a readable gap.
+- **Collapsed projects keep your active session visible**, so folding the
+  project you're working in never hides where you are.
+
 ## 0.3.6
 
 - **Fast mode** (OpenAI / Anthropic priority tier), wired through OMP's own

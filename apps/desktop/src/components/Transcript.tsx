@@ -111,41 +111,68 @@ type RenderNode =
   | { kind: "plain"; item: TranscriptItem }
   | { kind: "work"; key: string; items: TranscriptItem[] };
 
-function isWorkish(i: TranscriptItem): boolean {
-  switch (i.kind) {
-    case "tool":
-    case "subagent":
-      return true;
-    case "assistant":
-      return !i.text; // thinking-only messages
-    case "approval":
-    case "interaction":
-      return i.state !== "pending";
-    default:
-      return false;
-  }
+/** Items that must never disappear into a collapsed work group. */
+function alwaysVisible(i: TranscriptItem): boolean {
+  if (i.kind === "user" || i.kind === "system" || i.kind === "advisor") return true;
+  if ((i.kind === "approval" || i.kind === "interaction") && i.state === "pending") return true;
+  return false;
 }
 
+/**
+ * Codex-style condensing, done completely: within a turn (user message to user
+ * message), EVERYTHING that led to the latest answer — thinking, tool calls,
+ * subagents, settled approvals, and intermediate narration — folds into a
+ * single "Worked" line before that answer. Only the latest answer stays out.
+ * If the agent keeps going after an answer (say, an advisor raised a blocker),
+ * the new work streams below it — and once a newer answer lands, the previous
+ * one folds away too. Advisor notes, system lines, and pending approvals are
+ * always visible.
+ */
 function toNodes(items: TranscriptItem[]): RenderNode[] {
   const nodes: RenderNode[] = [];
-  let buf: TranscriptItem[] = [];
-  const flush = (collapse: boolean) => {
-    if (!buf.length) return;
-    if (collapse) nodes.push({ kind: "work", key: `wg-${buf[0].id}`, items: buf });
-    else for (const item of buf) nodes.push({ kind: "plain", item });
-    buf = [];
-  };
-  for (const item of items) {
-    if (isWorkish(item)) {
-      buf.push(item);
-      continue;
+  let turn: TranscriptItem[] = [];
+
+  const flushTurn = () => {
+    if (!turn.length) return;
+    // The latest answer in this turn (streaming or not — once answer text
+    // exists, the work that produced it is history).
+    let lastAnswer = -1;
+    for (let i = turn.length - 1; i >= 0; i--) {
+      const it = turn[i];
+      if (it.kind === "assistant" && it.text) {
+        lastAnswer = i;
+        break;
+      }
     }
-    // An answer starting means the work behind it is done — condense it.
-    const isAnswer = item.kind === "assistant" && Boolean(item.text);
-    flush(isAnswer);
-    nodes.push({ kind: "plain", item });
+    const bucket: TranscriptItem[] = [];
+    const flushBucket = () => {
+      if (!bucket.length) return;
+      nodes.push({ kind: "work", key: `wg-${bucket[0].id}`, items: [...bucket] });
+      bucket.length = 0;
+    };
+    turn.forEach((it, i) => {
+      if (lastAnswer === -1 || i >= lastAnswer || alwaysVisible(it)) {
+        // No answer yet (work in progress), the answer itself and anything
+        // after it, or a kind that never collapses.
+        flushBucket();
+        nodes.push({ kind: "plain", item: it });
+      } else {
+        bucket.push(it);
+      }
+    });
+    flushBucket();
+    turn = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === "user") {
+      flushTurn();
+      nodes.push({ kind: "plain", item });
+    } else {
+      turn.push(item);
+    }
   }
-  flush(false); // trailing work belongs to a turn still in progress
+  flushTurn();
   return nodes;
 }
 
