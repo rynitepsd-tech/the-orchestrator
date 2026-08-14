@@ -22,7 +22,7 @@
   blocker, the new work streams below — and folds too once the next answer
   lands.
 - **Usage numbers unglued.** Token and cost columns had zero spacing between
-  them ("190.5M\.85"); columns now keep a readable gap.
+  them ("190.5M$168.85"); columns now keep a readable gap.
 - **Collapsed projects keep your active session visible**, so folding the
   project you're working in never hides where you are.
 
