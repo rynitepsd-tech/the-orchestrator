@@ -78,6 +78,15 @@ export function Sidebar({
   const updatePrefs = useStore((s) => s.updatePrefs);
   const setNewSession = useStore((s) => s.setNewSession);
 
+  // Collapse is a browsing aid; an active search always shows its matches.
+  const isCollapsed = (key: string) => !q && prefs.collapsedProjects.includes(key);
+  const toggleCollapsed = (key: string) =>
+    updatePrefs({
+      collapsedProjects: prefs.collapsedProjects.includes(key)
+        ? prefs.collapsedProjects.filter((p) => p !== key)
+        : [...prefs.collapsedProjects, key],
+    });
+
   return (
     <aside className="sidebar" onClick={() => setMenu(null)}>
       <div className="sidebar-head">
@@ -98,11 +107,19 @@ export function Sidebar({
       <div className="sidebar-scroll">
         {byProject.map(([projectPath, views]) => {
           const shared = views.filter((v) => isActive(v.summary.runState)).length;
+          const collapsed = isCollapsed(projectPath);
           return (
             <div key={projectPath} className="project-group">
-              <div className="project-head" title={projectPath}>
+              <button
+                className="project-head project-head-toggle"
+                title={projectPath}
+                onClick={() => toggleCollapsed(projectPath)}
+                aria-expanded={!collapsed}
+              >
+                <span className="group-chevron">{collapsed ? "›" : "⌄"}</span>
                 <span className="project-name">{projectPath.split("/").pop()}</span>
                 {prefs.pinnedProjects.includes(projectPath) && <span className="hint">pinned</span>}
+                {collapsed && <span className="hint">{views.length}</span>}
                 {shared > 1 && (
                   <span
                     className="chip warn-chip"
@@ -111,16 +128,17 @@ export function Sidebar({
                     {shared} active
                   </span>
                 )}
-              </div>
-              {views.map((v) => (
-                <SessionRow
-                  key={v.summary.sessionId}
-                  view={v}
-                  active={v.summary.sessionId === visibleId}
-                  onSelect={() => select(v.summary.sessionId)}
-                  onMenu={(x, y) => setMenu({ id: v.summary.sessionId, x, y })}
-                />
-              ))}
+              </button>
+              {!collapsed &&
+                views.map((v) => (
+                  <SessionRow
+                    key={v.summary.sessionId}
+                    view={v}
+                    active={v.summary.sessionId === visibleId}
+                    onSelect={() => select(v.summary.sessionId)}
+                    onMenu={(x, y) => setMenu({ id: v.summary.sessionId, x, y })}
+                  />
+                ))}
             </div>
           );
         })}
@@ -128,8 +146,16 @@ export function Sidebar({
         {resumable.length > 0 && (
           <div className="project-group">
             <div className="project-head">
-              <span className="project-name">Previous sessions</span>
-              {archivedCount > 0 && (
+              <button
+                className="project-head-toggle row"
+                onClick={() => toggleCollapsed("__previous__")}
+                aria-expanded={!isCollapsed("__previous__")}
+              >
+                <span className="group-chevron">{isCollapsed("__previous__") ? "›" : "⌄"}</span>
+                <span className="project-name">Previous sessions</span>
+                {isCollapsed("__previous__") && <span className="hint">{resumable.length}</span>}
+              </button>
+              {archivedCount > 0 && !isCollapsed("__previous__") && (
                 <button
                   className="btn btn-ghost"
                   onClick={() => setShowArchived((v) => !v)}
@@ -139,9 +165,10 @@ export function Sidebar({
                 </button>
               )}
             </div>
-            {resumable.map((d) => (
-              <DiscoveredRow key={d.path} d={d} onResume={() => onResume(d)} />
-            ))}
+            {!isCollapsed("__previous__") &&
+              resumable.map((d) => (
+                <DiscoveredRow key={d.path} d={d} onResume={() => onResume(d)} />
+              ))}
           </div>
         )}
 

@@ -7,6 +7,7 @@
  */
 
 import type { ResponsePayloads } from "@orchestrator/protocol";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { JSX } from "react";
 import { useEffect, useState } from "react";
@@ -183,7 +184,17 @@ function Presets(): JSX.Element {
               <button className="btn btn-ghost" onClick={() => setEditing(p.name)}>
                 Edit
               </button>
-              <button className="btn btn-ghost" onClick={() => removePreset(p.name)}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  void ask(
+                    `Are you sure you want to delete the “${p.name}” preset? You will have to set it up again.`,
+                    { title: "Delete preset", kind: "warning" },
+                  ).then((yes) => {
+                    if (yes) removePreset(p.name);
+                  });
+                }}
+              >
                 Delete
               </button>
             </div>
@@ -199,6 +210,7 @@ export function Providers(): JSX.Element {
   const setCatalogue = useStore((s) => s.setCatalogue);
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
 
   const connect = async (name: string) => {
     setBusyProvider(name);
@@ -220,8 +232,10 @@ export function Providers(): JSX.Element {
     }
   };
 
-  const connected = providers.filter((p) => p.authenticated);
-  const disconnected = providers.filter((p) => !p.authenticated);
+  const q = query.trim().toLowerCase();
+  const matching = q ? providers.filter((p) => p.name.toLowerCase().includes(q)) : providers;
+  const connected = matching.filter((p) => p.authenticated);
+  const disconnected = matching.filter((p) => !p.authenticated);
 
   return (
     <div>
@@ -230,7 +244,18 @@ export function Providers(): JSX.Element {
         The Orchestrator reuses your OMP credentials. Signing in here runs OMP's own OAuth flow;
         secrets never leave OMP's storage.
       </div>
+      {providers.length > 6 && (
+        <input
+          className="input"
+          style={{ marginBottom: 8 }}
+          placeholder="Search providers…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search providers"
+        />
+      )}
       {authMsg && <div className="banner info">{authMsg}</div>}
+      {matching.length === 0 && <div className="empty">No providers match.</div>}
       {connected.map((p) => (
         <div key={p.name} className="provider-row">
           <span className="dot done" />

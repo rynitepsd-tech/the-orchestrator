@@ -38,6 +38,8 @@ export interface Prefs {
   keepRunningOnClose: boolean;
   /** First-run setup finished (or explicitly skipped). */
   setupComplete: boolean;
+  /** Project paths whose sidebar group is collapsed. */
+  collapsedProjects: string[];
 }
 
 const KEY = "orchestrator.prefs.v1";
@@ -56,6 +58,7 @@ export const DEFAULT_PREFS: Prefs = {
   usageRange: "7d",
   keepRunningOnClose: true,
   setupComplete: false,
+  collapsedProjects: [],
 };
 
 export function loadPrefs(): Prefs {

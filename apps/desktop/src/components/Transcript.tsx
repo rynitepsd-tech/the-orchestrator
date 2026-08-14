@@ -48,27 +48,31 @@ export function Transcript({
   return (
     <div className="transcript-wrap">
       <div className="transcript" ref={ref} onScroll={onScroll}>
-        {hidden > 0 && (
-          <div className="hint center">
-            <button
-              className="btn btn-ghost"
-              onClick={() => {
-                const el = ref.current;
-                const before = el?.scrollHeight ?? 0;
-                setShown((n) => n + WINDOW);
-                // Keep the viewport anchored on the first previously-visible item.
-                requestAnimationFrame(() => {
-                  if (el) el.scrollTop += el.scrollHeight - before;
-                });
-              }}
-            >
-              Show {fmtCount(Math.min(WINDOW, hidden))} earlier ({fmtCount(hidden)} hidden)
-            </button>
-          </div>
-        )}
-        {visible.map((item) => (
-          <Item key={item.id} item={item} sessionId={sessionId} />
-        ))}
+        {/* .stream is the measure: centred column with side padding, so text
+            never runs wall to wall. */}
+        <div className="stream">
+          {hidden > 0 && (
+            <div className="hint center">
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  const el = ref.current;
+                  const before = el?.scrollHeight ?? 0;
+                  setShown((n) => n + WINDOW);
+                  // Keep the viewport anchored on the first previously-visible item.
+                  requestAnimationFrame(() => {
+                    if (el) el.scrollTop += el.scrollHeight - before;
+                  });
+                }}
+              >
+                Show {fmtCount(Math.min(WINDOW, hidden))} earlier ({fmtCount(hidden)} hidden)
+              </button>
+            </div>
+          )}
+          {visible.map((item) => (
+            <Item key={item.id} item={item} sessionId={sessionId} />
+          ))}
+        </div>
       </div>
       {!atBottom && (
         <button
@@ -103,15 +107,27 @@ const Item = memo(function Item({
   switch (item.kind) {
     case "user":
       return <div className="msg-user">{item.text}</div>;
-    case "assistant":
+    case "assistant": {
+      // Thinking is visible live while the model reasons, then tucks behind a
+      // dropdown the moment answer text arrives — the transcript shows answers,
+      // not scratch work.
+      const thinkingLive = item.streaming && !item.text;
       return (
         <div className="msg-assistant">
-          {item.thinking && (
-            <details className="thinking">
-              <summary>Thinking</summary>
-              <div className="thinking-body">{item.thinking}</div>
-            </details>
-          )}
+          {item.thinking &&
+            (thinkingLive ? (
+              <div className="thinking-live">
+                <div className="thinking-live-label hint">Thinking…</div>
+                <div className="thinking-live-clip">
+                  <div className="thinking-body">{item.thinking}</div>
+                </div>
+              </div>
+            ) : (
+              <details className="thinking">
+                <summary>Thought process</summary>
+                <div className="thinking-body">{item.thinking}</div>
+              </details>
+            ))}
           {item.text &&
             (item.streaming ? (
               // Plain text while streaming avoids re-parsing markdown per delta;
@@ -122,6 +138,7 @@ const Item = memo(function Item({
             ))}
         </div>
       );
+    }
     case "tool":
       return <ToolCard item={item} />;
     case "advisor":

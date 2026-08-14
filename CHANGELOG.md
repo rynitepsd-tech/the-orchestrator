@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.1
+
+Feedback round from real use.
+
+- **Thinking collapses when the answer arrives.** Reasoning streams live while
+  the model works (clipped to the latest lines), then tucks behind a "Thought
+  process" dropdown so the transcript shows answers, not scratch work.
+- **Transcript measure.** Messages now sit in a centred column with proper
+  side padding instead of running wall to wall.
+- **Sidebar project groups collapse.** Click a project header to fold its
+  sessions away (state persists); "Previous sessions" folds too.
+- **Effort pickers collapse after choosing**, like the model picker — and
+  advisors now have effort selection everywhere (presets included), with the
+  current choice always visible.
+- **Preset chips read as actions** (“Name” Preset) and deleting a preset asks
+  for confirmation first.
+- **Provider search** in first-run setup and Settings → Providers.
+- Bigger titlebar buttons.
+
 ## 0.3.0
 
 Quality-of-life release: first-run setup, real dialogs, and self-updating.

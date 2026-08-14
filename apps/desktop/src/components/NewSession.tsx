@@ -8,11 +8,12 @@
  */
 
 import type { AdvisorConfig, ModelInfo, SessionLaunchConfig } from "@orchestrator/protocol";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
 import { useStore } from "../store";
+import { EffortPicker } from "./EffortPicker";
 import { ModelPicker } from "./ModelPicker";
 
 export function NewSession({
@@ -152,6 +153,7 @@ export function NewSession({
 
         {prefs.presets.length > 0 && (
           <div className="preset-row">
+            <span className="hint">Apply a preset:</span>
             {prefs.presets.map((p) => (
               <span key={p.name} className="preset-chip">
                 <button
@@ -159,12 +161,19 @@ export function NewSession({
                   onClick={() => applyPreset(p)}
                   title={presetTitle(p)}
                 >
-                  {p.name}
+                  “{p.name}” Preset
                 </button>
                 <button
                   className="preset-del"
                   title="Delete preset"
-                  onClick={() => removePreset(p.name)}
+                  onClick={() => {
+                    void ask(
+                      `Are you sure you want to delete the “${p.name}” preset? You will have to set it up again.`,
+                      { title: "Delete preset", kind: "warning" },
+                    ).then((yes) => {
+                      if (yes) removePreset(p.name);
+                    });
+                  }}
                 >
                   ×
                 </button>
@@ -226,23 +235,10 @@ export function NewSession({
         </div>
 
         {efforts.length > 0 && (
-          <label className="field">
+          <div className="field">
             <span>Effort</span>
-            <div className="segmented">
-              <button className={`seg${effort === "" ? " on" : ""}`} onClick={() => setEffort("")}>
-                default
-              </button>
-              {efforts.map((lvl) => (
-                <button
-                  key={lvl}
-                  className={`seg${effort === lvl ? " on" : ""}`}
-                  onClick={() => setEffort(lvl)}
-                >
-                  {lvl}
-                </button>
-              ))}
-            </div>
-          </label>
+            <EffortPicker efforts={efforts} value={effort} onChange={setEffort} />
+          </div>
         )}
 
         <div className="field">
@@ -411,26 +407,14 @@ function AdvisorEditor({
         />
       </label>
       {efforts.length > 0 && (
-        <label className="field">
+        <div className="field">
           <span>Effort</span>
-          <div className="segmented">
-            <button
-              className={`seg${!advisor.thinkingLevel ? " on" : ""}`}
-              onClick={() => onPatch({ thinkingLevel: undefined })}
-            >
-              default
-            </button>
-            {efforts.map((lvl) => (
-              <button
-                key={lvl}
-                className={`seg${advisor.thinkingLevel === lvl ? " on" : ""}`}
-                onClick={() => onPatch({ thinkingLevel: lvl })}
-              >
-                {lvl}
-              </button>
-            ))}
-          </div>
-        </label>
+          <EffortPicker
+            efforts={efforts}
+            value={advisor.thinkingLevel ?? ""}
+            onChange={(lvl) => onPatch({ thinkingLevel: lvl || undefined })}
+          />
+        </div>
       )}
       <label className="field">
         <span>Instructions {advisor.origin !== "session" && "(session override)"}</span>

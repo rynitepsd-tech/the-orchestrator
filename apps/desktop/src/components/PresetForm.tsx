@@ -9,6 +9,7 @@ import type { AdvisorConfig, ModelInfo } from "@orchestrator/protocol";
 import type { JSX } from "react";
 import { useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
+import { EffortPicker } from "./EffortPicker";
 import { ModelPicker } from "./ModelPicker";
 
 export const RECOMMENDED_ADVISORS: AdvisorConfig[] = [
@@ -104,23 +105,10 @@ export function PresetForm({
       </div>
 
       {efforts.length > 0 && (
-        <label className="field">
+        <div className="field">
           <span>Effort</span>
-          <div className="segmented">
-            <button className={`seg${effort === "" ? " on" : ""}`} onClick={() => setEffort("")}>
-              default
-            </button>
-            {efforts.map((lvl) => (
-              <button
-                key={lvl}
-                className={`seg${effort === lvl ? " on" : ""}`}
-                onClick={() => setEffort(lvl)}
-              >
-                {lvl}
-              </button>
-            ))}
-          </div>
-        </label>
+          <EffortPicker efforts={efforts} value={effort} onChange={setEffort} />
+        </div>
       )}
 
       <div className="field">
@@ -145,47 +133,65 @@ export function PresetForm({
           </button>
         </div>
         <div className="advisor-list">
-          {advisors.map((a, i) => (
-            <div key={i} className="advisor-row">
-              <div className="row">
-                <input
-                  type="checkbox"
-                  checked={a.enabled}
-                  title="Enabled"
-                  onChange={(e) => patchAdvisor(i, { enabled: e.target.checked })}
-                />
-                <input
-                  className="input"
-                  style={{ width: 150 }}
-                  value={a.name}
-                  placeholder="Advisor name"
-                  onChange={(e) => patchAdvisor(i, { name: e.target.value })}
-                />
-                <div style={{ flex: 1 }}>
-                  <ModelPicker
-                    models={models}
-                    value={a.model}
-                    onChange={(k) => patchAdvisor(i, { model: k, thinkingLevel: undefined })}
+          {advisors.map((a, i) => {
+            const advisorModel = a.model ? models.find((m) => m.key === a.model) : undefined;
+            const advisorEfforts = advisorModel?.thinking?.efforts ?? [];
+            return (
+              <div key={i} className="advisor-row">
+                <div className="row">
+                  <input
+                    type="checkbox"
+                    checked={a.enabled}
+                    title="Enabled"
+                    onChange={(e) => patchAdvisor(i, { enabled: e.target.checked })}
                   />
+                  <input
+                    className="input"
+                    style={{ width: 150 }}
+                    value={a.name}
+                    placeholder="Advisor name"
+                    onChange={(e) => patchAdvisor(i, { name: e.target.value })}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <ModelPicker
+                      models={models}
+                      value={a.model}
+                      onChange={(k) => patchAdvisor(i, { model: k, thinkingLevel: undefined })}
+                    />
+                  </div>
+                  <button
+                    className="btn btn-ghost"
+                    title="Remove advisor"
+                    onClick={() => setAdvisors((list) => list.filter((_, j) => j !== i))}
+                  >
+                    ×
+                  </button>
                 </div>
-                <button
-                  className="btn btn-ghost"
-                  title="Remove advisor"
-                  onClick={() => setAdvisors((list) => list.filter((_, j) => j !== i))}
-                >
-                  ×
-                </button>
+                {advisorEfforts.length > 0 && (
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <span className="hint" style={{ width: 150, flex: "none" }}>
+                      Effort
+                    </span>
+                    <div style={{ flex: 1 }}>
+                      <EffortPicker
+                        efforts={advisorEfforts}
+                        value={a.thinkingLevel ?? ""}
+                        onChange={(lvl) => patchAdvisor(i, { thinkingLevel: lvl || undefined })}
+                      />
+                    </div>
+                  </div>
+                )}
+                <textarea
+                  className="input"
+                  rows={2}
+                  style={{ marginTop: 6 }}
+                  value={a.instructions ?? ""}
+                  placeholder="What should this advisor watch for?"
+                  onChange={(e) => patchAdvisor(i, { instructions: e.target.value || undefined })}
+                />
               </div>
-              <textarea
-                className="input"
-                rows={2}
-                style={{ marginTop: 6 }}
-                value={a.instructions ?? ""}
-                placeholder="What should this advisor watch for?"
-                onChange={(e) => patchAdvisor(i, { instructions: e.target.value || undefined })}
-              />
-            </div>
-          ))}
+            );
+          })}
           {advisors.length === 0 && (
             <div className="hint">No advisors — the primary agent runs alone.</div>
           )}
