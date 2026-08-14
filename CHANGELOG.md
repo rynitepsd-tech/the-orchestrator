@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Update checks no longer leave a 4-hour blind spot: the app rechecks a few
+  minutes after launch, hourly, and when the window regains focus, so a new
+  release is offered within minutes of publishing.
+
 ## 0.3.2
 
 - **Approvals can't hide any more.** A pending approval pins a bar above the

@@ -61,12 +61,31 @@ export function App(): JSX.Element {
   }, [s.prefs.theme]);
 
   // ---- updates ------------------------------------------------------------
-  // Silent check at startup and every 4 hours; the titlebar chip appears when
-  // a release is available. Failures (dev build, no feed yet) are invisible.
+  // Silent checks: at startup, again shortly after (a launch can race a fresh
+  // publish or an offline boot), hourly, and whenever the window regains focus
+  // (throttled) — so a new release is offered in minutes, not hours. The feed
+  // is one static JSON file; this cadence is negligible traffic.
   useEffect(() => {
-    void checkForUpdates({ silent: true });
-    const t = setInterval(() => void checkForUpdates({ silent: true }), 4 * 60 * 60 * 1000);
-    return () => clearInterval(t);
+    let last = Date.now();
+    const run = () => {
+      last = Date.now();
+      void checkForUpdates({ silent: true });
+    };
+    run();
+    const retry = setTimeout(() => {
+      if (!useStore.getState().updateAvailable) run();
+    }, 5 * 60_000);
+    const t = setInterval(run, 60 * 60_000);
+    const onFocus = () => {
+      const st = useStore.getState();
+      if (Date.now() - last > 15 * 60_000 && !st.updateAvailable && !st.updateBusy) run();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearTimeout(retry);
+      clearInterval(t);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   // ---- engine wiring ------------------------------------------------------

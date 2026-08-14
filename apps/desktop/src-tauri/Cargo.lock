@@ -4209,7 +4209,7 @@ dependencies = [
 
 [[package]]
 name = "the-orchestrator"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "env_logger",
  "log",
