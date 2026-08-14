@@ -45,6 +45,7 @@ export function PresetForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [model, setModel] = useState<string | undefined>(initial?.model);
   const [effort, setEffort] = useState(initial?.thinkingLevel ?? "");
+  const [fastMode, setFastMode] = useState(Boolean(initial?.fastMode));
   const [advisors, setAdvisors] = useState<AdvisorConfig[]>(
     initial?.advisors.map((a) => ({ ...a })) ?? RECOMMENDED_ADVISORS.map((a) => ({ ...a })),
   );
@@ -74,6 +75,7 @@ export function PresetForm({
       name: trimmed,
       model,
       thinkingLevel: effort || undefined,
+      fastMode: fastMode || undefined,
       advisors: advisors
         .filter((a) => a.name.trim())
         .map((a) => ({ ...a, name: a.name.trim(), id: `advisor:${a.name.trim()}` })),
@@ -110,6 +112,12 @@ export function PresetForm({
           <EffortPicker efforts={efforts} value={effort} onChange={setEffort} />
         </div>
       )}
+
+      <label className="row check-row">
+        <input type="checkbox" checked={fastMode} onChange={(e) => setFastMode(e.target.checked)} />
+        <span>⚡ Fast mode</span>
+        <span className="hint">priority tier on OpenAI / Anthropic</span>
+      </label>
 
       <div className="field">
         <div className="row">

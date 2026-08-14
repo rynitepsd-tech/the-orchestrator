@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.6
+
+- **Fast mode** (OpenAI / Anthropic priority tier), wired through OMP's own
+  service-tier support: a ⚡ Fast chip in the session header toggles it live,
+  New Session has a fast-mode checkbox, and presets can launch with it on.
+  Models with no priority tier say so instead of pretending.
+- **Drag projects to reorder them.** Grab a project header in the sidebar and
+  drop it where you want; the order persists. Projects you never drag keep
+  pinned-first alphabetical order.
+
 ## 0.3.5
 
 - **Bigger type across the app** — every text size up 2px for readability.

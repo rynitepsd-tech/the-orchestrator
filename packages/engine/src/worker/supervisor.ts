@@ -274,6 +274,7 @@ export class WorkerSupervisor {
       advisors: config.advisors ?? [],
       resumeSessionPath: config.resumeSessionPath,
       approvalMode: config.approvalMode,
+      fastMode: config.fastMode,
       // MCP and LSP are per-process now; keep them off in tests and opt-in
       // elsewhere so N sessions do not spawn N language servers unasked.
       enableMCP: !this.#testMode,

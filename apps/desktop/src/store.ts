@@ -735,6 +735,9 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         ],
       };
 
+    case "session.fastMode":
+      return { ...v, summary: { ...v.summary, fastMode: e.enabled } };
+
     case "session.compacted":
       return {
         ...v,

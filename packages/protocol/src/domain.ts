@@ -309,6 +309,8 @@ export interface SessionLaunchConfig {
   advisors: AdvisorConfig[];
   /** Session-local override only; never written to disk config. */
   approvalMode?: ApprovalMode;
+  /** Start with fast mode (provider priority tier) on. */
+  fastMode?: boolean;
   /** Resume an existing OMP session file instead of creating a new one. */
   resumeSessionPath?: string;
   /** Fork from an existing OMP session file. */
@@ -331,6 +333,8 @@ export interface SessionSummary {
   /** Short live-activity label, e.g. "Editing session.ts". */
   activity?: string;
   model?: string;
+  /** Fast mode (provider priority tier) enabled for the current model family. */
+  fastMode?: boolean;
   thinkingLevel?: string;
   advisorCount: number;
   /** OMP's own session file, when persisted. */

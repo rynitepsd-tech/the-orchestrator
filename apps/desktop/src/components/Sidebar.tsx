@@ -30,6 +30,8 @@ export function Sidebar({
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [dragProject, setDragProject] = useState<string | null>(null);
+  const [dropProject, setDropProject] = useState<string | null>(null);
 
   const q = query.trim().toLowerCase();
 
@@ -73,12 +75,21 @@ export function Sidebar({
     };
     for (const v of filteredLive) group(v.summary.projectPath).views.push(v);
     for (const d of openRemembered) group(d.cwd).open.push(d);
+    // Manual drag order wins; projects never dragged fall back to pinned-first
+    // alphabetical after the ordered ones.
+    const orderIdx = (p: string) => {
+      const i = prefs.projectOrder.indexOf(p);
+      return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+    };
     return [...groups.entries()].sort((a, b) => {
+      const ao = orderIdx(a[0]);
+      const bo = orderIdx(b[0]);
+      if (ao !== bo) return ao - bo;
       const ap = prefs.pinnedProjects.includes(a[0]) ? 0 : 1;
       const bp = prefs.pinnedProjects.includes(b[0]) ? 0 : 1;
       return ap - bp || a[0].localeCompare(b[0]);
     });
-  }, [filteredLive, openRemembered, prefs.pinnedProjects]);
+  }, [filteredLive, openRemembered, prefs.pinnedProjects, prefs.projectOrder]);
 
   // Persisted sessions not currently open and not remembered-open, newest first.
   const resumable = useMemo(() => {
@@ -99,6 +110,16 @@ export function Sidebar({
 
   const updatePrefs = useStore((s) => s.updatePrefs);
   const setNewSession = useStore((s) => s.setNewSession);
+
+  // Drop `drag` in front of `target` and persist the full visible order, so
+  // untouched projects keep their current positions too.
+  const reorderProjects = (drag: string, target: string) => {
+    if (drag === target) return;
+    const keys = byProject.map(([p]) => p).filter((p) => p !== drag);
+    const at = keys.indexOf(target);
+    keys.splice(at === -1 ? keys.length : at, 0, drag);
+    updatePrefs({ projectOrder: keys });
+  };
 
   // Collapse is a browsing aid; an active search always shows its matches.
   const isCollapsed = (key: string) => !q && prefs.collapsedProjects.includes(key);
@@ -132,10 +153,38 @@ export function Sidebar({
           const collapsed = isCollapsed(projectPath);
           const count = g.views.length + g.open.length;
           return (
-            <div key={projectPath} className="project-group">
+            <div
+              key={projectPath}
+              className={`project-group${dropProject === projectPath ? " drop-target" : ""}${
+                dragProject === projectPath ? " dragging" : ""
+              }`}
+              onDragOver={(e) => {
+                if (!dragProject || dragProject === projectPath) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setDropProject(projectPath);
+              }}
+              onDragLeave={() => setDropProject((p) => (p === projectPath ? null : p))}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragProject) reorderProjects(dragProject, projectPath);
+                setDragProject(null);
+                setDropProject(null);
+              }}
+            >
               <button
                 className="project-head project-head-toggle"
-                title={projectPath}
+                title={`${projectPath} — drag to reorder`}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", projectPath);
+                  setDragProject(projectPath);
+                }}
+                onDragEnd={() => {
+                  setDragProject(null);
+                  setDropProject(null);
+                }}
                 onClick={() => toggleCollapsed(projectPath)}
                 aria-expanded={!collapsed}
               >

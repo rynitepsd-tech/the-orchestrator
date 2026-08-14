@@ -174,6 +174,7 @@ function Presets(): JSX.Element {
               <span className="hint">
                 {p.model ?? "OMP default"}
                 {p.thinkingLevel && ` · ${p.thinkingLevel}`}
+                {p.fastMode && " · ⚡ fast"}
                 {p.advisors.filter((a) => a.enabled).length > 0 &&
                   ` · advisors: ${p.advisors
                     .filter((a) => a.enabled)

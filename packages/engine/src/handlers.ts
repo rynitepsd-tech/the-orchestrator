@@ -165,6 +165,9 @@ export async function handleRequest(
     case "session.setModel":
       return m.route(String(p.sessionId), "session.setModel", p) as never;
 
+    case "session.setFastMode":
+      return m.route(String(p.sessionId), "session.setFastMode", p) as never;
+
     case "session.setTitle":
       return m.route(String(p.sessionId), "session.setTitle", p) as never;
 

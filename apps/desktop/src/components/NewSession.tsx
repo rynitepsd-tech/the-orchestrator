@@ -38,6 +38,7 @@ export function NewSession({
   const [title, setTitle] = useState("");
   const [modelKey, setModelKey] = useState<string | undefined>(undefined);
   const [effort, setEffort] = useState<string>("");
+  const [fastMode, setFastMode] = useState(false);
   const [advisors, setAdvisors] = useState<AdvisorConfig[]>([]);
   const [advisorsLoading, setAdvisorsLoading] = useState(false);
   const [advisorsSource, setAdvisorsSource] = useState<"project" | "session">("project");
@@ -86,6 +87,7 @@ export function NewSession({
       title: title.trim() || undefined,
       model: modelKey,
       thinkingLevel: effort || undefined,
+      fastMode: fastMode || undefined,
       advisors,
     });
   };
@@ -93,6 +95,7 @@ export function NewSession({
   const applyPreset = (p: SessionPreset) => {
     setModelKey(p.model);
     setEffort(p.thinkingLevel ?? "");
+    setFastMode(Boolean(p.fastMode));
     if (p.advisors.length) {
       setAdvisors(p.advisors.map((a) => ({ ...a })));
       setAdvisorsSource("session");
@@ -106,6 +109,7 @@ export function NewSession({
       name,
       model: modelKey,
       thinkingLevel: effort || undefined,
+      fastMode: fastMode || undefined,
       advisors,
     });
     setPresetDraft(null);
@@ -240,6 +244,16 @@ export function NewSession({
             <EffortPicker efforts={efforts} value={effort} onChange={setEffort} />
           </div>
         )}
+
+        <label className="row check-row">
+          <input
+            type="checkbox"
+            checked={fastMode}
+            onChange={(e) => setFastMode(e.target.checked)}
+          />
+          <span>⚡ Fast mode</span>
+          <span className="hint">priority tier on OpenAI / Anthropic; toggleable in-session</span>
+        </label>
 
         <div className="field">
           <div className="row">
@@ -377,6 +391,7 @@ export function NewSession({
 function presetTitle(p: SessionPreset): string {
   const parts = [p.model ?? "OMP default"];
   if (p.thinkingLevel) parts.push(p.thinkingLevel);
+  if (p.fastMode) parts.push("fast mode");
   const on = p.advisors.filter((a) => a.enabled).map((a) => a.name);
   if (on.length) parts.push(`advisors: ${on.join(", ")}`);
   return parts.join(" · ");

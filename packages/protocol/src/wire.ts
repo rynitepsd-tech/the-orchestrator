@@ -155,6 +155,7 @@ export interface RequestPayloads {
     thinkingLevel?: string;
   };
   "session.setModel": { sessionId: SessionId; model: string; thinkingLevel?: string };
+  "session.setFastMode": { sessionId: SessionId; enabled: boolean };
   "session.setTitle": { sessionId: SessionId; title: string };
   "session.setApprovalMode": { sessionId: SessionId; mode: ApprovalMode };
   "session.transcript": { sessionId: SessionId; sinceSequence?: number };
@@ -237,6 +238,8 @@ export interface ResponsePayloads {
   "session.compact": { ok: boolean };
   "session.fork": { session: SessionSummary };
   "session.setModel": { ok: boolean; model: string };
+  /** ok=false means the current model has no fast/priority tier to toggle. */
+  "session.setFastMode": { ok: boolean; enabled: boolean; active: boolean };
   "session.setTitle": { ok: boolean };
   "session.setApprovalMode": { ok: boolean };
   "session.transcript": { events: ProductEvent[]; sequence: number };

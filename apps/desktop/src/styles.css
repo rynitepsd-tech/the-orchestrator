@@ -879,6 +879,12 @@ button {
   color: #fff;
   border-color: transparent;
 }
+.chip.fast-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
 .warn-chip {
   color: var(--warn);
   border-color: var(--warn);
@@ -1400,6 +1406,14 @@ button {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
+}
+
+/* Drag-to-reorder project groups */
+.project-group.drop-target {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+.project-group.dragging {
+  opacity: 0.45;
 }
 
 /* Collapsible group headers */

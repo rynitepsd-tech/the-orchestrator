@@ -64,6 +64,7 @@ interface WorkerBoot {
   advisors: AdvisorConfig[];
   resumeSessionPath?: string;
   approvalMode?: ApprovalMode;
+  fastMode?: boolean;
   enableMCP: boolean;
   enableLsp: boolean;
   autoApprove: boolean;
@@ -523,6 +524,16 @@ function emitContext(): void {
   if (ctx) emit({ type: "context.update", sessionId: boot.sessionId, context: ctx });
 }
 
+function emitFastMode(): void {
+  const s: any = session;
+  emit({
+    type: "session.fastMode",
+    sessionId: boot.sessionId,
+    enabled: Boolean(s.isFastModeEnabled?.()),
+    active: Boolean(s.isFastModeActive?.()),
+  });
+}
+
 let persistedEmitted = false;
 function checkPersisted(): void {
   if (persistedEmitted) return;
@@ -796,6 +807,12 @@ async function applyAdvisors(list: AdvisorConfig[]): Promise<AdvisorConfig[]> {
 
 if (advisors.size) await applyAdvisors([...advisors.values()]);
 
+// Fast mode (provider priority tier): apply the launch preference, then report
+// the actual state — resumed sessions restore their persisted tier, so the UI
+// chip must reflect the session, not assume "off".
+if (boot.fastMode) (session as any).setFastMode?.(true);
+emitFastMode();
+
 // Resume/fork: seed the replay buffer with the persisted conversation so the
 // host can render the history that predates this process. Seeded directly
 // (not emitted) — the UI pulls it with session.transcript after creation.
@@ -889,6 +906,17 @@ async function handle(req: any): Promise<unknown> {
       emit({ type: "session.compacted", sessionId: boot.sessionId, at: new Date().toISOString() });
       emitContext();
       return { ok: true };
+
+    case "session.setFastMode": {
+      // setFastMode returns false when the model has no service-tier family.
+      const ok = Boolean(s.setFastMode?.(Boolean(req.payload.enabled)));
+      emitFastMode();
+      return {
+        ok,
+        enabled: Boolean(s.isFastModeEnabled?.()),
+        active: Boolean(s.isFastModeActive?.()),
+      };
+    }
 
     case "session.setModel": {
       const m = resolveModel(String(req.payload.model));

@@ -230,6 +230,14 @@ export interface ModelChanged extends EventBase {
   reason?: string;
 }
 
+export interface FastModeChanged extends EventBase {
+  type: "session.fastMode";
+  /** The provider family's priority tier is selected. */
+  enabled: boolean;
+  /** The tier is actually realized on the wire for the current model. */
+  active: boolean;
+}
+
 export interface SessionCompacted extends EventBase {
   type: "session.compacted";
   freedTokens?: number;
@@ -297,6 +305,7 @@ export type ProductEvent =
   | UsageRecordsAdded
   | ContextChanged
   | ModelChanged
+  | FastModeChanged
   | SessionCompacted
   | SessionFailed
   | SessionFinished

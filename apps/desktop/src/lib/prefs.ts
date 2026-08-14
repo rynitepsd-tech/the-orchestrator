@@ -12,6 +12,8 @@ export interface SessionPreset {
   name: string;
   model?: string;
   thinkingLevel?: string;
+  /** Launch sessions with fast mode (provider priority tier) on. */
+  fastMode?: boolean;
   advisors: AdvisorConfig[];
 }
 
@@ -40,6 +42,8 @@ export interface Prefs {
   setupComplete: boolean;
   /** Project paths whose sidebar group is collapsed. */
   collapsedProjects: string[];
+  /** Manual sidebar ordering of project groups (drag to reorder). */
+  projectOrder: string[];
   /**
    * OMP session paths that were open (not explicitly closed) in this app.
    * After a relaunch these render inside their project group with one-click
@@ -65,6 +69,7 @@ export const DEFAULT_PREFS: Prefs = {
   keepRunningOnClose: true,
   setupComplete: false,
   collapsedProjects: [],
+  projectOrder: [],
   openSessionPaths: [],
 };
 
