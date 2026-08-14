@@ -888,6 +888,18 @@ button {
   background: var(--accent-soft);
   font-weight: 600;
 }
+
+/* Composer fast-mode toggle, beside Send. */
+.btn.fast-toggle {
+  color: var(--text-muted);
+  padding: 6px 9px;
+}
+.btn.fast-toggle.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
 .warn-chip {
   color: var(--warn);
   border-color: var(--warn);
@@ -1332,8 +1344,12 @@ button {
 .session-row.selected {
   background: var(--bg-active);
 }
-.session-row.discovered {
-  cursor: default;
+.session-row .open-hint {
+  opacity: 0;
+  flex: none;
+}
+.session-row:hover .open-hint {
+  opacity: 1;
 }
 .session-col {
   display: flex;
@@ -1895,11 +1911,11 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 28px;
+  width: 38px;
+  height: 32px;
   border-radius: var(--radius);
   color: var(--text-muted);
-  font-size: 17px;
+  font-size: 21px;
   border: none;
   background: none;
   cursor: pointer;

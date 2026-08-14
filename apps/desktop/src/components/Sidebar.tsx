@@ -339,18 +339,17 @@ function DiscoveredRow({
 }): JSX.Element {
   const when = d.modified ? new Date(d.modified).toLocaleDateString() : "";
   return (
-    <div className="session-row discovered">
+    // The whole row opens the session — no hunting for a Resume button.
+    <button className="session-row" title={`${d.path}\nClick to open`} onClick={onResume}>
       <span className="dot idle" aria-hidden />
-      <span className="session-col" title={d.path}>
+      <span className="session-col">
         <span className="session-title">{d.title}</span>
         <span className="session-sub hint">
           {d.cwd.split("/").pop()} · {d.messageCount} messages{when && ` · ${when}`}
         </span>
       </span>
-      <button className="btn btn-ghost" onClick={onResume}>
-        Resume
-      </button>
-    </div>
+      <span className="hint open-hint">Open</span>
+    </button>
   );
 }
 

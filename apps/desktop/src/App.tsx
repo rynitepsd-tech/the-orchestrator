@@ -265,7 +265,13 @@ export function App(): JSX.Element {
     }
   };
 
+  // Whole-row click makes accidental double-activation easy; one resume of the
+  // same session file at a time, or two workers would fight over it.
+  const resuming = useRef<string | null>(null);
+
   const resumeSession = async (d: DiscoveredSession) => {
+    if (resuming.current) return;
+    resuming.current = d.path;
     setCreating(true);
     try {
       const proj = await engine.request("project.open", { path: d.cwd });
@@ -284,6 +290,7 @@ export function App(): JSX.Element {
       useStore.getState().setEngineError(e as never);
     } finally {
       setCreating(false);
+      resuming.current = null;
     }
   };
 
@@ -595,33 +602,6 @@ export function App(): JSX.Element {
                     {modelBasename(view.summary.model)}
                     {view.summary.thinkingLevel ? ` · ${view.summary.thinkingLevel}` : ""}
                   </span>
-                  <button
-                    className={`chip chip-btn${view.summary.fastMode ? " fast-on" : ""}`}
-                    title={
-                      view.summary.fastMode
-                        ? "Fast mode is on (provider priority tier) — click to turn off"
-                        : "Turn on fast mode (priority tier on OpenAI/Anthropic)"
-                    }
-                    onClick={() => {
-                      const sessionId = view.summary.sessionId;
-                      void engine
-                        .request("session.setFastMode", {
-                          sessionId,
-                          enabled: !view.summary.fastMode,
-                        })
-                        .then((r) => {
-                          if (!r.ok) {
-                            useStore.getState().setEngineError({
-                              kind: "engine",
-                              message: "The current model has no fast/priority tier to toggle.",
-                            } as never);
-                          }
-                        })
-                        .catch(() => {});
-                    }}
-                  >
-                    ⚡ Fast{view.summary.fastMode ? " on" : ""}
-                  </button>
                   {enabledAdvisors.length > 0 && (
                     <span
                       className="chip"

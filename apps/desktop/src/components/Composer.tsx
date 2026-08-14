@@ -11,7 +11,7 @@ import type { RunState } from "@orchestrator/protocol";
 import type { JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { isActive } from "../store";
+import { isActive, useStore } from "../store";
 
 interface SlashCommand {
   name: string;
@@ -40,6 +40,41 @@ export function Composer({
   const commandsCache = useRef<SlashCommand[] | null>(null);
 
   const busy = isActive(runState);
+
+  const fastMode = useStore((s) =>
+    sessionId ? Boolean(s.sessions[sessionId]?.summary.fastMode) : false,
+  );
+
+  const toggleFast = () => {
+    if (!sessionId) return;
+    void engine
+      .request("session.setFastMode", { sessionId, enabled: !fastMode })
+      .then((r) => {
+        if (!r.ok) {
+          useStore.getState().setEngineError({
+            kind: "engine",
+            message: "The current model has no fast/priority tier to toggle.",
+          } as never);
+        }
+      })
+      .catch(() => {});
+  };
+
+  const fastToggle = (
+    <button
+      className={`btn fast-toggle${fastMode ? " on" : ""}`}
+      title={
+        fastMode
+          ? "Fast mode is ON — responses are faster, but this uses your provider usage significantly faster. Click to turn off."
+          : "Turn on fast mode (OpenAI/Anthropic priority tier). Faster responses — but it uses your provider usage significantly faster."
+      }
+      aria-pressed={fastMode}
+      onClick={toggleFast}
+      disabled={disabled}
+    >
+      ⚡{fastMode ? " Fast" : ""}
+    </button>
+  );
 
   useEffect(() => {
     commandsCache.current = null;
@@ -160,6 +195,7 @@ export function Composer({
         />
         {busy ? (
           <div className="composer-actions">
+            {fastToggle}
             <button className="btn" onClick={() => send("steer")} disabled={!text.trim()}>
               Steer
             </button>
@@ -172,6 +208,7 @@ export function Composer({
           </div>
         ) : (
           <div className="composer-actions">
+            {fastToggle}
             <button
               className="btn btn-primary"
               onClick={() => send("steer")}

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.8
+
+- **Fast-mode toggle lives beside Send.** The ⚡ button sits in the composer
+  now; hovering explains that it speeds up responses but uses your provider
+  usage significantly faster.
+- **One click opens a paused session.** Click anywhere on a previous-session
+  row to open it — no separate Resume button to find.
+- Titlebar icons enlarged again.
+
 ## 0.3.7
 
 - **You can tell when it's done.** Every completed turn ends with a "✓ Done"
