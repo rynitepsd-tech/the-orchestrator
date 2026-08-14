@@ -73,7 +73,7 @@ export function Transcript({
             n.kind === "plain" ? (
               <Item key={n.item.id} item={n.item} sessionId={sessionId} />
             ) : (
-              <WorkGroup key={n.key} items={n.items} sessionId={sessionId} />
+              <WorkGroup key={n.key} items={n.items} sessionId={sessionId} live={n.live} />
             ),
           )}
         </div>
@@ -98,18 +98,20 @@ export function Transcript({
 }
 
 // ---------------------------------------------------------------------------
-// Turn condensing (Codex-style)
+// Turn condensing
 //
 // Once a turn's answer arrives, the work that produced it — thinking-only
 // messages, tool calls, subagents, settled approvals — condenses into one
 // "Worked for …" line before the answer. Work still in flight (no answer yet)
-// stays fully visible; advisor notes, system lines, and anything pending
-// never condense.
+// gathers into a LIVE group: one status line naming the current step, with the
+// latest thinking previewed underneath, expandable to the full step list —
+// never a wall of interleaved cards. Advisor notes, system lines, and anything
+// pending never condense.
 // ---------------------------------------------------------------------------
 
 type RenderNode =
   | { kind: "plain"; item: TranscriptItem }
-  | { kind: "work"; key: string; items: TranscriptItem[] };
+  | { kind: "work"; key: string; items: TranscriptItem[]; live: boolean };
 
 /** Items that must never disappear into a collapsed work group. */
 function alwaysVisible(i: TranscriptItem): boolean {
@@ -119,14 +121,13 @@ function alwaysVisible(i: TranscriptItem): boolean {
 }
 
 /**
- * Codex-style condensing, done completely: within a turn (user message to user
- * message), EVERYTHING that led to the latest answer — thinking, tool calls,
- * subagents, settled approvals, and intermediate narration — folds into a
- * single "Worked" line before that answer. Only the latest answer stays out.
- * If the agent keeps going after an answer (say, an advisor raised a blocker),
- * the new work streams below it — and once a newer answer lands, the previous
- * one folds away too. Advisor notes, system lines, and pending approvals are
- * always visible.
+ * Condensing, done completely: within a turn (user message to user message),
+ * EVERYTHING that led to the latest answer — thinking, tool calls, subagents,
+ * settled approvals, and intermediate narration — folds into a single
+ * "Worked" line before that answer. Only the latest answer stays out. Work
+ * with no answer yet (before the first answer, or after one when the agent
+ * keeps going) gathers into a live group instead of streaming as loose cards.
+ * Advisor notes, system lines, and pending approvals are always visible.
  */
 function toNodes(items: TranscriptItem[]): RenderNode[] {
   const nodes: RenderNode[] = [];
@@ -145,20 +146,25 @@ function toNodes(items: TranscriptItem[]): RenderNode[] {
       }
     }
     const bucket: TranscriptItem[] = [];
+    let bucketLive = false;
     const flushBucket = () => {
       if (!bucket.length) return;
-      nodes.push({ kind: "work", key: `wg-${bucket[0].id}`, items: [...bucket] });
+      nodes.push({ kind: "work", key: `wg-${bucket[0].id}`, items: [...bucket], live: bucketLive });
       bucket.length = 0;
     };
     turn.forEach((it, i) => {
-      if (lastAnswer === -1 || i >= lastAnswer || alwaysVisible(it)) {
-        // No answer yet (work in progress), the answer itself and anything
-        // after it, or a kind that never collapses.
+      if (i === lastAnswer || alwaysVisible(it)) {
+        // The answer itself, or a kind that never collapses.
         flushBucket();
         nodes.push({ kind: "plain", item: it });
-      } else {
-        bucket.push(it);
+        return;
       }
+      // Work before the latest answer is history; work after it (or with no
+      // answer yet) is still in flight.
+      const live = lastAnswer === -1 || i > lastAnswer;
+      if (bucket.length && bucketLive !== live) flushBucket();
+      bucketLive = live;
+      bucket.push(it);
     });
     flushBucket();
     turn = [];
@@ -176,28 +182,66 @@ function toNodes(items: TranscriptItem[]): RenderNode[] {
   return nodes;
 }
 
+/** What the agent is doing right now, from the newest item of a live group. */
+function liveLabel(items: TranscriptItem[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "tool" && it.state === "running") {
+      const { label } = toolTitle(it.name);
+      return `Running ${label}`;
+    }
+    if (it.kind === "subagent" && it.state === "running") return "Running subagent";
+    if (it.kind === "assistant" && it.streaming) return "Thinking…";
+    // Anything settled below this point is done work, not current activity.
+    if (it.kind === "tool" || it.kind === "subagent" || it.kind === "assistant") break;
+  }
+  return "Working…";
+}
+
 function WorkGroup({
   items,
   sessionId,
+  live,
 }: {
   items: TranscriptItem[];
   sessionId: string;
+  live: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ms = items.reduce(
     (n, i) => n + ((i.kind === "tool" || i.kind === "subagent") && i.durationMs ? i.durationMs : 0),
     0,
   );
-  const label = ms > 0 ? `Worked for ${fmtDuration(ms)}` : "Worked";
+  const label = live ? liveLabel(items) : ms > 0 ? `Worked for ${fmtDuration(ms)}` : "Worked";
+  // Collapsed live groups still show where the reasoning is going: the tail of
+  // the newest thinking, clipped to its last few lines.
+  let preview: string | undefined;
+  if (live && !open) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "assistant" && it.thinking) {
+        preview = it.thinking;
+        break;
+      }
+    }
+  }
   return (
-    <div className={`work-group${open ? " open" : ""}`}>
+    <div className={`work-group${open ? " open" : ""}${live ? " live" : ""}`}>
       <button className="work-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         <span className="tool-chevron">{open ? "▾" : "▸"}</span>
+        {live && <span className="work-live-dot" aria-hidden />}
         <span>{label}</span>
         <span className="hint">
           {fmtCount(items.length)} step{items.length === 1 ? "" : "s"}
         </span>
       </button>
+      {preview && (
+        <div className="work-live-preview">
+          <div className="thinking-live-clip">
+            <div className="thinking-body">{preview}</div>
+          </div>
+        </div>
+      )}
       {open && (
         <div className="work-body">
           {items.map((item) => (

@@ -8,11 +8,53 @@
 
 import type { DiscoveredSession } from "@orchestrator/protocol";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { JSX } from "react";
+import type { DragEvent, JSX } from "react";
 import { useMemo, useState } from "react";
 import { engine } from "../engine-client";
 import { isActive, modelBasename, runStateLabel, type SessionView, useStore } from "../store";
 import { ResizeHandle } from "./ResizeHandle";
+
+/** One sidebar row inside a project group: a live session or a resume row. */
+type GroupRow =
+  | { key: string; path?: string; kind: "live"; v: SessionView }
+  | { key: string; path: string; kind: "open"; d: DiscoveredSession };
+
+/** Drag-to-reorder wiring shared by both row flavours. */
+interface RowDragProps {
+  dragging?: boolean;
+  dropEdge?: "above" | "below" | null;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
+  onDragOver?: (e: DragEvent) => void;
+  onDragLeave?: () => void;
+  onDrop?: (e: DragEvent) => void;
+}
+
+/**
+ * A project group's rows in display order: the user's dragged order (persisted
+ * as session paths) wins; sessions never placed sort after those, in creation
+ * order; brand-new sessions with no path yet float to the top.
+ */
+function sortedRows(
+  g: { views: SessionView[]; open: DiscoveredSession[] },
+  sessionOrder: string[],
+): GroupRow[] {
+  const rows: GroupRow[] = [
+    ...g.views.map((v) => ({
+      key: v.summary.ompSessionPath ?? v.summary.sessionId,
+      path: v.summary.ompSessionPath,
+      kind: "live" as const,
+      v,
+    })),
+    ...g.open.map((d) => ({ key: d.path, path: d.path, kind: "open" as const, d })),
+  ];
+  const at = (p?: string) => {
+    if (!p) return -1;
+    const i = sessionOrder.indexOf(p);
+    return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+  };
+  return rows.sort((a, b) => at(a.path) - at(b.path));
+}
 
 export function Sidebar({
   onResume,
@@ -32,6 +74,8 @@ export function Sidebar({
   const [showArchived, setShowArchived] = useState(false);
   const [dragProject, setDragProject] = useState<string | null>(null);
   const [dropProject, setDropProject] = useState<string | null>(null);
+  const [dragRow, setDragRow] = useState<{ key: string; project: string } | null>(null);
+  const [dropRow, setDropRow] = useState<string | null>(null);
 
   const q = query.trim().toLowerCase();
 
@@ -110,6 +154,36 @@ export function Sidebar({
 
   const updatePrefs = useStore((s) => s.updatePrefs);
   const setNewSession = useStore((s) => s.setNewSession);
+  const moveSession = useStore((s) => s.moveSession);
+
+  // Persist the group's new visible sequence as session paths (survives
+  // relaunches); rows from other projects keep their entries untouched.
+  const persistRowOrder = (rows: GroupRow[], seq: GroupRow[]) => {
+    const groupPaths = new Set(rows.map((r) => r.path).filter(Boolean) as string[]);
+    const newPaths = seq.map((r) => r.path).filter(Boolean) as string[];
+    updatePrefs({
+      sessionOrder: [...newPaths, ...prefs.sessionOrder.filter((p) => !groupPaths.has(p))].slice(
+        0,
+        400,
+      ),
+    });
+  };
+
+  const dropRowAt = (rows: GroupRow[], dragKey: string, targetKey: string) => {
+    const from = rows.findIndex((r) => r.key === dragKey);
+    const to = rows.findIndex((r) => r.key === targetKey);
+    if (from < 0 || to < 0 || from === to) return;
+    const seq = [...rows];
+    const [moved] = seq.splice(from, 1);
+    // Landing index after removal: below the target when dragging down,
+    // above it when dragging up.
+    seq.splice(to, 0, moved);
+    persistRowOrder(rows, seq);
+    // Keep the in-memory order in step for rows that aren't persisted yet.
+    const target = rows[to];
+    if (moved.kind === "live" && target.kind === "live")
+      moveSession(moved.v.summary.sessionId, target.v.summary.sessionId);
+  };
 
   // Drop `drag` in front of `target` and persist the full visible order, so
   // untouched projects keep their current positions too.
@@ -152,6 +226,8 @@ export function Sidebar({
           const shared = g.views.filter((v) => isActive(v.summary.runState)).length;
           const collapsed = isCollapsed(projectPath);
           const count = g.views.length + g.open.length;
+          const rows = sortedRows(g, prefs.sessionOrder);
+          const rowIdx = (k: string) => rows.findIndex((r) => r.key === k);
           return (
             <div
               key={projectPath}
@@ -203,21 +279,57 @@ export function Sidebar({
               </button>
               {/* A collapsed group still shows the session you are IN — folding
                   the project you're working in must never hide your place. */}
-              {g.views
-                .filter((v) => !collapsed || v.summary.sessionId === visibleId)
-                .map((v) => (
-                  <SessionRow
-                    key={v.summary.sessionId}
-                    view={v}
-                    active={v.summary.sessionId === visibleId}
-                    onSelect={() => select(v.summary.sessionId)}
-                    onMenu={(x, y) => setMenu({ id: v.summary.sessionId, x, y })}
-                  />
-                ))}
-              {!collapsed &&
-                g.open.map((d) => (
-                  <DiscoveredRow key={d.path} d={d} onResume={() => onResume(d)} />
-                ))}
+              {rows
+                .filter(
+                  (r) => !collapsed || (r.kind === "live" && r.v.summary.sessionId === visibleId),
+                )
+                .map((r) => {
+                  const drag = {
+                    dragging: dragRow?.key === r.key,
+                    dropEdge:
+                      dropRow === r.key
+                        ? dragRow && rowIdx(dragRow.key) < rowIdx(r.key)
+                          ? ("below" as const)
+                          : ("above" as const)
+                        : null,
+                    onDragStart: () => setDragRow({ key: r.key, project: projectPath }),
+                    onDragEnd: () => {
+                      setDragRow(null);
+                      setDropRow(null);
+                    },
+                    // Reordering is within a project group only — the group is
+                    // keyed by project path, so a cross-project drop would
+                    // reorder invisibly.
+                    onDragOver: (e: DragEvent) => {
+                      if (!dragRow || dragRow.key === r.key || dragRow.project !== projectPath)
+                        return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = "move";
+                      setDropRow(r.key);
+                    },
+                    onDragLeave: () => setDropRow((p) => (p === r.key ? null : p)),
+                    onDrop: (e: DragEvent) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (dragRow) dropRowAt(rows, dragRow.key, r.key);
+                      setDragRow(null);
+                      setDropRow(null);
+                    },
+                  };
+                  return r.kind === "live" ? (
+                    <SessionRow
+                      key={r.key}
+                      view={r.v}
+                      active={r.v.summary.sessionId === visibleId}
+                      onSelect={() => select(r.v.summary.sessionId)}
+                      onMenu={(x, y) => setMenu({ id: r.v.summary.sessionId, x, y })}
+                      {...drag}
+                    />
+                  ) : (
+                    <DiscoveredRow key={r.key} d={r.d} onResume={() => onResume(r.d)} {...drag} />
+                  );
+                })}
             </div>
           );
         })}
@@ -296,12 +408,19 @@ function SessionRow({
   active,
   onSelect,
   onMenu,
+  dragging,
+  dropEdge,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: {
   view: SessionView;
   active: boolean;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
-}): JSX.Element {
+} & RowDragProps): JSX.Element {
   const s = view.summary;
   const advisorsOn = view.advisors.filter((a) => a.enabled).length;
   const needsInput = view.pendingInteractions > 0 || s.runState === "waiting";
@@ -309,12 +428,24 @@ function SessionRow({
 
   return (
     <button
-      className={`session-row${active ? " selected" : ""}${s.unread ? " unread" : ""}`}
+      className={`session-row${active ? " selected" : ""}${s.unread ? " unread" : ""}${
+        dragging ? " dragging" : ""
+      }${dropEdge ? ` drop-${dropEdge}` : ""}`}
       onClick={onSelect}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu(e.clientX, e.clientY);
       }}
+      draggable={Boolean(onDragStart)}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", s.sessionId);
+        onDragStart?.();
+      }}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
     >
       <span className={stateDotClass(view)} aria-hidden />
       <span className="session-col">
@@ -333,14 +464,35 @@ function SessionRow({
 function DiscoveredRow({
   d,
   onResume,
+  dragging,
+  dropEdge,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: {
   d: DiscoveredSession;
   onResume: () => void;
-}): JSX.Element {
+} & RowDragProps): JSX.Element {
   const when = d.modified ? new Date(d.modified).toLocaleDateString() : "";
   return (
     // The whole row opens the session — no hunting for a Resume button.
-    <button className="session-row" title={`${d.path}\nClick to open`} onClick={onResume}>
+    <button
+      className={`session-row${dragging ? " dragging" : ""}${dropEdge ? ` drop-${dropEdge}` : ""}`}
+      title={`${d.path}\nClick to open`}
+      onClick={onResume}
+      draggable={Boolean(onDragStart)}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", d.path);
+        onDragStart?.();
+      }}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <span className="dot idle" aria-hidden />
       <span className="session-col">
         <span className="session-title">{d.title}</span>

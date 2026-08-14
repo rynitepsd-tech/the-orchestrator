@@ -50,6 +50,13 @@ export interface Prefs {
    * resume, instead of sinking into "Previous sessions".
    */
   openSessionPaths: string[];
+  /**
+   * Manual ordering of sessions inside their project groups (drag to
+   * reorder), as OMP session paths so it survives relaunches. Sessions not
+   * listed sort after listed ones; brand-new sessions (no path yet) float to
+   * the top.
+   */
+  sessionOrder: string[];
 }
 
 const KEY = "orchestrator.prefs.v1";
@@ -71,6 +78,7 @@ export const DEFAULT_PREFS: Prefs = {
   collapsedProjects: [],
   projectOrder: [],
   openSessionPaths: [],
+  sessionOrder: [],
 };
 
 export function loadPrefs(): Prefs {

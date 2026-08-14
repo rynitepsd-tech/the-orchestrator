@@ -179,6 +179,8 @@ interface AppState {
   setGlobalUsage(u: GlobalUsageState): void;
   addSession(s: SessionSummary, advisors: AdvisorConfig[]): void;
   removeSession(id: string): void;
+  /** Drag reorder: move one session next to another in the sidebar. */
+  moveSession(dragId: string, targetId: string): void;
   select(id: string): void;
   apply(e: ProductEvent): void;
   hydrateTranscript(sessionId: string, events: ProductEvent[]): void;
@@ -255,21 +257,33 @@ export const useStore = create<AppState>((set, get) => ({
   setGlobalUsage: (globalUsage) => set({ globalUsage }),
 
   addSession: (summary, advisors) => {
-    set((s) => ({
-      sessions: {
-        ...s.sessions,
-        [summary.sessionId]: {
-          summary,
-          transcript: [],
-          advisors,
-          advisorStates: {},
-          pendingInteractions: 0,
+    set((s) => {
+      // A resumed session arrives with its path; give it a persisted slot at
+      // the end so it doesn't leapfrog rows the user has placed deliberately.
+      const path = summary.ompSessionPath;
+      const prefs =
+        path && !s.prefs.sessionOrder.includes(path)
+          ? { ...s.prefs, sessionOrder: [...s.prefs.sessionOrder, path].slice(-400) }
+          : s.prefs;
+      if (prefs !== s.prefs) savePrefs(prefs);
+      return {
+        sessions: {
+          ...s.sessions,
+          [summary.sessionId]: {
+            summary,
+            transcript: [],
+            advisors,
+            advisorStates: {},
+            pendingInteractions: 0,
+          },
         },
-      },
-      order: [...s.order, summary.sessionId],
-      visibleSessionId: summary.sessionId,
-      mainView: "sessions",
-    }));
+        // Newest first: a fresh session belongs at the top of its project group.
+        order: [summary.sessionId, ...s.order],
+        visibleSessionId: summary.sessionId,
+        mainView: "sessions",
+        prefs,
+      };
+    });
     // Drain any events that raced ahead of the create response.
     const buffered = pendingEvents.get(summary.sessionId);
     if (buffered) {
@@ -286,8 +300,22 @@ export const useStore = create<AppState>((set, get) => ({
       return {
         sessions,
         order,
-        visibleSessionId: s.visibleSessionId === id ? order[order.length - 1] : s.visibleSessionId,
+        // Order is newest-first, so the top row is the natural fallback.
+        visibleSessionId: s.visibleSessionId === id ? order[0] : s.visibleSessionId,
       };
+    }),
+
+  moveSession: (dragId, targetId) =>
+    set((s) => {
+      const from = s.order.indexOf(dragId);
+      const to = s.order.indexOf(targetId);
+      if (from < 0 || to < 0 || from === to) return {};
+      const order = [...s.order];
+      order.splice(from, 1);
+      // Dragging downward lands below the target, upward lands above it.
+      const at = order.indexOf(targetId);
+      order.splice(from < to ? at + 1 : at, 0, dragId);
+      return { order };
     }),
 
   select: (id) =>
@@ -390,6 +418,19 @@ export const useStore = create<AppState>((set, get) => ({
     }
 
     const next = reduce(view, e, state.visibleSessionId === e.sessionId);
+
+    // A session persisting for the first time is a fresh creation: claim the
+    // top slot in the persisted per-project ordering (resumes already have
+    // their path and keep their place).
+    if (e.type === "session.persisted" && !state.prefs.sessionOrder.includes(e.ompSessionPath)) {
+      const prefs = {
+        ...state.prefs,
+        sessionOrder: [e.ompSessionPath, ...state.prefs.sessionOrder].slice(0, 400),
+      };
+      savePrefs(prefs);
+      set({ prefs });
+    }
+
     if (next === view) return;
     set({ sessions: { ...state.sessions, [e.sessionId]: next } });
   },

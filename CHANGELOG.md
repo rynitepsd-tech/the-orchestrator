@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.9
+
+- **Live work is one tidy line, not a wall of cards.** While the agent works,
+  thinking and tool calls gather behind a single status line ("Thinking…",
+  "Running grep") with a small preview of the latest reasoning underneath.
+  Click to expand the full step list; each step still opens for its command
+  and output. When the answer lands it settles into the usual "Worked for …"
+  line.
+- **Drag sessions to reorder them** within a project group — resume rows too —
+  with a drop line showing where the row will land. The order is remembered
+  across relaunches.
+- **New sessions start at the top** of their project group.
+
 ## 0.3.8
 
 - **Fast-mode toggle lives beside Send.** The ⚡ button sits in the composer
