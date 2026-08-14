@@ -8,9 +8,9 @@
 
 :root {
   /* Surfaces, from furthest back to nearest front. */
-  --bg: #f6f6f7;
+  --bg: #f2f2f4;
   --bg-raised: #ffffff;
-  --bg-sunken: #eeeef0;
+  --bg-sunken: #e9e9ec;
   --bg-hover: rgba(0, 0, 0, 0.045);
   --bg-active: rgba(0, 0, 0, 0.075);
 
@@ -46,9 +46,9 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #17181c;
+    --bg: #121318;
     --bg-raised: #1e2025;
-    --bg-sunken: #121317;
+    --bg-sunken: #0c0d10;
     --bg-hover: rgba(255, 255, 255, 0.055);
     --bg-active: rgba(255, 255, 255, 0.09);
 
@@ -74,9 +74,9 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #17181c;
+  --bg: #121318;
   --bg-raised: #1e2025;
-  --bg-sunken: #121317;
+  --bg-sunken: #0c0d10;
   --bg-hover: rgba(255, 255, 255, 0.055);
   --bg-active: rgba(255, 255, 255, 0.09);
   --border: rgba(255, 255, 255, 0.1);
@@ -419,7 +419,7 @@ button {
   padding: 0 32px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
 
 .msg-user {
@@ -963,22 +963,28 @@ button {
   word-break: break-word;
 }
 .md p {
-  margin: 0.35em 0;
+  margin: 0.8em 0;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
 }
 .md h3,
 .md h4,
 .md h5,
 .md h6 {
-  margin: 0.7em 0 0.3em;
+  margin: 1.1em 0 0.4em;
   font-size: 1.02em;
 }
 .md ul,
 .md ol {
-  margin: 0.35em 0;
+  margin: 0.7em 0;
   padding-left: 1.4em;
 }
 .md li {
-  margin: 0.15em 0;
+  margin: 0.25em 0;
 }
 .md code {
   font-family: var(--mono);

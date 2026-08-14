@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.10
+
+- **Roomier prose.** Paragraphs, lists, and headings in responses get real
+  breathing room, and transcript items sit a little further apart.
+- **Deeper backgrounds.** The session view is slightly darker and the
+  sidebar/inspector darker still, so the surface hierarchy reads better
+  (both themes).
+
 ## 0.3.9
 
 - **Live work is one tidy line, not a wall of cards.** While the agent works,
