@@ -806,6 +806,11 @@ if (boot.resumeSessionPath) {
   } catch (e) {
     err(`resume replay failed: ${String(e)}`);
   }
+  // The resumed session already holds the whole conversation, so its context
+  // consumption is known NOW — surface it with the replayed transcript instead
+  // of leaving the meter blank until the next turn runs.
+  const ctx = contextUsageOf(session);
+  if (ctx) history.push({ type: "context.update", sessionId: boot.sessionId, context: ctx });
 }
 
 checkPersisted();

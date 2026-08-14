@@ -110,7 +110,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -168,12 +168,12 @@ button {
 
 .titlebar-title {
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 
 .titlebar-sub {
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: 13.5px;
 }
 
 .spacer {
@@ -206,7 +206,7 @@ button {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--bg-raised);
-  font-size: 12.5px;
+  font-size: 14.5px;
   transition: background 0.1s ease;
 }
 
@@ -271,7 +271,7 @@ button {
   gap: 6px;
   padding: 5px 6px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 650;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -283,7 +283,7 @@ button {
   text-transform: none;
   letter-spacing: 0;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 12.5px;
 }
 
 .session-row {
@@ -306,7 +306,7 @@ button {
 }
 
 .session-title {
-  font-size: 12.5px;
+  font-size: 14.5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -318,7 +318,7 @@ button {
 
 .session-meta {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -391,7 +391,7 @@ button {
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--bg);
-  font-size: 11.5px;
+  font-size: 13.5px;
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -446,7 +446,7 @@ button {
   padding: 9px 11px;
   overflow-x: auto;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 13.5px;
   line-height: 1.5;
   white-space: pre;
   margin: 0;
@@ -456,14 +456,14 @@ button {
   border-left: 2px solid var(--border-strong);
   padding: 2px 0 2px 10px;
   color: var(--text-muted);
-  font-size: 12.5px;
+  font-size: 14.5px;
   white-space: pre-wrap;
 }
 
 .thinking summary {
   cursor: pointer;
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: 13.5px;
   list-style: none;
 }
 
@@ -481,7 +481,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .card-head .name {
@@ -490,7 +490,7 @@ button {
 
 .card-head .arg {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 13.5px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -521,7 +521,7 @@ button {
 
 .diff {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.45;
   overflow-x: auto;
   white-space: pre;
@@ -562,11 +562,11 @@ button {
 
 .advisor-name {
   font-weight: 650;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .sev {
-  font-size: 10.5px;
+  font-size: 12.5px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 1px 6px;
@@ -618,7 +618,7 @@ button {
 
 .hint {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 /* ------------------------------------------------------------- inspector */
@@ -642,7 +642,7 @@ button {
 .tab {
   flex: 1;
   padding: 7px 0;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
   border-bottom: 2px solid transparent;
 }
@@ -664,7 +664,7 @@ button {
 .usage-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .usage-table td {
@@ -675,7 +675,7 @@ button {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 13.5px;
   white-space: nowrap;
 }
 
@@ -686,7 +686,7 @@ button {
 }
 
 .section-label {
-  font-size: 10.5px;
+  font-size: 12.5px;
   font-weight: 650;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -773,7 +773,7 @@ button {
 
 .field label {
   display: block;
-  font-size: 11.5px;
+  font-size: 13.5px;
   color: var(--text-muted);
   margin-bottom: 4px;
 }
@@ -793,12 +793,12 @@ button {
   color: var(--text-faint);
   text-align: center;
   padding: 40px 20px;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 
 .empty h3 {
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   margin: 0 0 4px;
 }
@@ -809,7 +809,7 @@ button {
   background: var(--danger-soft);
   border-radius: var(--radius);
   padding: 9px 12px;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .banner.warn {
@@ -819,7 +819,7 @@ button {
 
 .mono {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 13.5px;
 }
 
 .sr-only {
@@ -860,7 +860,7 @@ button {
   padding: 2px 8px;
   border-radius: var(--radius);
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: 13.5px;
 }
 .btn-ghost:hover {
   background: var(--bg-hover);
@@ -916,7 +916,7 @@ button {
 .thinking-body {
   white-space: pre-wrap;
   color: var(--text-muted);
-  font-size: 12.5px;
+  font-size: 14.5px;
   padding: 6px 2px;
 }
 
@@ -927,7 +927,7 @@ button {
   padding: 2px 0 2px 10px;
 }
 .thinking-live-label {
-  font-size: 11.5px;
+  font-size: 13.5px;
 }
 .thinking-live-clip {
   display: flex;
@@ -974,7 +974,7 @@ button {
   padding: 8px 10px;
   overflow-x: auto;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.5;
   margin: 6px 0;
 }
@@ -1007,7 +1007,7 @@ button {
 }
 .md table {
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 .md th,
 .md td {
@@ -1042,17 +1042,17 @@ button {
 }
 .tool-chevron {
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 12px;
   flex: none;
   width: 10px;
 }
 .tool-name {
   font-weight: 600;
-  font-size: 12px;
+  font-size: 14px;
 }
 .tool-arg {
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 13.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1084,7 +1084,7 @@ button {
   margin-left: -6px;
   border-radius: var(--radius);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 14px;
 }
 .work-head:hover {
   background: var(--bg-hover);
@@ -1115,7 +1115,7 @@ button {
 }
 .pending-bar-summary {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -1146,7 +1146,7 @@ button {
 }
 .approval-title {
   font-weight: 700;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 .approval-summary {
   margin: 4px 0;
@@ -1185,7 +1185,7 @@ button {
   border-left-color: var(--warn);
 }
 .severity-badge {
-  font-size: 10.5px;
+  font-size: 12.5px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   border-radius: 3px;
@@ -1202,7 +1202,7 @@ button {
   color: var(--warn);
 }
 .advisor-body {
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 
 /* ---- subagent cards ---- */
@@ -1224,7 +1224,7 @@ button {
 }
 .subagent-label {
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 .subagent-meta {
   margin-top: 2px;
@@ -1233,7 +1233,7 @@ button {
   margin-top: 6px;
   border-top: 1px solid var(--border);
   padding-top: 6px;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 
 /* ---- composer ---- */
@@ -1252,7 +1252,7 @@ button {
   flex: 1;
   resize: none;
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 15px;
   padding: 8px 10px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-strong);
@@ -1334,7 +1334,7 @@ button {
   gap: 1px;
 }
 .session-title {
-  font-size: 12.5px;
+  font-size: 14.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1396,7 +1396,7 @@ button {
 }
 .project-name {
   font-weight: 700;
-  font-size: 11px;
+  font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -1427,7 +1427,7 @@ button {
 }
 .group-chevron {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: 13px;
   width: 10px;
   flex: none;
 }
@@ -1453,7 +1453,7 @@ button {
   width: 100%;
   text-align: left;
   padding: 5px 10px;
-  font-size: 12.5px;
+  font-size: 14.5px;
   border: none;
   background: none;
   border-radius: var(--radius);
@@ -1508,7 +1508,7 @@ button {
   background: var(--bg-hover);
 }
 .model-name {
-  font-size: 12.5px;
+  font-size: 14.5px;
   font-weight: 600;
 }
 .fav-btn {
@@ -1517,7 +1517,7 @@ button {
   color: var(--text-faint);
   cursor: pointer;
   padding: 4px 10px;
-  font-size: 14px;
+  font-size: 16px;
 }
 .fav-btn.on {
   color: #d99a06;
@@ -1552,7 +1552,7 @@ button {
   background: none;
   padding: 3px 4px 3px 10px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
 }
 .preset-use:hover {
@@ -1584,7 +1584,7 @@ button {
   border: none;
   background: none;
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: 14px;
   cursor: pointer;
   color: var(--text-muted);
   border-right: 1px solid var(--border);
@@ -1610,7 +1610,7 @@ button {
 }
 .advisor-row-name {
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 .advisor-editor {
   margin-top: 8px;
@@ -1645,7 +1645,7 @@ button {
   padding: 6px 10px;
   border-radius: var(--radius);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 14.5px;
   color: var(--text);
 }
 .settings-nav-item.on {
@@ -1669,7 +1669,7 @@ button {
 }
 .provider-name {
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }
 .check-row {
   padding: 3px 0;
@@ -1694,7 +1694,7 @@ button {
 }
 .usage-table th {
   font-weight: 600;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   text-align: left;
   padding: 3px 6px;
@@ -1732,14 +1732,14 @@ button {
   background: var(--bg-active);
 }
 .change-path {
-  font-size: 11.5px;
+  font-size: 13.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .status-badge {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 12.5px;
   width: 14px;
   text-align: center;
   flex: none;
@@ -1785,7 +1785,7 @@ button {
   outline: none;
   background: none;
   padding: 12px 14px;
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text);
   border-bottom: 1px solid var(--border);
 }
@@ -1806,7 +1806,7 @@ button {
   border-radius: var(--radius);
   cursor: pointer;
   color: var(--text);
-  font-size: 13px;
+  font-size: 15px;
 }
 .palette-item.selected {
   background: var(--accent-soft);
@@ -1862,7 +1862,7 @@ button {
 }
 .model-picker-collapsed .chevron {
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 /* ---- inline add-rows (advisor, preset name) ---- */
@@ -1913,7 +1913,7 @@ button {
 }
 .modal.prompt-dialog h3 {
   margin: 0 0 10px;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 /* ---- onboarding ---- */
@@ -1939,7 +1939,7 @@ button {
 }
 .onboarding h2 {
   margin: 0 0 6px;
-  font-size: 16px;
+  font-size: 18px;
 }
 .onboarding .lead {
   color: var(--text-muted);
@@ -1959,5 +1959,5 @@ button {
 }
 .preset-card-name {
   font-weight: 650;
-  font-size: 12.5px;
+  font-size: 14.5px;
 }

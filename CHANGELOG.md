@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5
+
+- **Bigger type across the app** — every text size up 2px for readability.
+- **Context shows immediately on resume.** A resumed session reports its
+  context-window consumption with the replayed transcript, so the titlebar
+  chip and Usage meter are accurate before you type anything — no more
+  discovering a near-full context after sending a message.
+
 ## 0.3.4
 
 - **Fix messages appearing twice.** The app showed your message optimistically

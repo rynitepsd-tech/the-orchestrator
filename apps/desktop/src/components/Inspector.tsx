@@ -148,13 +148,13 @@ export function QuotaSection(): JSX.Element | null {
       <div className="section-label">Provider limits</div>
       {quotas.map((q: ProviderQuota) => (
         <div key={`${q.provider}-${q.accountLabel ?? ""}`} style={{ marginBottom: 10 }}>
-          <div style={{ fontWeight: 600, fontSize: 12 }}>{q.provider}</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{q.provider}</div>
           {q.unavailableReason ? (
             <div className="hint">{q.unavailableReason}</div>
           ) : (
             q.windows.map((w) => (
               <div key={w.label} style={{ marginTop: 4 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5 }}>
                   <span style={{ color: "var(--text-muted)" }}>{w.label}</span>
                   <span className="mono">
                     {w.fraction !== undefined ? `${Math.round(w.fraction * 100)}%` : "—"}
