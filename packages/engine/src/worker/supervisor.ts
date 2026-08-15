@@ -291,6 +291,9 @@ export class WorkerSupervisor {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      // Anchor the worker in the project: any OMP fallback to process.cwd()
+      // then lands inside the project instead of "/" (Finder-launched apps).
+      cwd: projectPath,
       env: {
         ...process.env,
         ORCHESTRATOR_WORKER_BOOT: JSON.stringify(boot),

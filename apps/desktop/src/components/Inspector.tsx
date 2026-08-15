@@ -521,9 +521,40 @@ function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
     setFailed(false);
     setViewSource(false);
     setOpenMenu(false);
+
+    // Agents often cite a file by bare name (`SESSION_LOG.md`) even when it
+    // lives in a subfolder. If the literal path is missing, locate the file
+    // by basename inside the project and reopen at the real path.
+    const locateByName = async (): Promise<boolean> => {
+      const pp = preview.projectPath;
+      if (!pp || !preview.path.startsWith(`${pp}/`)) return false;
+      const base = preview.path.split("/").pop();
+      if (!base) return false;
+      try {
+        const res = await engine.request("project.files", { path: pp, query: base, limit: 200 });
+        const matches = res.files.filter((f) => f === base || f.endsWith(`/${base}`));
+        // Shortest path first: prefer docs/README.md over deep vendored copies.
+        matches.sort((a, b) => a.length - b.length);
+        const found = matches[0];
+        if (!found || `${pp}/${found}` === preview.path) return false;
+        if (!cancelled) {
+          useStore.getState().openFilePreview({
+            path: `${pp}/${found}`,
+            projectPath: pp,
+            line: preview.line,
+          });
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     void engine
       .request("file.read", { path: preview.path })
-      .then((r) => {
+      .then(async (r) => {
+        if (cancelled) return;
+        if (r.kind === "missing" && (await locateByName())) return;
         if (!cancelled) setData(r);
       })
       .catch(() => {

@@ -203,7 +203,12 @@ if (boot.model && !bootModel) {
 }
 
 const sessionManager = boot.resumeSessionPath
-  ? await OMP.SessionManager.open(boot.resumeSessionPath)
+  ? // initialCwd anchors the fallback: if the session file's recorded cwd no
+    // longer exists, tools must land in the project — not the worker's own
+    // process.cwd(), which is "/" for a Finder-launched app.
+    await OMP.SessionManager.open(boot.resumeSessionPath, undefined, undefined, {
+      initialCwd: boot.projectPath,
+    })
   : OMP.SessionManager.create(
       boot.projectPath,
       OMP.SessionManager.getDefaultSessionDir(boot.projectPath, boot.agentDir),

@@ -150,23 +150,64 @@ button {
   height: 100%;
 }
 
-/* T3-style: taller, borderless, and the same ground as the content so the
- * bar reads as part of the page instead of a strip bolted on top. */
+/* T3-style: the bar mirrors the app's three columns. The stretches above the
+ * sidebar and inspector share their darker ground; the middle matches the
+ * page, so every seam lines up with the panes below. */
 .titlebar {
   grid-row: 1;
   grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 14px 0 84px; /* clear the traffic lights */
+  display: grid; /* column template set inline, kept in sync with .app */
   background: var(--bg);
   -webkit-app-region: drag;
   user-select: none;
   min-width: 0;
 }
 
-.titlebar > * {
-  -webkit-app-region: no-drag;
+/* Explicit columns: with a side section unmounted, auto-placement would
+ * slide the middle into a 0px track. */
+.titlebar-left {
+  grid-column: 1;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 84px; /* clear the traffic lights */
+  min-width: 0;
+  overflow: hidden;
+}
+.titlebar-main {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  min-width: 0;
+  container-type: inline-size;
+}
+.titlebar-main.no-left {
+  padding-left: 84px; /* traffic lights sit here when the sidebar is hidden */
+}
+.titlebar-right {
+  grid-column: 3;
+  background: var(--bg-sunken);
+  border-left: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 10px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Cramped middle: drop effort, the "Context" word, and the usage chip. */
+@container (max-width: 620px) {
+  .chip-effort,
+  .ctx-label,
+  .chip-usage,
+  .chip-advisors {
+    display: none;
+  }
 }
 
 .titlebar-logo {
@@ -174,11 +215,11 @@ button {
   white-space: nowrap;
 }
 .logo-the {
-  color: var(--text-faint);
-}
-.logo-orchestrator {
   color: var(--text);
   font-weight: 700;
+}
+.logo-orchestrator {
+  color: var(--text-faint);
   margin-left: 5px;
 }
 
@@ -1211,9 +1252,13 @@ button {
 
 /* ---- live todo strip ---- */
 .todo-strip {
-  border-bottom: 1px solid var(--border);
+  width: min(420px, 50%);
+  margin: 0 auto;
+  border: 1px solid var(--border-strong);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
   background: var(--bg-raised);
-  padding: 0 14px;
+  padding: 0 12px;
 }
 .todo-head {
   display: flex;
@@ -1793,6 +1838,13 @@ button {
   position: relative;
   padding: 6px 20px 16px;
   background: var(--bg);
+}
+/* Docked plan strip: fused to the composer card's top edge. */
+.composer-zone {
+  background: var(--bg);
+}
+.composer-zone .composer {
+  padding-top: 0;
 }
 .composer-card {
   max-width: 780px;

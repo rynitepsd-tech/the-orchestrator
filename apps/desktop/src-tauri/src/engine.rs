@@ -92,6 +92,33 @@ fn resolve_engine(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
     Err("The bundled OMP engine could not be located inside the application.".into())
 }
 
+/// A Finder-launched .app inherits launchd's minimal PATH
+/// (/usr/bin:/bin:/usr/sbin:/sbin), so agent tools can't find Homebrew or
+/// user-installed CLIs (gh, node, chrome wrappers, …). Append the standard
+/// install locations that exist on disk so the engine — and every worker and
+/// tool under it — sees the same commands a terminal would.
+fn enriched_path() -> String {
+    let base = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into());
+    let mut parts: Vec<String> = base.split(':').map(String::from).collect();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        "/opt/homebrew/bin".to_string(),
+        "/opt/homebrew/sbin".to_string(),
+        "/usr/local/bin".to_string(),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.local/bin"),
+        format!("{home}/.cargo/bin"),
+        format!("{home}/.volta/bin"),
+    ];
+    for dir in candidates {
+        // An empty $HOME yields paths like "/.bun/bin", which simply won't exist.
+        if !parts.iter().any(|p| p == &dir) && PathBuf::from(&dir).is_dir() {
+            parts.push(dir);
+        }
+    }
+    parts.join(":")
+}
+
 fn which_bun() -> Option<PathBuf> {
     [
         std::env::var("HOME")
@@ -162,7 +189,8 @@ impl EngineSupervisor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("ORCHESTRATOR_VERSION", env!("CARGO_PKG_VERSION"));
+            .env("ORCHESTRATOR_VERSION", env!("CARGO_PKG_VERSION"))
+            .env("PATH", enriched_path());
 
         let mut child = cmd.spawn().map_err(|e| {
             let message = "The bundled OMP engine could not start.".to_string();

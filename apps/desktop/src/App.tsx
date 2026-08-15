@@ -527,111 +527,144 @@ export function App(): JSX.Element {
       (view.summary.projectPath.split("/").pop() || view.summary.projectPath))
     : undefined;
 
-  return (
-    <div
-      className="app"
-      style={{
-        gridTemplateColumns: `${s.sidebarOpen ? `${s.prefs.sidebarWidth}px` : "0px"} 1fr ${
-          showInspector ? `${s.prefs.inspectorWidth}px` : "0px"
-        }`,
-      }}
+  const gridColumns = `${s.sidebarOpen ? `${s.prefs.sidebarWidth}px` : "0px"} 1fr ${
+    showInspector ? `${s.prefs.inspectorWidth}px` : "0px"
+  }`;
+
+  const sidebarToggle = (
+    <button
+      className={`icon-btn${s.sidebarOpen ? " on" : ""}`}
+      title="Toggle sidebar (⌘1)"
+      onClick={() => s.toggleSidebar()}
     >
+      ◧
+    </button>
+  );
+  const logo = (
+    <span className="titlebar-logo" data-tauri-drag-region>
+      <span className="logo-the">The</span>
+      <span className="logo-orchestrator">Orchestrator</span>
+    </span>
+  );
+  const inspectorToggle = (
+    <button
+      className={`icon-btn${showInspector ? " on" : ""}`}
+      title="Toggle inspector (⌘2)"
+      onClick={() => s.toggleInspector()}
+    >
+      ◨
+    </button>
+  );
+
+  return (
+    <div className="app" style={{ gridTemplateColumns: gridColumns }}>
       {/* data-tauri-drag-region is what actually makes the window draggable
-          in Tauri; -webkit-app-region is an Electron-ism and does nothing. */}
-      <header className="titlebar" data-tauri-drag-region>
-        <button
-          className={`icon-btn${s.sidebarOpen ? " on" : ""}`}
-          title="Toggle sidebar (⌘1)"
-          onClick={() => s.toggleSidebar()}
-        >
-          ◧
-        </button>
-        <span className="titlebar-logo" data-tauri-drag-region>
-          <span className="logo-the">The</span>
-          <span className="logo-orchestrator">Orchestrator</span>
-        </span>
-        {s.engineStage !== "ready" && (
-          <span className="titlebar-sub" data-tauri-drag-region>
-            {stageLabel[s.engineStage] ?? s.engineStage}
-          </span>
+          in Tauri; -webkit-app-region is an Electron-ism and does nothing.
+          The bar mirrors the app's three columns: the stretches above the
+          sidebar and inspector share their darker ground, T3-style. */}
+      <header
+        className="titlebar"
+        style={{ gridTemplateColumns: gridColumns }}
+        data-tauri-drag-region
+      >
+        {s.sidebarOpen && (
+          <div className="titlebar-side titlebar-left" data-tauri-drag-region>
+            {sidebarToggle}
+            {logo}
+          </div>
         )}
-        {view && s.mainView === "sessions" && (
-          <span className="titlebar-crumbs" data-tauri-drag-region title={view.summary.projectPath}>
-            <FolderIcon />
-            <span className="crumb-project">{projectName}</span>
-            <span className="crumb-sep">/</span>
-            <span className="crumb-title">{view.summary.title}</span>
-            {crumbStatus && <span className="crumb-status">· {crumbStatus}</span>}
-          </span>
-        )}
-        {s.updateAvailable && (
-          <button
-            className="chip update"
-            title={
-              s.updateBusy
-                ? "Downloading update…"
-                : `Version ${s.updateAvailable.version} is available — click to install`
-            }
-            onClick={() => void installUpdate()}
-          >
-            {s.updateBusy ? "Updating…" : `Update to ${s.updateAvailable.version}`}
-          </button>
-        )}
-        <span className="spacer" data-tauri-drag-region />
-        {view && s.mainView === "sessions" && (
-          <span
-            className="chip"
-            title={view.summary.model ? `Model: ${view.summary.model}` : "OMP decides the model"}
-          >
-            {view.presetName ?? modelBasename(view.summary.model)}
-            {view.summary.thinkingLevel ? ` · ${view.summary.thinkingLevel}` : ""}
-          </span>
-        )}
-        {view && s.mainView === "sessions" && enabledAdvisors.length > 0 && (
-          <span
-            className="chip"
-            title={enabledAdvisors
-              .map((a) => {
-                const st = view.advisorStates[a.id];
-                return `${a.name}${st ? ` — ${st}` : ""}`;
-              })
-              .join("\n")}
-          >
-            {enabledAdvisors.length} advisor{enabledAdvisors.length > 1 ? "s" : ""}
-          </span>
-        )}
-        {view?.context && (
-          <span
-            className="chip"
-            title={`${view.context.usedTokens} / ${view.context.maxTokens} tokens in the model's context window`}
-          >
-            Context <strong>{Math.round(view.context.fraction * 100)}%</strong>
-          </span>
-        )}
-        {view?.usage && (
-          <button
-            className="chip chip-btn"
-            title="Cumulative session usage — open breakdown"
-            onClick={() => s.setInspectorTab("usage")}
-          >
-            Usage{" "}
-            <strong>
-              {fmtTokens(
-                view.usage.total.inputTokens +
-                  view.usage.total.outputTokens +
-                  view.usage.total.cacheReadTokens +
-                  view.usage.total.cacheWriteTokens,
+        <div className={`titlebar-main${s.sidebarOpen ? "" : " no-left"}`} data-tauri-drag-region>
+          {!s.sidebarOpen && sidebarToggle}
+          {!s.sidebarOpen && logo}
+          {s.engineStage !== "ready" && (
+            <span className="titlebar-sub" data-tauri-drag-region>
+              {stageLabel[s.engineStage] ?? s.engineStage}
+            </span>
+          )}
+          {view && s.mainView === "sessions" && (
+            <span
+              className="titlebar-crumbs"
+              data-tauri-drag-region
+              title={view.summary.projectPath}
+            >
+              <FolderIcon />
+              <span className="crumb-project">{projectName}</span>
+              <span className="crumb-sep">/</span>
+              <span className="crumb-title">{view.summary.title}</span>
+              {crumbStatus && <span className="crumb-status">· {crumbStatus}</span>}
+            </span>
+          )}
+          {s.updateAvailable && (
+            <button
+              className="chip update"
+              title={
+                s.updateBusy
+                  ? "Downloading update…"
+                  : `Version ${s.updateAvailable.version} is available — click to install`
+              }
+              onClick={() => void installUpdate()}
+            >
+              {s.updateBusy ? "Updating…" : `Update to ${s.updateAvailable.version}`}
+            </button>
+          )}
+          <span className="spacer" data-tauri-drag-region />
+          {view && s.mainView === "sessions" && (
+            <span
+              className="chip"
+              title={view.summary.model ? `Model: ${view.summary.model}` : "OMP decides the model"}
+            >
+              {view.presetName ?? modelBasename(view.summary.model)}
+              {view.summary.thinkingLevel && (
+                <span className="chip-effort"> · {view.summary.thinkingLevel}</span>
               )}
-            </strong>
-          </button>
+            </span>
+          )}
+          {view && s.mainView === "sessions" && enabledAdvisors.length > 0 && (
+            <span
+              className="chip chip-advisors"
+              title={enabledAdvisors
+                .map((a) => {
+                  const st = view.advisorStates[a.id];
+                  return `${a.name}${st ? ` — ${st}` : ""}`;
+                })
+                .join("\n")}
+            >
+              {enabledAdvisors.length} advisor{enabledAdvisors.length > 1 ? "s" : ""}
+            </span>
+          )}
+          {view?.context && (
+            <span
+              className="chip"
+              title={`${view.context.usedTokens} / ${view.context.maxTokens} tokens in the model's context window`}
+            >
+              <span className="ctx-label">Context </span>
+              <strong>{Math.round(view.context.fraction * 100)}%</strong>
+            </span>
+          )}
+          {view?.usage && (
+            <button
+              className="chip chip-btn chip-usage"
+              title="Cumulative session usage — open breakdown"
+              onClick={() => s.setInspectorTab("usage")}
+            >
+              Usage{" "}
+              <strong>
+                {fmtTokens(
+                  view.usage.total.inputTokens +
+                    view.usage.total.outputTokens +
+                    view.usage.total.cacheReadTokens +
+                    view.usage.total.cacheWriteTokens,
+                )}
+              </strong>
+            </button>
+          )}
+          {!showInspector && inspectorToggle}
+        </div>
+        {showInspector && (
+          <div className="titlebar-side titlebar-right" data-tauri-drag-region>
+            {inspectorToggle}
+          </div>
         )}
-        <button
-          className={`icon-btn${showInspector ? " on" : ""}`}
-          title="Toggle inspector (⌘2)"
-          onClick={() => s.toggleInspector()}
-        >
-          ◨
-        </button>
       </header>
 
       {s.sidebarOpen && (
@@ -709,19 +742,21 @@ export function App(): JSX.Element {
                   </div>
                 )}
 
-                {view.todoPhases && <TodoStrip phases={view.todoPhases} />}
-
                 <Transcript items={view.transcript} sessionId={view.summary.sessionId} />
 
                 {view.pendingInteractions > 0 && <PendingBar view={view} />}
 
-                <Composer
-                  sessionId={view.summary.sessionId}
-                  runState={view.summary.runState}
-                  onSend={send}
-                  onAbort={abort}
-                  disabled={s.engineStage === "offline" || Boolean(view.interrupted)}
-                />
+                {/* The plan docks on the composer, a tab growing out of its top. */}
+                <div className="composer-zone">
+                  {view.todoPhases && <TodoStrip phases={view.todoPhases} />}
+                  <Composer
+                    sessionId={view.summary.sessionId}
+                    runState={view.summary.runState}
+                    onSend={send}
+                    onAbort={abort}
+                    disabled={s.engineStage === "offline" || Boolean(view.interrupted)}
+                  />
+                </div>
               </>
             ) : (
               <Home

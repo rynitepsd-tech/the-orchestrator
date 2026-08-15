@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.4
+
+- **Agents see your real PATH.** Finder-launched apps get macOS's minimal
+  PATH, so agent tools couldn't find Homebrew or user CLIs (chromium, node,
+  gh — the reason "Commit, Push & PR" could silently skip the PR). The
+  launcher now appends the standard install locations that exist on disk.
+- **Workers can no longer escape the project folder.** Worker processes run
+  with the project as their working directory, and resuming a session whose
+  recorded cwd went stale falls back to the project — not "/".
+- **Mislinked file citations resolve themselves.** A cited bare filename
+  that isn't at the project root is located by name inside the project and
+  the preview opens at the real path, instead of "File not found on disk."
+- **Top bar, three ways.** The bar now mirrors the app's three columns: the
+  stretches above the sidebar and inspector share their darker ground with
+  aligned seams; the breadcrumb stays left in the middle section and the
+  chips right-align with it. When cramped it sheds the effort level, the
+  word "Context", and the usage chip. "The" is the bold half of the logo now.
+- **The plan docks on the composer** — the todo strip sits on top of the
+  message bar at half its width, fused to the card's top edge.
+
 ## 0.4.3
 
 - **T3-style top bar.** Taller and borderless, blending into the page: the
