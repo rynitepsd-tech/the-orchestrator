@@ -664,37 +664,6 @@ button {
   border-color: var(--warn);
 }
 
-/* ------------------------------------------------------------- composer */
-
-.composer {
-  border-top: 1px solid var(--border);
-  background: var(--bg-raised);
-  padding: 10px 20px 14px;
-}
-
-.composer-inner {
-  max-width: 780px;
-  margin: 0 auto;
-}
-
-.composer-box {
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: var(--bg);
-  padding: 8px 10px;
-}
-
-.composer-box:focus-within {
-  border-color: var(--accent);
-}
-
-.composer-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 7px;
-}
-
 .hint {
   color: var(--text-faint);
   font-size: 13px;
@@ -1527,17 +1496,6 @@ button {
 .attachment-remove:hover {
   color: var(--danger);
 }
-.attach-btn {
-  align-self: flex-end;
-  padding: 6px 10px;
-  font-size: 16px;
-  line-height: 1.2;
-}
-.composer.drag-over {
-  outline: 2px dashed var(--accent);
-  outline-offset: -2px;
-  border-radius: var(--radius-lg);
-}
 
 /* Live variant: work still in flight shows what's happening now, plus a
  * bottom-anchored clip of the newest thinking while collapsed. */
@@ -1696,42 +1654,123 @@ button {
 }
 
 /* ---- composer ---- */
+/* T3-style floating composer card: rounded island over the page background,
+ * input on top, the session's pre-flight contract (model · effort · fast)
+ * along the bottom with a circular send/stop. */
 .composer {
   position: relative;
-  border-top: 1px solid var(--border);
-  padding: 10px 14px;
+  padding: 6px 20px 16px;
   background: var(--bg);
 }
-.composer-row {
+.composer-card {
+  max-width: 780px;
+  margin: 0 auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--bg-raised);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.35);
+  padding: 12px 14px 10px;
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  align-items: flex-end;
+}
+.composer-card:focus-within {
+  border-color: var(--accent);
+}
+.composer.drag-over .composer-card {
+  border-color: var(--accent);
+  border-style: dashed;
 }
 .composer-input {
-  flex: 1;
   resize: none;
   font-family: var(--font);
   font-size: 15px;
-  padding: 8px 10px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
+  border: none;
+  background: none;
   color: var(--text);
-  line-height: 1.45;
+  line-height: 1.5;
+  padding: 2px 2px 0;
 }
 .composer-input:focus {
-  outline: 2px solid var(--accent-soft);
-  border-color: var(--accent);
+  outline: none;
 }
-.composer-actions {
+.composer-controls {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 7px;
+}
+.ctl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.1s ease;
+}
+.ctl-chip:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.ctl-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ctl-select {
+  -webkit-appearance: none;
+  appearance: none;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font);
+}
+.ctl-chip.fast-toggle.on {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.attach-chip {
+  padding: 4px 9px;
+  font-size: 15px;
+  line-height: 1;
+}
+.send-circle {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.1s ease;
+}
+.send-circle:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.send-circle.stop {
+  background: var(--danger);
+  font-size: 11px;
+}
+.send-circle:hover:not(:disabled) {
+  opacity: 0.88;
 }
 .slash-pop {
   position: absolute;
   bottom: 100%;
-  left: 14px;
-  right: 14px;
+  left: 20px;
+  right: 20px;
+  max-width: 780px;
+  margin: 0 auto 4px;
   max-height: 300px;
   overflow-y: auto;
   background: var(--bg-raised);

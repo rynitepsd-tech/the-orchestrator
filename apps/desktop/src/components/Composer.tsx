@@ -12,7 +12,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { isActive, useStore } from "../store";
+import { isActive, modelBasename, useStore } from "../store";
 
 interface SlashCommand {
   name: string;
@@ -78,6 +78,32 @@ export function Composer({
     sessionId ? Boolean(s.sessions[sessionId]?.summary.fastMode) : false,
   );
 
+  // Pre-flight contract, T3-style: the model and effort this session runs
+  // with sit ON the composer, changeable mid-session.
+  const models = useStore((s) => s.models);
+  const summary = useStore((s) => (sessionId ? s.sessions[sessionId]?.summary : undefined));
+  const currentModel = summary?.model;
+  const modelInfo = currentModel ? models.find((m) => m.key === currentModel) : undefined;
+  const efforts = modelInfo?.thinking?.efforts ?? [];
+  const selectableModels = models.filter((m) => m.authenticated || m.key === currentModel);
+
+  const setModel = (key: string) => {
+    if (!sessionId || !key) return;
+    void engine
+      .request("session.setModel", { sessionId, model: key })
+      .catch((e) => useStore.getState().setEngineError(e));
+  };
+  const setEffort = (lvl: string) => {
+    if (!sessionId || !currentModel) return;
+    void engine
+      .request("session.setModel", {
+        sessionId,
+        model: currentModel,
+        thinkingLevel: lvl || undefined,
+      })
+      .catch((e) => useStore.getState().setEngineError(e));
+  };
+
   const toggleFast = () => {
     if (!sessionId) return;
     void engine
@@ -95,7 +121,7 @@ export function Composer({
 
   const fastToggle = (
     <button
-      className={`btn fast-toggle${fastMode ? " on" : ""}`}
+      className={`ctl-chip fast-toggle${fastMode ? " on" : ""}`}
       title={
         fastMode
           ? "Fast mode is ON — responses are faster, but this uses your provider usage significantly faster. Click to turn off."
@@ -251,37 +277,31 @@ export function Composer({
           ))}
         </div>
       )}
-      {attachments.length > 0 && (
-        <div className="attachment-row">
-          {attachments.map((a, i) => (
-            <span key={`${a.path}-${i}`} className="chip attachment-chip" title={a.path}>
-              {a.kind === "image" ? "🖼" : "📄"} {a.name}
-              <button
-                className="attachment-remove"
-                aria-label={`Remove ${a.name}`}
-                onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      <div className="composer-row">
-        <button
-          className="btn attach-btn"
-          title="Attach images or files (or paste/drop them)"
-          onClick={() => void pickFiles()}
-          disabled={disabled || !sessionId}
-        >
-          +
-        </button>
+      <div className="composer-card">
+        {attachments.length > 0 && (
+          <div className="attachment-row">
+            {attachments.map((a, i) => (
+              <span key={`${a.path}-${i}`} className="chip attachment-chip" title={a.path}>
+                {a.kind === "image" ? "🖼" : "📄"} {a.name}
+                <button
+                  className="attachment-remove"
+                  aria-label={`Remove ${a.name}`}
+                  onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           ref={taRef}
           className="composer-input"
           onPaste={onPaste}
           placeholder={
-            busy ? "Steer the agent (⌘Enter queues as follow-up)…" : "Message the agent…"
+            busy
+              ? "Steer the agent (⌘Enter queues as follow-up)…"
+              : "Ask anything — / for commands, paste or drop files…"
           }
           value={text}
           rows={Math.min(8, Math.max(1, text.split("\n").length))}
@@ -321,31 +341,84 @@ export function Composer({
             }
           }}
         />
-        {busy ? (
-          <div className="composer-actions">
-            {fastToggle}
-            <button className="btn" onClick={() => send("steer")} disabled={!canSend}>
-              Steer
+        <div className="composer-controls">
+          <button
+            className="ctl-chip attach-chip"
+            title="Attach images or files (or paste/drop them)"
+            onClick={() => void pickFiles()}
+            disabled={disabled || !sessionId}
+          >
+            +
+          </button>
+          <select
+            className="ctl-chip ctl-select"
+            value={currentModel ?? ""}
+            title="Model for this session — switchable mid-session"
+            disabled={disabled || !sessionId}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            {!currentModel && (
+              <option value="" disabled>
+                OMP default
+              </option>
+            )}
+            {selectableModels.map((m) => (
+              <option key={m.key} value={m.key}>
+                {m.name || modelBasename(m.key)}
+              </option>
+            ))}
+          </select>
+          {efforts.length > 0 && (
+            <select
+              className="ctl-chip ctl-select"
+              value={summary?.thinkingLevel ?? ""}
+              title="Reasoning effort"
+              disabled={disabled}
+              onChange={(e) => setEffort(e.target.value)}
+            >
+              <option value="">default</option>
+              {efforts.map((lvl) => (
+                <option key={lvl} value={lvl}>
+                  {lvl}
+                </option>
+              ))}
+            </select>
+          )}
+          {fastToggle}
+          <span className="spacer" />
+          {busy && canSend && (
+            <>
+              <button
+                className="btn btn-ghost"
+                onClick={() => send("steer")}
+                title="Steer the current run (Enter)"
+              >
+                Steer
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => send("queue")}
+                title="Queue as a follow-up (⌘Enter)"
+              >
+                Queue
+              </button>
+            </>
+          )}
+          {busy ? (
+            <button className="send-circle stop" onClick={onAbort} title="Stop (Esc)">
+              ◼
             </button>
-            <button className="btn" onClick={() => send("queue")} disabled={!canSend}>
-              Queue
-            </button>
-            <button className="btn btn-danger" onClick={onAbort} title="Esc">
-              Stop
-            </button>
-          </div>
-        ) : (
-          <div className="composer-actions">
-            {fastToggle}
+          ) : (
             <button
-              className="btn btn-primary"
+              className="send-circle"
               onClick={() => send("steer")}
               disabled={!canSend || disabled}
+              title="Send (Enter)"
             >
-              Send
+              ↑
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
