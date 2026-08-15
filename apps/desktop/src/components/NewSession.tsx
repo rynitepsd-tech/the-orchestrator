@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
 import { useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
+import { BoltIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 
 export function NewSession({
@@ -251,7 +252,9 @@ export function NewSession({
             checked={fastMode}
             onChange={(e) => setFastMode(e.target.checked)}
           />
-          <span>⚡ Fast mode</span>
+          <span>
+            <BoltIcon /> Fast mode
+          </span>
           <span className="hint">priority tier on OpenAI / Anthropic; toggleable in-session</span>
         </label>
 

@@ -272,9 +272,14 @@ export function App(): JSX.Element {
 
   // Home-screen launch: create the session and fire the first message in one
   // motion, so "type what you want, hit Enter" is the whole flow.
-  const launchWithPrompt = async (config: SessionLaunchConfig, firstMessage: string) => {
+  const launchWithPrompt = async (
+    config: SessionLaunchConfig,
+    firstMessage: string,
+    presetName?: string,
+  ) => {
     const id = await createSession(config);
     if (!id) return;
+    if (presetName) useStore.getState().setSessionPreset(id, presetName);
     useStore.getState().apply({
       type: "user.message",
       sessionId: id,
@@ -402,7 +407,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     const st = () => useStore.getState();
     const uns: Array<Promise<() => void>> = [
-      listen("menu://new-session", () => st().setNewSession(true)),
+      listen("menu://new-session", () => st().goHome()),
       listen("menu://open-project", () => st().setNewSession(true)),
       listen("menu://command-palette", () => st().setPalette(true, "commands")),
       listen("menu://toggle-sidebar", () => st().toggleSidebar()),
@@ -436,7 +441,7 @@ export function App(): JSX.Element {
       const st = useStore.getState();
       if (meta && !e.shiftKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
-        st.setNewSession(true);
+        st.goHome();
       } else if (meta && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         st.setPalette(true, "commands");
@@ -582,13 +587,6 @@ export function App(): JSX.Element {
         >
           ◨
         </button>
-        <button
-          className="icon-btn"
-          title="Settings (⌘,)"
-          onClick={() => s.setMainView(s.mainView === "settings" ? "sessions" : "settings")}
-        >
-          ⚙
-        </button>
       </header>
 
       {s.sidebarOpen && (
@@ -715,7 +713,7 @@ export function App(): JSX.Element {
               <Home
                 busy={creating}
                 disabled={s.engineStage === "offline"}
-                onLaunch={(config, msg) => void launchWithPrompt(config, msg)}
+                onLaunch={(config, msg, preset) => void launchWithPrompt(config, msg, preset)}
               />
             )}
           </>
@@ -737,6 +735,28 @@ export function App(): JSX.Element {
             const sessionId = s.renameTarget;
             s.setRenameTarget(undefined);
             if (sessionId) void engine.request("session.setTitle", { sessionId, title });
+          }}
+        />
+      )}
+
+      {s.renameProjectTarget && (
+        <PromptDialog
+          title="Rename project"
+          initial={
+            s.prefs.projectAliases[s.renameProjectTarget] ?? s.renameProjectTarget.split("/").pop()
+          }
+          placeholder="Project display name"
+          submitLabel="Rename"
+          onCancel={() => s.setRenameProjectTarget(undefined)}
+          onSubmit={(name) => {
+            const path = s.renameProjectTarget;
+            s.setRenameProjectTarget(undefined);
+            if (!path) return;
+            // Display alias only — the folder on disk keeps its real name.
+            const aliases = { ...s.prefs.projectAliases };
+            if (name === path.split("/").pop()) delete aliases[path];
+            else aliases[path] = name;
+            s.updatePrefs({ projectAliases: aliases });
           }}
         />
       )}

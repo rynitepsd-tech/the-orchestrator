@@ -14,6 +14,7 @@ import type { JSX } from "react";
 import { useMemo, useRef, useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
 import { modelBasename, useStore } from "../store";
+import { FolderIcon } from "./icons";
 
 export function Home({
   busy,
@@ -22,7 +23,7 @@ export function Home({
 }: {
   busy: boolean;
   disabled?: boolean;
-  onLaunch: (config: SessionLaunchConfig, firstMessage: string) => void;
+  onLaunch: (config: SessionLaunchConfig, firstMessage: string, presetName?: string) => void;
 }): JSX.Element {
   const prefs = useStore((s) => s.prefs);
   const updatePrefs = useStore((s) => s.updatePrefs);
@@ -41,7 +42,8 @@ export function Home({
   const preset: SessionPreset | undefined =
     prefs.presets.find((p) => p.name === prefs.defaultPreset) ?? prefs.presets[0];
 
-  const folder = projectPath ? (projectPath.split("/").pop() ?? projectPath) : undefined;
+  const alias = (p: string) => prefs.projectAliases[p] ?? (p.split("/").pop() || p);
+  const folder = projectPath ? alias(projectPath) : undefined;
   const canLaunch = Boolean(text.trim() && projectPath && !busy && !disabled);
 
   const launch = () => {
@@ -55,6 +57,7 @@ export function Home({
         advisors: preset?.advisors ?? [],
       },
       text.trim(),
+      preset?.name,
     );
     setText("");
   };
@@ -123,7 +126,7 @@ export function Home({
               onClick={() => setProjectMenu((v) => !v)}
               title={projectPath || "Choose a project folder"}
             >
-              📁 {folder ?? "Choose folder…"}
+              <FolderIcon /> {folder ?? "Choose folder…"}
             </button>
             {projectMenu && (
               <div className="home-project-menu">
@@ -137,7 +140,7 @@ export function Home({
                       setProjectMenu(false);
                     }}
                   >
-                    {p.split("/").pop()}
+                    {alias(p)}
                     <span className="hint home-menu-path">{p}</span>
                   </button>
                 ))}

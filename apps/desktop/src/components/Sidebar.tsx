@@ -12,6 +12,7 @@ import type { DragEvent, JSX } from "react";
 import { useMemo, useState } from "react";
 import { engine } from "../engine-client";
 import { isActive, modelBasename, runStateLabel, type SessionView, useStore } from "../store";
+import { ChartIcon, FolderIcon, GearIcon } from "./icons";
 import { ResizeHandle } from "./ResizeHandle";
 
 /** One sidebar row inside a project group: a live session or a resume row. */
@@ -153,8 +154,17 @@ export function Sidebar({
   const archivedCount = discovered.filter((d) => prefs.archivedSessions.includes(d.path)).length;
 
   const updatePrefs = useStore((s) => s.updatePrefs);
-  const setNewSession = useStore((s) => s.setNewSession);
+  const goHome = useStore((s) => s.goHome);
   const moveSession = useStore((s) => s.moveSession);
+  const mainView = useStore((s) => s.mainView);
+  const setMainView = useStore((s) => s.setMainView);
+  const setRenameProjectTarget = useStore((s) => s.setRenameProjectTarget);
+  const [projMenu, setProjMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  /** Closed-session row armed by double-click, showing its Reopen button. */
+  const [armedClosed, setArmedClosed] = useState<string | null>(null);
+
+  const projectName = (path: string) =>
+    prefs.projectAliases[path] ?? (path.split("/").pop() || path);
 
   // Persist the group's new visible sequence as session paths (survives
   // relaunches); rows from other projects keep their entries untouched.
@@ -205,9 +215,15 @@ export function Sidebar({
     });
 
   return (
-    <aside className="sidebar" onClick={() => setMenu(null)}>
+    <aside
+      className="sidebar"
+      onClick={() => {
+        setMenu(null);
+        setProjMenu(null);
+      }}
+    >
       <div className="sidebar-head">
-        <button className="btn btn-primary" onClick={() => setNewSession(true)}>
+        <button className="btn btn-primary" onClick={() => goHome()}>
           + New Session
         </button>
       </div>
@@ -262,10 +278,16 @@ export function Sidebar({
                   setDropProject(null);
                 }}
                 onClick={() => toggleCollapsed(projectPath)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setProjMenu({ path: projectPath, x: e.clientX, y: e.clientY });
+                }}
                 aria-expanded={!collapsed}
               >
-                <span className="group-chevron">{collapsed ? "›" : "⌄"}</span>
-                <span className="project-name">{projectPath.split("/").pop()}</span>
+                <span className="group-folder">
+                  <FolderIcon />
+                </span>
+                <span className="project-name">{projectName(projectPath)}</span>
                 {prefs.pinnedProjects.includes(projectPath) && <span className="hint">pinned</span>}
                 {collapsed && <span className="hint">{count}</span>}
                 {shared > 1 && (
@@ -342,8 +364,10 @@ export function Sidebar({
                 onClick={() => toggleCollapsed("__previous__")}
                 aria-expanded={!isCollapsed("__previous__")}
               >
-                <span className="group-chevron">{isCollapsed("__previous__") ? "›" : "⌄"}</span>
-                <span className="project-name">Previous sessions</span>
+                <span className="group-folder">
+                  <FolderIcon />
+                </span>
+                <span className="project-name">Closed sessions</span>
                 {isCollapsed("__previous__") && <span className="hint">{resumable.length}</span>}
               </button>
               {archivedCount > 0 && !isCollapsed("__previous__") && (
@@ -358,7 +382,16 @@ export function Sidebar({
             </div>
             {!isCollapsed("__previous__") &&
               resumable.map((d) => (
-                <DiscoveredRow key={d.path} d={d} onResume={() => onResume(d)} />
+                <ClosedRow
+                  key={d.path}
+                  d={d}
+                  armed={armedClosed === d.path}
+                  onArm={() => setArmedClosed(d.path)}
+                  onReopen={() => {
+                    setArmedClosed(null);
+                    onResume(d);
+                  }}
+                />
               ))}
           </div>
         )}
@@ -372,6 +405,22 @@ export function Sidebar({
         )}
       </div>
 
+      {/* Bottom tabs, T3-style: Usage and Settings live here, not the titlebar. */}
+      <div className="sidebar-foot">
+        <button
+          className={`side-tab${mainView === "usage" ? " on" : ""}`}
+          onClick={() => setMainView(mainView === "usage" ? "sessions" : "usage")}
+        >
+          <ChartIcon /> Usage
+        </button>
+        <button
+          className={`side-tab${mainView === "settings" ? " on" : ""}`}
+          onClick={() => setMainView(mainView === "settings" ? "sessions" : "settings")}
+        >
+          <GearIcon /> Settings
+        </button>
+      </div>
+
       {menu && (
         <SessionMenu
           sessionId={menu.id}
@@ -380,6 +429,38 @@ export function Sidebar({
           onClose={() => setMenu(null)}
           onFork={onFork}
         />
+      )}
+
+      {projMenu && (
+        <div
+          className="context-menu"
+          style={{ left: projMenu.x, top: projMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="menu-item"
+            onClick={() => {
+              setRenameProjectTarget(projMenu.path);
+              setProjMenu(null);
+            }}
+          >
+            Rename project…
+          </button>
+          <button
+            className="menu-item"
+            onClick={() => {
+              const pinned = prefs.pinnedProjects.includes(projMenu.path);
+              updatePrefs({
+                pinnedProjects: pinned
+                  ? prefs.pinnedProjects.filter((p) => p !== projMenu.path)
+                  : [...prefs.pinnedProjects, projMenu.path],
+              });
+              setProjMenu(null);
+            }}
+          >
+            {prefs.pinnedProjects.includes(projMenu.path) ? "Unpin project" : "Pin project"}
+          </button>
+        </div>
       )}
 
       <ResizeHandle
@@ -526,6 +607,45 @@ function DiscoveredRow({
       </span>
       <span className="hint open-hint">Open</span>
     </button>
+  );
+}
+
+/**
+ * A closed session: inert until deliberately reopened. Double-click arms the
+ * row (surfacing Reopen); nothing short of that button starts a worker, so
+ * browsing history can't accidentally spin sessions up.
+ */
+function ClosedRow({
+  d,
+  armed,
+  onArm,
+  onReopen,
+}: {
+  d: DiscoveredSession;
+  armed: boolean;
+  onArm: () => void;
+  onReopen: () => void;
+}): JSX.Element {
+  const when = d.modified ? new Date(d.modified).toLocaleDateString() : "";
+  return (
+    <div
+      className={`session-row closed-row${armed ? " armed" : ""}`}
+      title={`${d.path}\nDouble-click, then Reopen`}
+      onDoubleClick={onArm}
+    >
+      <span className="dot idle" aria-hidden />
+      <span className="session-col">
+        <span className="session-title">{d.title}</span>
+        <span className="session-sub hint">
+          {d.cwd.split("/").pop()} · {d.messageCount} messages{when && ` · ${when}`}
+        </span>
+      </span>
+      {armed && (
+        <button className="btn btn-primary reopen-btn" onClick={onReopen}>
+          Reopen
+        </button>
+      )}
+    </div>
   );
 }
 

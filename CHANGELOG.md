@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.1
+
+- **Presets run the composer.** The composer chip now shows the PRESET the
+  session runs with (your default preset for new sessions); picking one
+  applies its model, effort, and fast mode live, and "＋ New preset…" saves
+  the current setup under a name. Set the default preset in Settings →
+  Presets ("Make default") or on the home screen.
+- **Settings and Usage moved to the bottom of the sidebar**, T3-style; the
+  titlebar gear is gone.
+- **Projects look like folders.** Folder icons instead of dropdown chevrons,
+  real folder names instead of ALL CAPS, and right-click → "Rename project"
+  for a display name of your choosing.
+- **No more bold.** Every font weight stepped down — titles and names sit a
+  notch above body text instead of shouting.
+- **"+ New Session" opens the home screen** (the same launch view you get on
+  startup); the full advisor sheet is still one click away from there.
+- **Closed sessions stay closed.** The bottom section is now "Closed
+  sessions"; single clicks do nothing, double-click arms a row and shows a
+  Reopen button. No more accidentally spinning up a worker while browsing
+  history.
+- **Session usage panel survives restarts** — it now pulls the persisted
+  breakdown from the usage index instead of sitting empty until the next
+  turn.
+- Fast mode wears a proper icon instead of an emoji, everywhere.
+
 ## 0.4.0
 
 - **T3-style composer.** A floating rounded card with the session's

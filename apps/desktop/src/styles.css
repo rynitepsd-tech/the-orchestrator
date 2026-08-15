@@ -167,7 +167,7 @@ button {
 }
 
 .titlebar-title {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14.5px;
 }
 
@@ -218,7 +218,7 @@ button {
   background: var(--accent);
   border-color: transparent;
   color: #fff;
-  font-weight: 550;
+  font-weight: 500;
 }
 
 .btn-primary:hover {
@@ -267,14 +267,12 @@ button {
 
 .project-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   padding: 5px 6px;
   color: var(--text-muted);
   font-size: 13px;
-  font-weight: 650;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  font-weight: 500;
 }
 
 .project-branch {
@@ -313,7 +311,7 @@ button {
 }
 
 .session-title.unread {
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .session-meta {
@@ -456,7 +454,7 @@ button {
 
 .chip strong {
   color: var(--text);
-  font-weight: 550;
+  font-weight: 500;
 }
 
 .transcript {
@@ -564,7 +562,7 @@ button {
 }
 
 .card-head .name {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .card-head .arg {
@@ -640,7 +638,7 @@ button {
 }
 
 .advisor-name {
-  font-weight: 650;
+  font-weight: 500;
   font-size: 14px;
 }
 
@@ -698,7 +696,7 @@ button {
 .tab[aria-selected="true"] {
   color: var(--text);
   border-bottom-color: var(--accent);
-  font-weight: 550;
+  font-weight: 500;
 }
 
 .inspector-body {
@@ -733,12 +731,12 @@ button {
 .usage-table tr.total td {
   border-top: 1px solid var(--border);
   padding-top: 6px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .section-label {
   font-size: 12.5px;
-  font-weight: 650;
+  font-weight: 500;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -801,7 +799,7 @@ button {
 .modal-head {
   padding: 14px 18px 10px;
   border-bottom: 1px solid var(--border);
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .modal-body {
@@ -850,7 +848,7 @@ button {
 .empty h3 {
   color: var(--text-muted);
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
   margin: 0 0 4px;
 }
 
@@ -934,7 +932,7 @@ button {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-soft);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 /* Composer fast-mode toggle, beside Send. */
@@ -946,7 +944,7 @@ button {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-soft);
-  font-weight: 600;
+  font-weight: 500;
 }
 .warn-chip {
   color: var(--warn);
@@ -1122,7 +1120,7 @@ button {
   width: 10px;
 }
 .tool-name {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14px;
 }
 .tool-arg {
@@ -1194,7 +1192,7 @@ button {
   color: var(--text);
 }
 .todo-count {
-  font-weight: 700;
+  font-weight: 550;
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
@@ -1231,7 +1229,7 @@ button {
 }
 .todo-phase-name {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 550;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -1292,7 +1290,7 @@ button {
   border-color: var(--warn);
 }
 .inbox-title {
-  font-weight: 600;
+  font-weight: 500;
 }
 .inbox-snippet {
   font-size: 13.5px;
@@ -1320,7 +1318,7 @@ button {
   background: var(--warn);
   color: #1a1c1f;
   font-size: 10.5px;
-  font-weight: 700;
+  font-weight: 550;
   line-height: 15px;
   text-align: center;
 }
@@ -1351,7 +1349,7 @@ button {
 }
 .home-title {
   font-size: 34px;
-  font-weight: 700;
+  font-weight: 550;
   letter-spacing: -0.02em;
   text-align: center;
   margin: 0;
@@ -1562,7 +1560,7 @@ button {
   margin-bottom: 4px;
 }
 .approval-title {
-  font-weight: 700;
+  font-weight: 550;
   font-size: 14.5px;
 }
 .approval-summary {
@@ -1640,7 +1638,7 @@ button {
   cursor: pointer;
 }
 .subagent-label {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14.5px;
 }
 .subagent-meta {
@@ -1746,7 +1744,7 @@ button {
   background: var(--accent);
   color: #fff;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 550;
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -1837,13 +1835,13 @@ button {
 }
 .session-title {
   font-size: 14.5px;
-  font-weight: 600;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .session-row.unread .session-title {
-  font-weight: 800;
+  font-weight: 600;
 }
 .session-sub,
 .session-status {
@@ -1853,7 +1851,7 @@ button {
 }
 .session-status.attention {
   color: var(--warn);
-  font-weight: 600;
+  font-weight: 500;
 }
 .unread-dot {
   width: 7px;
@@ -1896,12 +1894,66 @@ button {
     opacity: 0.45;
   }
 }
+/* Folder name as-is: no shouting caps, weight only a notch above body. */
 .project-name {
-  font-weight: 700;
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-weight: 500;
+  font-size: 13.5px;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-folder {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
+  flex: none;
+}
+
+/* Bottom tabs (Usage / Settings), T3-style. */
+.sidebar-foot {
+  border-top: 1px solid var(--border);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.side-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: left;
+}
+.side-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.side-tab.on {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+/* Closed sessions: inert rows; double-click arms the Reopen button. */
+.closed-row {
+  cursor: default;
+  opacity: 0.75;
+}
+.closed-row.armed {
+  opacity: 1;
+  background: var(--bg-active);
+}
+.closed-row {
+  grid-template-columns: 14px 1fr auto;
+}
+.reopen-btn {
+  align-self: center;
+  padding: 3px 10px;
+  font-size: 13px;
 }
 
 /* Drag-to-reorder project groups */
@@ -2031,7 +2083,7 @@ button {
 }
 .model-name {
   font-size: 14.5px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .fav-btn {
   border: none;
@@ -2117,7 +2169,7 @@ button {
 .seg.on {
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: 500;
 }
 .advisor-list {
   display: flex;
@@ -2131,7 +2183,7 @@ button {
   padding: 6px 10px;
 }
 .advisor-row-name {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14.5px;
 }
 .advisor-editor {
@@ -2172,7 +2224,7 @@ button {
 }
 .settings-nav-item.on {
   background: var(--bg-active);
-  font-weight: 600;
+  font-weight: 500;
 }
 .settings-body {
   flex: 1;
@@ -2190,7 +2242,7 @@ button {
   margin-top: 0;
 }
 .provider-name {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14.5px;
 }
 .check-row {
@@ -2224,7 +2276,7 @@ button {
 }
 .usage-cost-big {
   font-size: 46px;
-  font-weight: 750;
+  font-weight: 550;
   letter-spacing: -0.02em;
   line-height: 1.1;
   margin: 2px 0;
@@ -2251,12 +2303,12 @@ button {
   flex: none;
 }
 .provider-name {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14.5px;
 }
 .provider-cost {
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 500;
 }
 .provider-bar {
   height: 4px;
@@ -2322,14 +2374,14 @@ button {
 }
 .stat-label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 .stat-value {
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 550;
   letter-spacing: -0.01em;
   margin: 4px 0 2px;
   font-variant-numeric: tabular-nums;
@@ -2354,7 +2406,7 @@ button {
   align-items: start;
 }
 .usage-table th {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 13px;
   color: var(--text-muted);
   text-align: left;
@@ -2620,6 +2672,6 @@ button {
   gap: 8px;
 }
 .preset-card-name {
-  font-weight: 650;
+  font-weight: 500;
   font-size: 14.5px;
 }

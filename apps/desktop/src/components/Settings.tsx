@@ -122,6 +122,7 @@ function General(): JSX.Element {
 
 function Presets(): JSX.Element {
   const prefs = useStore((s) => s.prefs);
+  const updatePrefs = useStore((s) => s.updatePrefs);
   const models = useStore((s) => s.models);
   const addPreset = useStore((s) => s.addPreset);
   const removePreset = useStore((s) => s.removePreset);
@@ -174,7 +175,7 @@ function Presets(): JSX.Element {
               <span className="hint">
                 {p.model ?? "OMP default"}
                 {p.thinkingLevel && ` · ${p.thinkingLevel}`}
-                {p.fastMode && " · ⚡ fast"}
+                {p.fastMode && " · fast"}
                 {p.advisors.filter((a) => a.enabled).length > 0 &&
                   ` · advisors: ${p.advisors
                     .filter((a) => a.enabled)
@@ -182,6 +183,19 @@ function Presets(): JSX.Element {
                     .join(", ")}`}
               </span>
               <span className="spacer" />
+              {prefs.defaultPreset === p.name ? (
+                <span className="chip" title="New sessions launch with this preset">
+                  Default
+                </span>
+              ) : (
+                <button
+                  className="btn btn-ghost"
+                  title="New sessions (home screen) will launch with this preset"
+                  onClick={() => updatePrefs({ defaultPreset: p.name })}
+                >
+                  Make default
+                </button>
+              )}
               <button className="btn btn-ghost" onClick={() => setEditing(p.name)}>
                 Edit
               </button>

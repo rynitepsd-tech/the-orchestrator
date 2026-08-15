@@ -113,6 +113,8 @@ export interface SessionView {
   pendingInteractions: number;
   /** The agent's live todo list (full snapshot from the todo tool). */
   todoPhases?: Array<{ name: string; tasks: TodoTaskItem[] }>;
+  /** Name of the preset this session runs with (client-side bookkeeping). */
+  presetName?: string;
   error?: EngineErrorPayload;
   /** Set when the worker died; the session can be resumed from persistence. */
   interrupted?: boolean;
@@ -170,6 +172,8 @@ interface AppState {
   quitConfirm?: { running: number };
   /** Session id being renamed via the rename dialog (WKWebView has no prompt()). */
   renameTarget?: string;
+  /** Project path being renamed (display alias only). */
+  renameProjectTarget?: string;
   /** Text handed to the composer (e.g. a rewound message returned for editing). */
   composerPrefill?: { sessionId: string; text: string };
 
@@ -207,7 +211,14 @@ interface AppState {
   setNewSession(open: boolean): void;
   setQuitConfirm(q?: { running: number }): void;
   setRenameTarget(id?: string): void;
+  setRenameProjectTarget(path?: string): void;
   setComposerPrefill(p?: { sessionId: string; text: string }): void;
+  /** Show the no-session home screen. */
+  goHome(): void;
+  /** Record which preset a session runs with (persisted by session path). */
+  setSessionPreset(id: string, presetName?: string): void;
+  /** Seed a session's usage breakdown fetched from the engine index. */
+  setSessionUsage(id: string, breakdown: UsageBreakdown): void;
   setUpdateAvailable(u?: { version: string; notes?: string }): void;
   setUpdateBusy(busy: boolean): void;
   markAllInterrupted(reason: string): void;
@@ -288,6 +299,8 @@ export const useStore = create<AppState>((set, get) => ({
             advisors,
             advisorStates: {},
             pendingInteractions: 0,
+            // Resumed sessions remember which preset they run with.
+            presetName: path ? s.prefs.sessionPresetByPath[path] : undefined,
           },
         },
         // Newest first: a fresh session belongs at the top of its project group.
@@ -362,7 +375,35 @@ export const useStore = create<AppState>((set, get) => ({
   setNewSession: (newSessionOpen) => set({ newSessionOpen }),
   setQuitConfirm: (quitConfirm) => set({ quitConfirm }),
   setRenameTarget: (renameTarget) => set({ renameTarget }),
+  setRenameProjectTarget: (renameProjectTarget) => set({ renameProjectTarget }),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
+
+  goHome: () => set({ visibleSessionId: undefined, mainView: "sessions" }),
+
+  setSessionPreset: (id, presetName) =>
+    set((s) => {
+      const v = s.sessions[id];
+      if (!v) return {};
+      // Persist by session path so the label survives relaunches.
+      const path = v.summary.ompSessionPath;
+      let prefs = s.prefs;
+      if (path) {
+        const map = { ...s.prefs.sessionPresetByPath };
+        if (presetName) map[path] = presetName;
+        else delete map[path];
+        prefs = { ...s.prefs, sessionPresetByPath: map };
+        savePrefs(prefs);
+      }
+      return { sessions: { ...s.sessions, [id]: { ...v, presetName } }, prefs };
+    }),
+
+  setSessionUsage: (id, breakdown) =>
+    set((s) => {
+      const v = s.sessions[id];
+      // Live events are authoritative; this only fills an empty panel.
+      if (!v || v.usage) return {};
+      return { sessions: { ...s.sessions, [id]: { ...v, usage: breakdown } } };
+    }),
   setUpdateAvailable: (updateAvailable) => set({ updateAvailable }),
   setUpdateBusy: (updateBusy) => set({ updateBusy }),
 
@@ -445,13 +486,28 @@ export const useStore = create<AppState>((set, get) => ({
     // A session persisting for the first time is a fresh creation: claim the
     // top slot in the persisted per-project ordering (resumes already have
     // their path and keep their place).
-    if (e.type === "session.persisted" && !state.prefs.sessionOrder.includes(e.ompSessionPath)) {
-      const prefs = {
-        ...state.prefs,
-        sessionOrder: [e.ompSessionPath, ...state.prefs.sessionOrder].slice(0, 400),
-      };
-      savePrefs(prefs);
-      set({ prefs });
+    if (e.type === "session.persisted") {
+      let prefs = state.prefs;
+      if (!prefs.sessionOrder.includes(e.ompSessionPath)) {
+        prefs = {
+          ...prefs,
+          sessionOrder: [e.ompSessionPath, ...prefs.sessionOrder].slice(0, 400),
+        };
+      }
+      // A preset chosen before the session had a path gets persisted now.
+      if (view.presetName && prefs.sessionPresetByPath[e.ompSessionPath] !== view.presetName) {
+        prefs = {
+          ...prefs,
+          sessionPresetByPath: {
+            ...prefs.sessionPresetByPath,
+            [e.ompSessionPath]: view.presetName,
+          },
+        };
+      }
+      if (prefs !== state.prefs) {
+        savePrefs(prefs);
+        set({ prefs });
+      }
     }
 
     if (next === view) return;

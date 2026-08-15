@@ -10,6 +10,7 @@ import type { JSX } from "react";
 import { useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
 import { EffortPicker } from "./EffortPicker";
+import { BoltIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 
 export const RECOMMENDED_ADVISORS: AdvisorConfig[] = [
@@ -115,7 +116,9 @@ export function PresetForm({
 
       <label className="row check-row">
         <input type="checkbox" checked={fastMode} onChange={(e) => setFastMode(e.target.checked)} />
-        <span>⚡ Fast mode</span>
+        <span>
+          <BoltIcon /> Fast mode
+        </span>
         <span className="hint">priority tier on OpenAI / Anthropic</span>
       </label>
 

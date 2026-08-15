@@ -59,6 +59,10 @@ export interface Prefs {
   sessionOrder: string[];
   /** Preset the home screen launches with; undefined = OMP defaults. */
   defaultPreset?: string;
+  /** Display-name overrides for project folders, keyed by project path. */
+  projectAliases: Record<string, string>;
+  /** Preset each session runs with, keyed by OMP session path. */
+  sessionPresetByPath: Record<string, string>;
 }
 
 const KEY = "orchestrator.prefs.v1";
@@ -81,6 +85,8 @@ export const DEFAULT_PREFS: Prefs = {
   projectOrder: [],
   openSessionPaths: [],
   sessionOrder: [],
+  projectAliases: {},
+  sessionPresetByPath: {},
 };
 
 export function loadPrefs(): Prefs {

@@ -42,6 +42,20 @@ function sumT(t: {
 function UsageTab({ view }: { view: SessionView }): JSX.Element {
   const u = view.usage;
   const ctx = view.context;
+  const sessionId = view.summary.sessionId;
+
+  // Live events populate this during a turn; on resume/relaunch the panel
+  // would otherwise sit empty until the next turn — pull the persisted
+  // breakdown from the engine's usage index instead.
+  useEffect(() => {
+    if (u) return;
+    void engine
+      .request("usage.session", { sessionId })
+      .then((res) => {
+        if (res.breakdown) useStore.getState().setSessionUsage(sessionId, res.breakdown);
+      })
+      .catch(() => {});
+  }, [u, sessionId]);
 
   if (!u) {
     return <div className="empty">No usage recorded yet.</div>;

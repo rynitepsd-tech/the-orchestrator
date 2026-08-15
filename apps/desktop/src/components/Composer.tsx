@@ -12,7 +12,10 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { isActive, modelBasename, useStore } from "../store";
+import type { SessionPreset } from "../lib/prefs";
+import { isActive, useStore } from "../store";
+import { BoltIcon } from "./icons";
+import { PromptDialog } from "./PromptDialog";
 
 interface SlashCommand {
   name: string;
@@ -78,30 +81,54 @@ export function Composer({
     sessionId ? Boolean(s.sessions[sessionId]?.summary.fastMode) : false,
   );
 
-  // Pre-flight contract, T3-style: the model and effort this session runs
-  // with sit ON the composer, changeable mid-session.
-  const models = useStore((s) => s.models);
+  // Pre-flight contract, T3-style: the PRESET this session runs with sits on
+  // the composer. Picking one applies its model/effort/fast mode live.
+  const prefs = useStore((s) => s.prefs);
   const summary = useStore((s) => (sessionId ? s.sessions[sessionId]?.summary : undefined));
-  const currentModel = summary?.model;
-  const modelInfo = currentModel ? models.find((m) => m.key === currentModel) : undefined;
-  const efforts = modelInfo?.thinking?.efforts ?? [];
-  const selectableModels = models.filter((m) => m.authenticated || m.key === currentModel);
+  const presetName = useStore((s) => (sessionId ? s.sessions[sessionId]?.presetName : undefined));
+  const [presetDraft, setPresetDraft] = useState(false);
 
-  const setModel = (key: string) => {
-    if (!sessionId || !key) return;
-    void engine
-      .request("session.setModel", { sessionId, model: key })
-      .catch((e) => useStore.getState().setEngineError(e));
+  const applyPreset = (p: SessionPreset) => {
+    if (!sessionId) return;
+    useStore.getState().setSessionPreset(sessionId, p.name);
+    if (p.model) {
+      void engine
+        .request("session.setModel", {
+          sessionId,
+          model: p.model,
+          thinkingLevel: p.thinkingLevel,
+        })
+        .catch((e) => useStore.getState().setEngineError(e));
+    }
+    if (Boolean(p.fastMode) !== fastMode) {
+      void engine
+        .request("session.setFastMode", { sessionId, enabled: Boolean(p.fastMode) })
+        .catch(() => {});
+    }
   };
-  const setEffort = (lvl: string) => {
-    if (!sessionId || !currentModel) return;
-    void engine
-      .request("session.setModel", {
-        sessionId,
-        model: currentModel,
-        thinkingLevel: lvl || undefined,
-      })
-      .catch((e) => useStore.getState().setEngineError(e));
+
+  const onPresetChange = (value: string) => {
+    if (value === "__new") {
+      setPresetDraft(true);
+      return;
+    }
+    const p = prefs.presets.find((x) => x.name === value);
+    if (p) applyPreset(p);
+  };
+
+  // "New preset…" captures the session's CURRENT contract under a name.
+  const saveNewPreset = (name: string) => {
+    if (!sessionId) return;
+    const advisors = useStore.getState().sessions[sessionId]?.advisors ?? [];
+    useStore.getState().addPreset({
+      name,
+      model: summary?.model,
+      thinkingLevel: summary?.thinkingLevel,
+      fastMode: fastMode || undefined,
+      advisors,
+    });
+    useStore.getState().setSessionPreset(sessionId, name);
+    setPresetDraft(false);
   };
 
   const toggleFast = () => {
@@ -131,7 +158,8 @@ export function Composer({
       onClick={toggleFast}
       disabled={disabled}
     >
-      ⚡{fastMode ? " Fast" : ""}
+      <BoltIcon />
+      {fastMode ? "Fast" : ""}
     </button>
   );
 
@@ -352,38 +380,24 @@ export function Composer({
           </button>
           <select
             className="ctl-chip ctl-select"
-            value={currentModel ?? ""}
-            title="Model for this session — switchable mid-session"
+            value={presetName ?? ""}
+            title="Preset for this session — picking one applies its model, effort, and fast mode"
             disabled={disabled || !sessionId}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={(e) => onPresetChange(e.target.value)}
           >
-            {!currentModel && (
+            {!presetName && (
               <option value="" disabled>
-                OMP default
+                Custom
               </option>
             )}
-            {selectableModels.map((m) => (
-              <option key={m.key} value={m.key}>
-                {m.name || modelBasename(m.key)}
+            {prefs.presets.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
+                {p.name === prefs.defaultPreset ? " (default)" : ""}
               </option>
             ))}
+            <option value="__new">＋ New preset…</option>
           </select>
-          {efforts.length > 0 && (
-            <select
-              className="ctl-chip ctl-select"
-              value={summary?.thinkingLevel ?? ""}
-              title="Reasoning effort"
-              disabled={disabled}
-              onChange={(e) => setEffort(e.target.value)}
-            >
-              <option value="">default</option>
-              {efforts.map((lvl) => (
-                <option key={lvl} value={lvl}>
-                  {lvl}
-                </option>
-              ))}
-            </select>
-          )}
           {fastToggle}
           <span className="spacer" />
           {busy && canSend && (
@@ -420,6 +434,15 @@ export function Composer({
           )}
         </div>
       </div>
+      {presetDraft && (
+        <PromptDialog
+          title="Save current setup as a preset"
+          placeholder="Preset name"
+          submitLabel="Save preset"
+          onCancel={() => setPresetDraft(false)}
+          onSubmit={saveNewPreset}
+        />
+      )}
     </div>
   );
 }

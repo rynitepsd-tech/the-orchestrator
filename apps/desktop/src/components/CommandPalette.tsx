@@ -33,7 +33,7 @@ export function CommandPalette(): JSX.Element {
 
   const commands = useMemo((): Command[] => {
     const cmds: Command[] = [
-      { id: "new-session", label: "New Session", hint: "⌘N", run: () => store.setNewSession(true) },
+      { id: "new-session", label: "New Session", hint: "⌘N", run: () => store.goHome() },
       {
         id: "switch-session",
         label: "Switch Session…",
