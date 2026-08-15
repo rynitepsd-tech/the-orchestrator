@@ -465,13 +465,9 @@ const ToolCard = memo(function ToolCard({
     d?.kind === "edit" || d?.kind === "write" || d?.kind === "read" ? d.path : undefined;
   const openPath = () => {
     if (!clickPath) return;
+    if (!clickPath.startsWith("/") && !projectPath) return;
     const abs = clickPath.startsWith("/") ? clickPath : `${projectPath}/${clickPath}`;
-    // Project files preview in the inspector; anything else opens externally.
-    if (projectPath && (abs === projectPath || abs.startsWith(`${projectPath}/`))) {
-      useStore.getState().openFilePreview({ path: abs, projectPath });
-      return;
-    }
-    void engine.request("path.open", { path: abs }).catch(() => {});
+    useStore.getState().openFilePreview({ path: abs, projectPath });
   };
   // One quiet line per tool call; output/diff only on request. Errors
   // auto-expand — those are the ones worth reading.

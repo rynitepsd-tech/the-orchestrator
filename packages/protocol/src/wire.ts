@@ -129,6 +129,12 @@ export interface RequestPayloads {
   "project.readFile": { path: string; file: string };
   /** Open a file/folder with the OS default app (or a named app), or reveal it in Finder. */
   "path.open": { path: string; reveal?: boolean; app?: string };
+  /**
+   * Read any user-clicked path for the inspector preview (unlike
+   * project.readFile this is not confined to a project root; only clicks on
+   * rendered file links reach it). Images come back as base64.
+   */
+  "file.read": { path: string };
   /** Commit the working tree, push, and open a PR (branching off default). */
   "project.ship": { path: string; title: string; body?: string };
   /**
@@ -244,6 +250,13 @@ export interface ResponsePayloads {
   "project.files": { files: string[]; truncated: boolean };
   "project.readFile": { file: string; content: string; binary: boolean; truncated: boolean };
   "path.open": { opened: boolean };
+  "file.read": {
+    kind: "text" | "image" | "pdf" | "binary" | "missing" | "directory";
+    content?: string;
+    base64?: string;
+    mime?: string;
+    truncated?: boolean;
+  };
   "attachments.store": { path: string };
   "session.rewindPoints": { points: Array<{ entryId: string; text: string }> };
   "session.rewind": { cancelled: boolean; editorText?: string };

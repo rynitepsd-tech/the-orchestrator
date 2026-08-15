@@ -124,10 +124,10 @@ export type InspectorTab = "changes" | "files" | "usage" | "preview";
 
 /** A file opened for preview in the inspector, from a clicked file link. */
 export interface FilePreview {
-  /** Absolute path of the file. */
+  /** Absolute (or ~-prefixed) path of the file. */
   path: string;
-  /** Project root the engine reads it relative to. */
-  projectPath: string;
+  /** Project root, used for the breadcrumb display when the file is inside it. */
+  projectPath?: string;
   /** 1-based line to highlight and scroll to. */
   line?: number;
 }

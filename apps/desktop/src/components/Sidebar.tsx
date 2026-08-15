@@ -12,7 +12,7 @@ import type { DragEvent, JSX } from "react";
 import { useMemo, useState } from "react";
 import { engine } from "../engine-client";
 import { isActive, modelBasename, runStateLabel, type SessionView, useStore } from "../store";
-import { ChartIcon, FolderIcon, GearIcon } from "./icons";
+import { ChartIcon, FolderIcon, GearIcon, InboxIcon } from "./icons";
 import { ResizeHandle } from "./ResizeHandle";
 
 /** One sidebar row inside a project group: a live session or a resume row. */
@@ -158,6 +158,19 @@ export function Sidebar({
   const moveSession = useStore((s) => s.moveSession);
   const mainView = useStore((s) => s.mainView);
   const setMainView = useStore((s) => s.setMainView);
+  // Inbox badge: blocked sessions + unread finishes + failures.
+  const inboxCount = Object.values(sessions).reduce(
+    (n, v) =>
+      n +
+      (v.pendingInteractions > 0 || v.summary.runState === "waiting"
+        ? 1
+        : v.summary.unread && v.summary.runState === "completed"
+          ? 1
+          : v.summary.runState === "error" || v.summary.runState === "interrupted"
+            ? 1
+            : 0),
+    0,
+  );
   const setRenameProjectTarget = useStore((s) => s.setRenameProjectTarget);
   const [projMenu, setProjMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   /** Closed-session row armed by double-click, showing its Reopen button. */
@@ -222,11 +235,6 @@ export function Sidebar({
         setProjMenu(null);
       }}
     >
-      <div className="sidebar-head">
-        <button className="btn btn-primary" onClick={() => goHome()}>
-          + New Session
-        </button>
-      </div>
       <div className="sidebar-search">
         <input
           className="input"
@@ -235,6 +243,11 @@ export function Sidebar({
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search sessions"
         />
+      </div>
+      <div className="sidebar-head">
+        <button className="btn new-session-btn" onClick={() => goHome()}>
+          + New Session
+        </button>
       </div>
 
       <div className="sidebar-scroll">
@@ -405,8 +418,16 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Bottom tabs, T3-style: Usage and Settings live here, not the titlebar. */}
+      {/* Bottom tabs, T3-style: Inbox, Usage and Settings live here, not the titlebar. */}
       <div className="sidebar-foot">
+        <button
+          className={`side-tab${mainView === "inbox" ? " on" : ""}`}
+          title="Review inbox — everything waiting on you"
+          onClick={() => setMainView(mainView === "inbox" ? "sessions" : "inbox")}
+        >
+          <InboxIcon /> Review Inbox
+          {inboxCount > 0 && <span className="side-tab-badge">{inboxCount}</span>}
+        </button>
         <button
           className={`side-tab${mainView === "usage" ? " on" : ""}`}
           onClick={() => setMainView(mainView === "usage" ? "sessions" : "usage")}

@@ -23,6 +23,8 @@ import {
   type SessionView,
   useStore,
 } from "../store";
+import { FolderIcon } from "./icons";
+import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
 import { Diff } from "./Transcript";
 
@@ -481,22 +483,46 @@ function FilesTab({ view }: { view: SessionView }): JSX.Element {
 /** Beyond this, line-numbered rendering gets sluggish — fall back to plain text. */
 const NUMBERED_LINES_MAX = 4000;
 
+const MARKDOWN_EXT_RX = /\.(md|markdown|mdx)$/i;
+
+interface FileReadResult {
+  kind: "text" | "image" | "pdf" | "binary" | "missing" | "directory";
+  content?: string;
+  base64?: string;
+  mime?: string;
+  truncated?: boolean;
+}
+
 function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
   const closeFilePreview = useStore((s) => s.closeFilePreview);
-  const [data, setData] = useState<{
-    content: string;
-    binary: boolean;
-    truncated: boolean;
-  } | null>(null);
+  const [data, setData] = useState<FileReadResult | null>(null);
   const [failed, setFailed] = useState(false);
+  // Markdown renders as a preview first, Codex-style; the toggle shows source.
+  const [viewSource, setViewSource] = useState(false);
+  const [openMenu, setOpenMenu] = useState(false);
+  // PDFs render through a blob URL (the CSP allows object/frame blob: only).
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const lineRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (data?.kind !== "pdf" || !data.base64) {
+      setPdfUrl(null);
+      return;
+    }
+    const bytes = Uint8Array.from(atob(data.base64), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    setPdfUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [data]);
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setFailed(false);
+    setViewSource(false);
+    setOpenMenu(false);
     void engine
-      .request("project.readFile", { path: preview.projectPath, file: preview.path })
+      .request("file.read", { path: preview.path })
       .then((r) => {
         if (!cancelled) setData(r);
       })
@@ -511,72 +537,172 @@ function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
   // Jump to the cited line once content is in.
   useEffect(() => {
     lineRef.current?.scrollIntoView({ block: "center" });
-  }, [data]);
+  }, [data, viewSource]);
 
   const name = preview.path.split("/").pop() ?? preview.path;
-  const openWith = (opts?: { app?: string; reveal?: boolean }) =>
-    void engine
-      .request("path.open", { path: preview.path, app: opts?.app, reveal: opts?.reveal })
-      .catch(() => {});
+  const dir = preview.path.slice(0, preview.path.lastIndexOf("/")) || "/";
+  const isMarkdown = MARKDOWN_EXT_RX.test(name);
 
-  const lines = data && !data.binary && data.content ? data.content.split("\n") : null;
+  // Breadcrumbs: project name › … › file when inside the project, else the path.
+  const crumbs = (() => {
+    const pp = preview.projectPath;
+    if (pp && preview.path.startsWith(`${pp}/`)) {
+      const projectName = pp.split("/").pop() ?? pp;
+      return [projectName, ...preview.path.slice(pp.length + 1).split("/")];
+    }
+    return preview.path.replace(/^\//, "").split("/");
+  })();
+
+  const openWith = (opts?: { app?: string; reveal?: boolean; path?: string }) => {
+    setOpenMenu(false);
+    void engine
+      .request("path.open", {
+        path: opts?.path ?? preview.path,
+        app: opts?.app,
+        reveal: opts?.reveal,
+      })
+      .catch(() => {});
+  };
+
+  const lines = data?.kind === "text" && data.content ? data.content.split("\n") : null;
+
+  const body = () => {
+    if (failed) return <div className="empty">Could not read this file.</div>;
+    if (!data) return <div className="hint">Loading…</div>;
+    switch (data.kind) {
+      case "missing":
+        return <div className="empty">File not found on disk.</div>;
+      case "directory":
+        return (
+          <div className="empty">
+            This is a folder.{" "}
+            <button className="btn btn-ghost" onClick={() => openWith({ reveal: true })}>
+              Open in Finder
+            </button>
+          </div>
+        );
+      case "binary":
+        return (
+          <div className="empty">
+            No inline preview for this file type — use Open to view it in another app.
+          </div>
+        );
+      case "image":
+        return (
+          <div className="fp-image-wrap">
+            <img className="fp-image" src={`data:${data.mime};base64,${data.base64}`} alt={name} />
+          </div>
+        );
+      case "pdf":
+        return pdfUrl ? (
+          <embed className="fp-pdf" src={pdfUrl} type="application/pdf" title={name} />
+        ) : (
+          <div className="hint">Loading…</div>
+        );
+      default: {
+        if (!data.content) return <div className="empty">Empty file.</div>;
+        if (isMarkdown && !viewSource) {
+          return (
+            <div className="fp-markdown">
+              <Markdown text={data.content} projectPath={preview.projectPath} />
+              {data.truncated && <div className="hint">Preview truncated.</div>}
+            </div>
+          );
+        }
+        return (
+          <>
+            <pre className="tool-output file-preview file-preview-body">
+              {lines && lines.length <= NUMBERED_LINES_MAX
+                ? lines.map((l, i) => (
+                    <div
+                      key={i}
+                      ref={i + 1 === preview.line ? lineRef : undefined}
+                      className={`fp-line${i + 1 === preview.line ? " hl" : ""}`}
+                    >
+                      <span className="fp-ln">{i + 1}</span>
+                      <span className="fp-text">{l || " "}</span>
+                    </div>
+                  ))
+                : data.content}
+            </pre>
+            {data.truncated && <div className="hint">Preview truncated.</div>}
+          </>
+        );
+      }
+    }
+  };
 
   return (
-    <div className="file-preview-pane">
+    <div className="file-preview-pane" onClick={() => setOpenMenu(false)}>
       <div className="row file-preview-head">
-        <span className="mono file-preview-name" title={preview.path}>
-          {name}
-          {preview.line ? `:${preview.line}` : ""}
+        <span className="fp-crumbs" title={preview.path}>
+          {crumbs.map((c, i) => (
+            <span key={i} className={i === crumbs.length - 1 ? "fp-crumb-file" : "fp-crumb"}>
+              {i > 0 && <span className="fp-crumb-sep">›</span>}
+              {c}
+              {i === crumbs.length - 1 && preview.line ? `:${preview.line}` : ""}
+            </span>
+          ))}
         </span>
         <span className="spacer" />
+        {isMarkdown && data?.kind === "text" && (
+          <button
+            className="btn btn-ghost fp-toggle"
+            onClick={() => setViewSource((v) => !v)}
+            title={viewSource ? "Show the rendered markdown" : "Show the raw source"}
+          >
+            {viewSource ? "View preview" : "View source"}
+          </button>
+        )}
         <button
-          className="btn btn-ghost"
-          title="Open in VS Code"
-          onClick={() => openWith({ app: "Visual Studio Code" })}
-        >
-          VS Code
-        </button>
-        <button
-          className="btn btn-ghost"
-          title="Reveal in Finder (open file location)"
+          className="icon-btn"
+          title="Open file location"
           onClick={() => openWith({ reveal: true })}
         >
-          Finder
+          <FolderIcon />
         </button>
-        <button className="btn btn-ghost" title="Open with the default app" onClick={() => openWith()}>
-          Open
-        </button>
+        <div className="fp-open" onClick={(e) => e.stopPropagation()}>
+          <button
+            className="btn fp-open-main"
+            title="Open in VS Code"
+            onClick={() => openWith({ app: "Visual Studio Code" })}
+          >
+            Open
+          </button>
+          <button
+            className="btn fp-open-arrow"
+            title="Open with…"
+            aria-haspopup="menu"
+            aria-expanded={openMenu}
+            onClick={() => setOpenMenu((v) => !v)}
+          >
+            ▾
+          </button>
+          {openMenu && (
+            <div className="fp-open-menu" role="menu">
+              <button className="menu-item" onClick={() => openWith({ app: "Visual Studio Code" })}>
+                VS Code
+              </button>
+              <button className="menu-item" onClick={() => openWith()}>
+                Default app
+              </button>
+              <button
+                className="menu-item"
+                onClick={() => openWith({ app: "Terminal", path: dir })}
+              >
+                Terminal
+              </button>
+              <button className="menu-item" onClick={() => openWith({ reveal: true })}>
+                Open in folder
+              </button>
+            </div>
+          )}
+        </div>
         <button className="icon-btn" title="Close preview" onClick={closeFilePreview}>
           ×
         </button>
       </div>
-      {failed ? (
-        <div className="empty">Could not read this file.</div>
-      ) : !data ? (
-        <div className="hint">Loading…</div>
-      ) : data.binary ? (
-        <div className="empty">Binary file — no text preview. Use Open to view it.</div>
-      ) : !data.content ? (
-        <div className="empty">Empty or unreadable file.</div>
-      ) : (
-        <>
-          <pre className="tool-output file-preview file-preview-body">
-            {lines && lines.length <= NUMBERED_LINES_MAX
-              ? lines.map((l, i) => (
-                  <div
-                    key={i}
-                    ref={i + 1 === preview.line ? lineRef : undefined}
-                    className={`fp-line${i + 1 === preview.line ? " hl" : ""}`}
-                  >
-                    <span className="fp-ln">{i + 1}</span>
-                    <span className="fp-text">{l || " "}</span>
-                  </div>
-                ))
-              : data.content}
-          </pre>
-          {data.truncated && <div className="hint">Preview truncated.</div>}
-        </>
-      )}
+      {body()}
     </div>
   );
 }

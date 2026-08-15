@@ -21,8 +21,8 @@
   --text-muted: #5d626b;
   --text-faint: #8a9099;
 
-  --accent: #2c398f;
-  --accent-soft: rgba(44, 57, 143, 0.12);
+  --accent: #1e4d36;
+  --accent-soft: rgba(30, 77, 54, 0.12);
   --teal: #17897c;
 
   --ok: #1d7a4c;
@@ -41,7 +41,7 @@
 
   --sidebar-w: 264px;
   --inspector-w: 340px;
-  --titlebar-h: 38px;
+  --titlebar-h: 48px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -59,8 +59,8 @@
     --text-muted: #9aa0aa;
     --text-faint: #6b7280;
 
-    --accent: #5b72e0;
-    --accent-soft: rgba(91, 114, 224, 0.16);
+    --accent: #31815a;
+    --accent-soft: rgba(49, 129, 90, 0.16);
     --teal: #59d4c4;
 
     --ok: #4ac07d;
@@ -84,8 +84,8 @@
   --text: #e8eaed;
   --text-muted: #9aa0aa;
   --text-faint: #6b7280;
-  --accent: #5b72e0;
-  --accent-soft: rgba(91, 114, 224, 0.16);
+  --accent: #31815a;
+  --accent-soft: rgba(49, 129, 90, 0.16);
   --teal: #59d4c4;
   --ok: #4ac07d;
   --warn: #d9a441;
@@ -150,25 +150,64 @@ button {
   height: 100%;
 }
 
+/* T3-style: taller, borderless, and the same ground as the content so the
+ * bar reads as part of the page instead of a strip bolted on top. */
 .titlebar {
+  grid-row: 1;
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 12px 0 78px; /* clear the traffic lights */
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
+  gap: 8px;
+  padding: 0 14px 0 84px; /* clear the traffic lights */
+  background: var(--bg);
   -webkit-app-region: drag;
   user-select: none;
+  min-width: 0;
 }
 
 .titlebar > * {
   -webkit-app-region: no-drag;
 }
 
-.titlebar-title {
-  font-weight: 500;
-  font-size: 14.5px;
+.titlebar-logo {
+  font-size: 15px;
+  white-space: nowrap;
+}
+.logo-the {
+  color: var(--text-faint);
+}
+.logo-orchestrator {
+  color: var(--text);
+  font-weight: 700;
+  margin-left: 5px;
+}
+
+.titlebar-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 16px;
+  font-size: 14px;
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+}
+.crumb-project {
+  white-space: nowrap;
+}
+.crumb-sep {
+  color: var(--text-faint);
+}
+.crumb-title {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.crumb-status {
+  color: var(--text-faint);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .titlebar-sub {
@@ -182,7 +221,11 @@ button {
 
 /* --------------------------------------------------------------- sidebar */
 
+/* Explicit grid placement: with the sidebar (or inspector) unmounted,
+ * auto-placement would slide the remaining panes into the wrong columns. */
 .sidebar {
+  grid-row: 2;
+  grid-column: 1;
   border-right: 1px solid var(--border);
   background: var(--bg-sunken);
   display: flex;
@@ -191,7 +234,7 @@ button {
 }
 
 .sidebar-head {
-  padding: 10px;
+  padding: 8px 10px 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -418,21 +461,13 @@ button {
 /* ----------------------------------------------------------------- main */
 
 .main {
+  grid-row: 2;
+  grid-column: 2;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   background: var(--bg);
-}
-
-.session-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
-  flex-wrap: wrap;
 }
 
 .chip {
@@ -671,6 +706,8 @@ button {
 
 .inspector {
   /* Width comes from the app grid column (user-resizable). */
+  grid-row: 2;
+  grid-column: 3;
   min-width: 0;
   overflow: hidden;
   border-left: 1px solid var(--border);
@@ -1304,22 +1341,17 @@ button {
   padding-top: 8px;
   min-width: 0;
 }
-.icon-btn.inbox-btn {
-  position: relative;
-}
-.inbox-badge {
-  position: absolute;
-  top: -3px;
-  right: -5px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
+/* Inbox badge on the sidebar's Review Inbox tab. */
+.side-tab-badge {
+  margin-left: auto;
+  min-width: 16px;
+  padding: 0 5px;
   border-radius: 999px;
   background: var(--warn);
   color: #1a1c1f;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 550;
-  line-height: 15px;
+  line-height: 16px;
   text-align: center;
 }
 
@@ -1486,12 +1518,71 @@ button {
   gap: 4px;
   margin-bottom: 6px;
 }
-.file-preview-name {
+.fp-crumbs {
   font-size: 13px;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+.fp-crumb-sep {
+  margin: 0 4px;
+  color: var(--text-faint);
+}
+.fp-crumb-file {
+  color: var(--text);
+  font-weight: 500;
+}
+.fp-toggle {
+  white-space: nowrap;
+}
+/* Split "Open" button: main action is VS Code, the arrow lists the rest. */
+.fp-open {
+  position: relative;
+  display: flex;
+  flex: none;
+}
+.fp-open-main {
+  border-radius: var(--radius) 0 0 var(--radius);
+  border-right: none;
+}
+.fp-open-arrow {
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.fp-open-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 150px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+  z-index: 30;
+}
+.fp-pdf {
+  width: 100%;
+  height: calc(100vh - 150px);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+}
+.fp-image-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+.fp-image {
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.fp-markdown {
+  font-size: 14px;
 }
 .file-preview-body {
   max-height: none;
@@ -1841,7 +1932,17 @@ button {
 
 /* ---- sidebar ---- */
 .sidebar-search {
-  padding: 8px 10px 4px;
+  padding: 10px 10px 0;
+}
+/* "+ New Session": input-shaped with the accent outline, not a solid fill. */
+.new-session-btn {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--accent);
+  color: var(--text);
+}
+.new-session-btn:hover {
+  background: var(--accent-soft);
 }
 .session-row {
   display: flex;

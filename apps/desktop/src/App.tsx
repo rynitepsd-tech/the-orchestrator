@@ -22,6 +22,7 @@ import { Composer } from "./components/Composer";
 import { Home } from "./components/Home";
 import { Inbox } from "./components/Inbox";
 import { Inspector } from "./components/Inspector";
+import { FolderIcon } from "./components/icons";
 import { NewSession } from "./components/NewSession";
 import { Onboarding } from "./components/Onboarding";
 import { PendingBar } from "./components/PendingBar";
@@ -311,6 +312,25 @@ export function App(): JSX.Element {
       });
       useStore.getState().addProject(proj.project);
       useStore.getState().addSession(res.session, []);
+      // Re-apply the session's remembered preset so a restart doesn't silently
+      // fall back to OMP defaults until the user reselects it.
+      const st = useStore.getState();
+      const remembered = st.sessions[res.session.sessionId]?.presetName;
+      const preset = remembered ? st.prefs.presets.find((p) => p.name === remembered) : undefined;
+      if (preset?.model) {
+        void engine
+          .request("session.setModel", {
+            sessionId: res.session.sessionId,
+            model: preset.model,
+            thinkingLevel: preset.thinkingLevel,
+          })
+          .catch(() => {});
+      }
+      if (preset?.fastMode) {
+        void engine
+          .request("session.setFastMode", { sessionId: res.session.sessionId, enabled: true })
+          .catch(() => {});
+      }
       // Pull the persisted conversation into the view.
       await refetchTranscript(res.session.sessionId);
       void loadDiscovered();
@@ -489,21 +509,23 @@ export function App(): JSX.Element {
   };
 
   const enabledAdvisors = view?.advisors.filter((a) => a.enabled) ?? [];
-  // Inbox badge: blocked sessions + unread finishes + failures.
-  const inboxCount = Object.values(s.sessions).reduce(
-    (n, v) =>
-      n +
-      (v.pendingInteractions > 0 || v.summary.runState === "waiting"
-        ? 1
-        : v.summary.unread && v.summary.runState === "completed"
-          ? 1
-          : v.summary.runState === "error" || v.summary.runState === "interrupted"
-            ? 1
-            : 0),
-    0,
-  );
 
   const showInspector = s.inspectorOpen && s.mainView !== "usage";
+
+  // Live status for the breadcrumb: only worth showing while something moves.
+  const crumbStatus = view
+    ? !isActive(view.summary.runState) &&
+      Object.values(view.advisorStates).some((st) => st === "reviewing")
+      ? "Advisors reviewing…"
+      : isActive(view.summary.runState)
+        ? (view.summary.activity ?? runStateLabel(view.summary.runState))
+        : undefined
+    : undefined;
+
+  const projectName = view
+    ? (s.prefs.projectAliases[view.summary.projectPath] ??
+      (view.summary.projectPath.split("/").pop() || view.summary.projectPath))
+    : undefined;
 
   return (
     <div
@@ -524,16 +546,24 @@ export function App(): JSX.Element {
         >
           ◧
         </button>
-        <span className="titlebar-title" data-tauri-drag-region>
-          The Orchestrator
+        <span className="titlebar-logo" data-tauri-drag-region>
+          <span className="logo-the">The</span>
+          <span className="logo-orchestrator">Orchestrator</span>
         </span>
-        <span className="titlebar-sub" data-tauri-drag-region>
-          {s.engineStage === "ready"
-            ? s.engineInfo
-              ? `OMP ${s.engineInfo.ompVersion}`
-              : ""
-            : (stageLabel[s.engineStage] ?? s.engineStage)}
-        </span>
+        {s.engineStage !== "ready" && (
+          <span className="titlebar-sub" data-tauri-drag-region>
+            {stageLabel[s.engineStage] ?? s.engineStage}
+          </span>
+        )}
+        {view && s.mainView === "sessions" && (
+          <span className="titlebar-crumbs" data-tauri-drag-region title={view.summary.projectPath}>
+            <FolderIcon />
+            <span className="crumb-project">{projectName}</span>
+            <span className="crumb-sep">/</span>
+            <span className="crumb-title">{view.summary.title}</span>
+            {crumbStatus && <span className="crumb-status">· {crumbStatus}</span>}
+          </span>
+        )}
         {s.updateAvailable && (
           <button
             className="chip update"
@@ -547,14 +577,29 @@ export function App(): JSX.Element {
             {s.updateBusy ? "Updating…" : `Update to ${s.updateAvailable.version}`}
           </button>
         )}
-        <button
-          className={`icon-btn inbox-btn${s.mainView === "inbox" ? " on" : ""}`}
-          title="Review inbox — everything waiting on you"
-          onClick={() => s.setMainView(s.mainView === "inbox" ? "sessions" : "inbox")}
-        >
-          ▤{inboxCount > 0 && <span className="inbox-badge">{inboxCount}</span>}
-        </button>
         <span className="spacer" data-tauri-drag-region />
+        {view && s.mainView === "sessions" && (
+          <span
+            className="chip"
+            title={view.summary.model ? `Model: ${view.summary.model}` : "OMP decides the model"}
+          >
+            {view.presetName ?? modelBasename(view.summary.model)}
+            {view.summary.thinkingLevel ? ` · ${view.summary.thinkingLevel}` : ""}
+          </span>
+        )}
+        {view && s.mainView === "sessions" && enabledAdvisors.length > 0 && (
+          <span
+            className="chip"
+            title={enabledAdvisors
+              .map((a) => {
+                const st = view.advisorStates[a.id];
+                return `${a.name}${st ? ` — ${st}` : ""}`;
+              })
+              .join("\n")}
+          >
+            {enabledAdvisors.length} advisor{enabledAdvisors.length > 1 ? "s" : ""}
+          </span>
+        )}
         {view?.context && (
           <span
             className="chip"
@@ -639,34 +684,12 @@ export function App(): JSX.Element {
 
             {view ? (
               <>
-                <div className="session-header">
-                  <span className="titlebar-title">{view.summary.title}</span>
-                  <span className="chip">
-                    {modelBasename(view.summary.model)}
-                    {view.summary.thinkingLevel ? ` · ${view.summary.thinkingLevel}` : ""}
-                  </span>
-                  {enabledAdvisors.length > 0 && (
-                    <span
-                      className="chip"
-                      title={enabledAdvisors
-                        .map((a) => {
-                          const st = view.advisorStates[a.id];
-                          return `${a.name}${st ? ` — ${st}` : ""}`;
-                        })
-                        .join("\n")}
-                    >
-                      {enabledAdvisors.length} advisor{enabledAdvisors.length > 1 ? "s" : ""}
-                      {Object.values(view.advisorStates).some((st) => st === "reviewing") &&
-                        " · reviewing"}
-                    </span>
-                  )}
-                  <span className="chip mono" title={view.summary.projectPath}>
-                    {view.summary.projectPath.split("/").pop()}
-                  </span>
-                  <span className="spacer" />
-                  {view.interrupted && view.summary.ompSessionPath ? (
+                {view.interrupted && view.summary.ompSessionPath && (
+                  <div className="banner" style={{ margin: "10px 12px 0" }}>
+                    This session was interrupted.
                     <button
                       className="btn"
+                      style={{ marginLeft: 8 }}
                       onClick={() => {
                         const d: DiscoveredSession = {
                           ompSessionId: view.summary.ompSessionId ?? "",
@@ -683,17 +706,8 @@ export function App(): JSX.Element {
                     >
                       Resume Session
                     </button>
-                  ) : (
-                    <span className="hint">
-                      {/* "Finished" while an advisor is still reading would be a
-                          lie — the reviewer may send the agent back to work. */}
-                      {!isActive(view.summary.runState) &&
-                      Object.values(view.advisorStates).some((st) => st === "reviewing")
-                        ? "Advisors reviewing…"
-                        : (view.summary.activity ?? runStateLabel(view.summary.runState))}
-                    </span>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 {view.todoPhases && <TodoStrip phases={view.todoPhases} />}
 

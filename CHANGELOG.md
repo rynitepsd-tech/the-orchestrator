@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.3
+
+- **T3-style top bar.** Taller and borderless, blending into the page: the
+  logo reads "The **Orchestrator**", followed by a folder › session
+  breadcrumb with live activity. The OMP version moved to Settings; the
+  review inbox moved to its own tab at the bottom of the sidebar (with its
+  badge). Preset, advisors, context, and usage stay on the right.
+- **PDFs preview inline** in the file pane, rendered by the webview itself.
+- **Sidebar polish.** Search sits above "+ New Session", and the button is
+  now input-shaped with a green outline instead of a solid fill. Hiding the
+  sidebar (⌘1) no longer collapses the layout.
+- Interrupted sessions offer their Resume button in a banner above the
+  transcript.
+
 ## 0.4.2
 
 - **File links preview in the app.** Clicking a hyperlinked file (inline code

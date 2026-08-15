@@ -137,6 +137,55 @@ export async function handleRequest(
       return { path };
     }
 
+    case "file.read": {
+      // Preview of any user-clicked file link. Read-only and click-gated, the
+      // same trust level as path.open (which launches apps on these paths).
+      const { existsSync, statSync } = await import("node:fs");
+      const { homedir } = await import("node:os");
+      let target = String(p.path);
+      if (target.startsWith("~")) target = target.replace(/^~(?=$|\/)/, homedir());
+      if (!existsSync(target)) return { kind: "missing" };
+      const stat = statSync(target);
+      if (stat.isDirectory()) return { kind: "directory" };
+      const ext = target.split(".").pop()?.toLowerCase() ?? "";
+      const IMAGE_MIME: Record<string, string> = {
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        gif: "image/gif",
+        webp: "image/webp",
+        svg: "image/svg+xml",
+        bmp: "image/bmp",
+        ico: "image/x-icon",
+      };
+      if (IMAGE_MIME[ext]) {
+        // The webview renders these from a data: URI; cap what we inline.
+        if (stat.size > 20 * 1024 * 1024) return { kind: "binary" };
+        const bytes = await Bun.file(target).arrayBuffer();
+        return {
+          kind: "image",
+          mime: IMAGE_MIME[ext],
+          base64: Buffer.from(bytes).toString("base64"),
+        };
+      }
+      if (ext === "pdf") {
+        // Rendered by WKWebView in an <embed> fed from a blob URL.
+        if (stat.size > 20 * 1024 * 1024) return { kind: "binary" };
+        const bytes = await Bun.file(target).arrayBuffer();
+        return {
+          kind: "pdf",
+          mime: "application/pdf",
+          base64: Buffer.from(bytes).toString("base64"),
+        };
+      }
+      if (stat.size > 4 * 1024 * 1024) return { kind: "binary" };
+      const text = await Bun.file(target).text();
+      if (text.includes("\0")) return { kind: "binary" };
+      const LIMIT = 512 * 1024;
+      const truncated = text.length > LIMIT;
+      return { kind: "text", content: truncated ? text.slice(0, LIMIT) : text, truncated };
+    }
+
     case "path.open": {
       // Only user clicks reach here; the engine still refuses paths that don't
       // exist so a hallucinated path can't launch apps with garbage input.
