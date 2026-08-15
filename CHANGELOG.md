@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
+- **T3-style composer.** A floating rounded card with the session's
+  pre-flight contract along the bottom: attach, model picker and effort
+  picker (switchable mid-session), fast-mode toggle, and a circular send
+  that becomes stop while the agent runs.
 - **Session dots that mean something.** Yellow blinking dot = the session
   needs your input (stops blinking once you're looking at it), a quiet
   three-dot wave = working, solid blue = finished since you last looked

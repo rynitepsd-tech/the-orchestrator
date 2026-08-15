@@ -281,7 +281,7 @@ export function UsageCenter(): JSX.Element {
                 {(breakdown === "model" ? agg.byModel : agg.byDay).map((row) => (
                   <tr key={row.key}>
                     <td>
-                      {"color" in row && (
+                      {row.color && (
                         <span className="provider-dot" style={{ background: row.color }} />
                       )}{" "}
                       <span className={breakdown === "model" ? "mono" : undefined}>
@@ -653,6 +653,7 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
       .map(([key, v]) => ({
         key,
         label: fmtDay(key),
+        color: undefined as string | undefined,
         tokens: v.tokens,
         cost: v.hasCost ? v.cost : undefined,
         share: shareOf(v.cost, v.tokens, v.hasCost),
