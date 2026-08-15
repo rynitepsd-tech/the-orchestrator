@@ -120,7 +120,17 @@ export interface SessionView {
   interrupted?: boolean;
 }
 
-export type InspectorTab = "changes" | "files" | "usage";
+export type InspectorTab = "changes" | "files" | "usage" | "preview";
+
+/** A file opened for preview in the inspector, from a clicked file link. */
+export interface FilePreview {
+  /** Absolute path of the file. */
+  path: string;
+  /** Project root the engine reads it relative to. */
+  projectPath: string;
+  /** 1-based line to highlight and scroll to. */
+  line?: number;
+}
 export type MainView = "sessions" | "usage" | "settings" | "inbox";
 
 export interface GlobalUsageState {
@@ -165,6 +175,8 @@ interface AppState {
   mainView: MainView;
   inspectorTab: InspectorTab;
   inspectorOpen: boolean;
+  /** File shown in the inspector's preview tab (set by clicking a file link). */
+  filePreview?: FilePreview;
   sidebarOpen: boolean;
   paletteOpen: boolean;
   paletteMode: "commands" | "sessions";
@@ -206,6 +218,9 @@ interface AppState {
   setMainView(v: MainView): void;
   setInspectorTab(t: InspectorTab): void;
   toggleInspector(): void;
+  /** Open a file in the inspector preview pane (opens the inspector if closed). */
+  openFilePreview(p: FilePreview): void;
+  closeFilePreview(): void;
   toggleSidebar(): void;
   setPalette(open: boolean, mode?: "commands" | "sessions"): void;
   setNewSession(open: boolean): void;
@@ -248,7 +263,8 @@ export const useStore = create<AppState>((set, get) => ({
   prefs: loadPrefs(),
   mainView: "sessions",
   inspectorTab: "usage",
-  inspectorOpen: true,
+  // Closed by default — clicking a file link or the toggle opens it.
+  inspectorOpen: false,
   sidebarOpen: true,
   paletteOpen: false,
   paletteMode: "commands",
@@ -369,6 +385,13 @@ export const useStore = create<AppState>((set, get) => ({
   setMainView: (mainView) => set({ mainView }),
   setInspectorTab: (inspectorTab) => set({ inspectorTab, inspectorOpen: true }),
   toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
+  openFilePreview: (filePreview) =>
+    set({ filePreview, inspectorTab: "preview", inspectorOpen: true }),
+  closeFilePreview: () =>
+    set((s) => ({
+      filePreview: undefined,
+      inspectorTab: s.inspectorTab === "preview" ? "usage" : s.inspectorTab,
+    })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setPalette: (paletteOpen, paletteMode) =>
     set((s) => ({ paletteOpen, paletteMode: paletteMode ?? s.paletteMode })),

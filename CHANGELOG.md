@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.2
+
+- **File links preview in the app.** Clicking a hyperlinked file (inline code
+  refs, markdown links, or tool-card paths) opens it in a new "File" tab in
+  the right sidebar — line numbers, the cited line highlighted and scrolled
+  into view. Top-right buttons open the file in VS Code, reveal it in Finder,
+  or hand it to the default app. Files outside the project still open
+  externally.
+- **Preset pickers tell the whole truth.** "OMP default" is gone from the
+  home-screen picker; it lists your presets plus "＋ New preset…", which opens
+  the full editor (model, effort, fast mode, advisors) and makes the new
+  preset the default. A caption under the composer says which advisors the
+  session will start with. The in-session picker shows each preset's model
+  and clarifies that advisors don't change mid-session.
+- **Deeper accent.** The periwinkle accent is now a deep indigo in both
+  themes.
+- **Links look like links** — file references are accent-coloured before you
+  hover, not after.
+- **The right sidebar starts closed.** Open it with ⌘2, the Usage chip, or by
+  clicking any file link.
+
 ## 0.4.1
 
 - **Presets run the composer.** The composer chip now shows the PRESET the

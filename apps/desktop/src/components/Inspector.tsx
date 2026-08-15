@@ -11,9 +11,18 @@ import type { GitDiff, ProviderQuota } from "@orchestrator/protocol";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JSX } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { fmtCost, fmtCount, fmtTokens, isActive, type SessionView, useStore } from "../store";
+import {
+  type FilePreview,
+  fmtCost,
+  fmtCount,
+  fmtTokens,
+  type InspectorTab,
+  isActive,
+  type SessionView,
+  useStore,
+} from "../store";
 import { ResizeHandle } from "./ResizeHandle";
 import { Diff } from "./Transcript";
 
@@ -469,11 +478,123 @@ function FilesTab({ view }: { view: SessionView }): JSX.Element {
   );
 }
 
+/** Beyond this, line-numbered rendering gets sluggish — fall back to plain text. */
+const NUMBERED_LINES_MAX = 4000;
+
+function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
+  const closeFilePreview = useStore((s) => s.closeFilePreview);
+  const [data, setData] = useState<{
+    content: string;
+    binary: boolean;
+    truncated: boolean;
+  } | null>(null);
+  const [failed, setFailed] = useState(false);
+  const lineRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setFailed(false);
+    void engine
+      .request("project.readFile", { path: preview.projectPath, file: preview.path })
+      .then((r) => {
+        if (!cancelled) setData(r);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [preview]);
+
+  // Jump to the cited line once content is in.
+  useEffect(() => {
+    lineRef.current?.scrollIntoView({ block: "center" });
+  }, [data]);
+
+  const name = preview.path.split("/").pop() ?? preview.path;
+  const openWith = (opts?: { app?: string; reveal?: boolean }) =>
+    void engine
+      .request("path.open", { path: preview.path, app: opts?.app, reveal: opts?.reveal })
+      .catch(() => {});
+
+  const lines = data && !data.binary && data.content ? data.content.split("\n") : null;
+
+  return (
+    <div className="file-preview-pane">
+      <div className="row file-preview-head">
+        <span className="mono file-preview-name" title={preview.path}>
+          {name}
+          {preview.line ? `:${preview.line}` : ""}
+        </span>
+        <span className="spacer" />
+        <button
+          className="btn btn-ghost"
+          title="Open in VS Code"
+          onClick={() => openWith({ app: "Visual Studio Code" })}
+        >
+          VS Code
+        </button>
+        <button
+          className="btn btn-ghost"
+          title="Reveal in Finder (open file location)"
+          onClick={() => openWith({ reveal: true })}
+        >
+          Finder
+        </button>
+        <button className="btn btn-ghost" title="Open with the default app" onClick={() => openWith()}>
+          Open
+        </button>
+        <button className="icon-btn" title="Close preview" onClick={closeFilePreview}>
+          ×
+        </button>
+      </div>
+      {failed ? (
+        <div className="empty">Could not read this file.</div>
+      ) : !data ? (
+        <div className="hint">Loading…</div>
+      ) : data.binary ? (
+        <div className="empty">Binary file — no text preview. Use Open to view it.</div>
+      ) : !data.content ? (
+        <div className="empty">Empty or unreadable file.</div>
+      ) : (
+        <>
+          <pre className="tool-output file-preview file-preview-body">
+            {lines && lines.length <= NUMBERED_LINES_MAX
+              ? lines.map((l, i) => (
+                  <div
+                    key={i}
+                    ref={i + 1 === preview.line ? lineRef : undefined}
+                    className={`fp-line${i + 1 === preview.line ? " hl" : ""}`}
+                  >
+                    <span className="fp-ln">{i + 1}</span>
+                    <span className="fp-text">{l || " "}</span>
+                  </div>
+                ))
+              : data.content}
+          </pre>
+          {data.truncated && <div className="hint">Preview truncated.</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function Inspector({ view }: { view?: SessionView }): JSX.Element {
   const inspectorTab = useStore((s) => s.inspectorTab);
   const setInspectorTab = useStore((s) => s.setInspectorTab);
   const inspectorWidth = useStore((s) => s.prefs.inspectorWidth);
   const updatePrefs = useStore((s) => s.updatePrefs);
+  const filePreview = useStore((s) => s.filePreview);
+
+  // The preview tab only exists while a clicked file is open.
+  const tabs: { id: InspectorTab; label: string }[] = [
+    { id: "usage", label: "Usage" },
+    { id: "changes", label: "Changes" },
+    { id: "files", label: "Files" },
+    ...(filePreview ? [{ id: "preview" as const, label: "File" }] : []),
+  ];
 
   return (
     <aside className="inspector" aria-label="Inspector">
@@ -485,21 +606,23 @@ export function Inspector({ view }: { view?: SessionView }): JSX.Element {
         onResize={(w) => updatePrefs({ inspectorWidth: w })}
       />
       <div className="tabs" role="tablist">
-        {(["usage", "changes", "files"] as const).map((t) => (
+        {tabs.map((t) => (
           <button
-            key={t}
+            key={t.id}
             className="tab"
             role="tab"
-            aria-selected={inspectorTab === t}
-            onClick={() => setInspectorTab(t)}
+            aria-selected={inspectorTab === t.id}
+            onClick={() => setInspectorTab(t.id)}
           >
-            {t[0].toUpperCase() + t.slice(1)}
+            {t.label}
           </button>
         ))}
       </div>
 
       <div className="inspector-body" role="tabpanel">
-        {!view ? (
+        {inspectorTab === "preview" && filePreview ? (
+          <FilePreviewTab preview={filePreview} />
+        ) : !view ? (
           <div className="empty">No session selected.</div>
         ) : inspectorTab === "usage" ? (
           <UsageTab view={view} />

@@ -15,6 +15,7 @@ import { useMemo, useRef, useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
 import { modelBasename, useStore } from "../store";
 import { FolderIcon } from "./icons";
+import { PresetForm } from "./PresetForm";
 
 export function Home({
   busy,
@@ -28,6 +29,9 @@ export function Home({
   const prefs = useStore((s) => s.prefs);
   const updatePrefs = useStore((s) => s.updatePrefs);
   const setNewSession = useStore((s) => s.setNewSession);
+  const addPreset = useStore((s) => s.addPreset);
+  const models = useStore((s) => s.models);
+  const [presetDraft, setPresetDraft] = useState(false);
 
   // Last-worked folder first: recents are unshifted on every project open.
   const projects = useMemo(
@@ -106,17 +110,33 @@ export function Home({
             value={preset?.name ?? ""}
             title={
               preset
-                ? `${modelBasename(preset.model)}${preset.thinkingLevel ? ` · ${preset.thinkingLevel}` : ""}${preset.fastMode ? " · fast" : ""}`
-                : "OMP decides the model"
+                ? `${modelBasename(preset.model)}${preset.thinkingLevel ? ` · ${preset.thinkingLevel}` : ""}${preset.fastMode ? " · fast" : ""}${(() => {
+                    const on = preset.advisors.filter((a) => a.enabled);
+                    return on.length
+                      ? ` · advisors: ${on.map((a) => a.name).join(", ")}`
+                      : " · no advisors";
+                  })()}`
+                : "Create a preset to choose a model and advisors"
             }
-            onChange={(e) => updatePrefs({ defaultPreset: e.target.value || undefined })}
+            onChange={(e) => {
+              if (e.target.value === "__new") {
+                setPresetDraft(true);
+                return;
+              }
+              updatePrefs({ defaultPreset: e.target.value || undefined });
+            }}
           >
-            <option value="">OMP default</option>
+            {prefs.presets.length === 0 && (
+              <option value="" disabled>
+                No presets yet
+              </option>
+            )}
             {prefs.presets.map((p) => (
               <option key={p.name} value={p.name}>
                 {p.name} · {modelBasename(p.model)}
               </option>
             ))}
+            <option value="__new">＋ New preset…</option>
           </select>
 
           {/* Project: last-worked first, with the rest one click away. */}
@@ -162,11 +182,50 @@ export function Home({
             {busy ? "Starting…" : "↑"}
           </button>
         </div>
+
+        {/* Say what the preset launches with — advisors were invisible here. */}
+        {preset && (
+          <div className="hint home-preset-hint">
+            {(() => {
+              const on = preset.advisors.filter((a) => a.enabled);
+              return on.length
+                ? `Starts with advisor${on.length === 1 ? "" : "s"}: ${on.map((a) => a.name).join(", ")}`
+                : "Starts with no advisors";
+            })()}
+          </div>
+        )}
       </div>
 
       <button className="btn btn-ghost home-advanced" onClick={() => setNewSession(true)}>
         New session with advisors & full options…
       </button>
+
+      {presetDraft && (
+        <div className="modal-backdrop" onMouseDown={() => setPresetDraft(false)}>
+          <div
+            className="modal preset-dialog"
+            onMouseDown={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="New preset"
+            onKeyDown={(e) => e.key === "Escape" && setPresetDraft(false)}
+          >
+            <div className="modal-head">
+              <strong>New preset</strong>
+            </div>
+            <div className="modal-body">
+              <PresetForm
+                models={models}
+                onSave={(p) => {
+                  addPreset(p);
+                  updatePrefs({ defaultPreset: p.name });
+                  setPresetDraft(false);
+                }}
+                onCancel={() => setPresetDraft(false)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

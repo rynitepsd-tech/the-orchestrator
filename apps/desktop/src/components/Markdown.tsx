@@ -12,6 +12,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JSX, ReactNode } from "react";
 import { memo } from "react";
 import { engine } from "../engine-client";
+import { useStore } from "../store";
 
 function isSafeHref(href: string): boolean {
   return /^https?:\/\//i.test(href);
@@ -25,10 +26,23 @@ function isSafeHref(href: string): boolean {
 const PATHY_RX =
   /^(~?[\w.@-]*(?:\/[\w.@-]+)+|[\w@-][\w.@-]*\.(?:tsx?|jsx?|mjs|cjs|json|css|scss|md|rs|py|go|java|kt|rb|sh|zsh|bash|yml|yaml|toml|html|xml|svg|txt|lock|sql|swift|c|h|cpp|hpp|cs|php|vue|svelte|conf|ini|plist|png|jpe?g|gif|webp|pdf))(:\d+(?::\d+)?)?$/;
 
-/** Open a file reference through the engine (which owns filesystem access). */
+/**
+ * Open a file reference: project files preview in the inspector pane; paths
+ * outside the project (or ~-prefixed ones the webview can't expand) fall back
+ * to the OS default app via the engine.
+ */
 function openFileRef(ref: string, projectPath?: string): void {
+  const lineMatch = /:(\d+)(?::\d+)?$/.exec(ref);
   const bare = ref.replace(/:\d+(?::\d+)?$/, "");
   const abs = bare.startsWith("/") || bare.startsWith("~") ? bare : `${projectPath}/${bare}`;
+  if (projectPath && (abs === projectPath || abs.startsWith(`${projectPath}/`))) {
+    useStore.getState().openFilePreview({
+      path: abs,
+      projectPath,
+      line: lineMatch ? Number(lineMatch[1]) : undefined,
+    });
+    return;
+  }
   void engine.request("path.open", { path: abs }).catch(() => {});
 }
 
@@ -38,7 +52,7 @@ function FileRef({ text, projectPath }: { text: string; projectPath?: string }):
     <button
       type="button"
       className="file-ref file-ref-code"
-      title="Click to open"
+      title="Click to preview"
       onClick={() => openFileRef(text, projectPath)}
     >
       {text}

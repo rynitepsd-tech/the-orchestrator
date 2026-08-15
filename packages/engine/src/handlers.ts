@@ -145,7 +145,11 @@ export async function handleRequest(
       if (!existsSync(target)) {
         throw Object.assign(new Error(`No such file: ${target}`), { kind: "configuration" });
       }
-      const args = p.reveal ? ["open", "-R", target] : ["open", target];
+      const args = p.reveal
+        ? ["open", "-R", target]
+        : p.app
+          ? ["open", "-a", String(p.app), target]
+          : ["open", target];
       Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
       return { opened: true };
     }

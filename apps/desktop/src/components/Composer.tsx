@@ -13,7 +13,7 @@ import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
 import type { SessionPreset } from "../lib/prefs";
-import { isActive, useStore } from "../store";
+import { isActive, modelBasename, useStore } from "../store";
 import { BoltIcon } from "./icons";
 import { PromptDialog } from "./PromptDialog";
 
@@ -381,7 +381,7 @@ export function Composer({
           <select
             className="ctl-chip ctl-select"
             value={presetName ?? ""}
-            title="Preset for this session — picking one applies its model, effort, and fast mode"
+            title="Preset for this session — picking one applies its model, effort, and fast mode. Advisors are set at session start and don't change here."
             disabled={disabled || !sessionId}
             onChange={(e) => onPresetChange(e.target.value)}
           >
@@ -392,7 +392,7 @@ export function Composer({
             )}
             {prefs.presets.map((p) => (
               <option key={p.name} value={p.name}>
-                {p.name}
+                {p.name} · {modelBasename(p.model)}
                 {p.name === prefs.defaultPreset ? " (default)" : ""}
               </option>
             ))}

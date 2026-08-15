@@ -466,6 +466,11 @@ const ToolCard = memo(function ToolCard({
   const openPath = () => {
     if (!clickPath) return;
     const abs = clickPath.startsWith("/") ? clickPath : `${projectPath}/${clickPath}`;
+    // Project files preview in the inspector; anything else opens externally.
+    if (projectPath && (abs === projectPath || abs.startsWith(`${projectPath}/`))) {
+      useStore.getState().openFilePreview({ path: abs, projectPath });
+      return;
+    }
     void engine.request("path.open", { path: abs }).catch(() => {});
   };
   // One quiet line per tool call; output/diff only on request. Errors
@@ -488,7 +493,7 @@ const ToolCard = memo(function ToolCard({
           <button
             type="button"
             className="tool-arg mono file-ref"
-            title={`${argSummary(item.name, item.args, d)} — click to open`}
+            title={`${argSummary(item.name, item.args, d)} — click to preview`}
             onClick={(e) => {
               e.stopPropagation();
               openPath();

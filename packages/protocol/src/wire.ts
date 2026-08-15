@@ -127,8 +127,8 @@ export interface RequestPayloads {
   "project.diff": { path: string; file: string };
   "project.files": { path: string; query?: string; limit?: number };
   "project.readFile": { path: string; file: string };
-  /** Open a file/folder with the OS default app, or reveal it in Finder. */
-  "path.open": { path: string; reveal?: boolean };
+  /** Open a file/folder with the OS default app (or a named app), or reveal it in Finder. */
+  "path.open": { path: string; reveal?: boolean; app?: string };
   /** Commit the working tree, push, and open a PR (branching off default). */
   "project.ship": { path: string; title: string; body?: string };
   /**

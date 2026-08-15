@@ -21,8 +21,8 @@
   --text-muted: #5d626b;
   --text-faint: #8a9099;
 
-  --accent: #4560d8;
-  --accent-soft: rgba(69, 96, 216, 0.12);
+  --accent: #2c398f;
+  --accent-soft: rgba(44, 57, 143, 0.12);
   --teal: #17897c;
 
   --ok: #1d7a4c;
@@ -59,8 +59,8 @@
     --text-muted: #9aa0aa;
     --text-faint: #6b7280;
 
-    --accent: #7d93ff;
-    --accent-soft: rgba(125, 147, 255, 0.16);
+    --accent: #5b72e0;
+    --accent-soft: rgba(91, 114, 224, 0.16);
     --teal: #59d4c4;
 
     --ok: #4ac07d;
@@ -84,8 +84,8 @@
   --text: #e8eaed;
   --text-muted: #9aa0aa;
   --text-faint: #6b7280;
-  --accent: #7d93ff;
-  --accent-soft: rgba(125, 147, 255, 0.16);
+  --accent: #5b72e0;
+  --accent-soft: rgba(91, 114, 224, 0.16);
   --teal: #59d4c4;
   --ok: #4ac07d;
   --warn: #d9a441;
@@ -1441,19 +1441,27 @@ button {
 .home-advanced {
   color: var(--text-faint);
 }
+.home-preset-hint {
+  padding: 0 4px;
+  font-size: 12.5px;
+}
+.modal.preset-dialog {
+  width: min(680px, 92vw);
+}
 
 /* ---- file links + attachments ---- */
+/* Links read as links at rest — accent-coloured before any hover. */
 .file-ref {
   cursor: pointer;
   padding: 0;
   text-align: left;
+  color: var(--accent);
   text-decoration: underline;
-  text-decoration-color: var(--border-strong);
+  text-decoration-color: var(--accent);
   text-underline-offset: 2px;
 }
 .file-ref:hover {
-  color: var(--accent);
-  text-decoration-color: var(--accent);
+  filter: brightness(1.15);
 }
 /* Inline-code refs keep the code chrome; link-style refs read as links. */
 .file-ref-code {
@@ -1473,6 +1481,41 @@ button {
 .file-ref-link:hover {
   text-decoration: underline;
 }
+/* ---- inspector file preview ---- */
+.file-preview-pane .file-preview-head {
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.file-preview-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.file-preview-body {
+  max-height: none;
+  padding: 0;
+}
+.fp-line {
+  display: flex;
+  gap: 10px;
+  padding: 0 6px;
+}
+.fp-line.hl {
+  background: var(--accent-soft);
+}
+.fp-ln {
+  flex: none;
+  min-width: 34px;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+}
+.fp-text {
+  white-space: pre;
+}
+
 .attachment-row {
   display: flex;
   flex-wrap: wrap;
