@@ -127,6 +127,13 @@ export interface RequestPayloads {
   "project.diff": { path: string; file: string };
   "project.files": { path: string; query?: string; limit?: number };
   "project.readFile": { path: string; file: string };
+  /** Open a file/folder with the OS default app, or reveal it in Finder. */
+  "path.open": { path: string; reveal?: boolean };
+  /**
+   * Persist pasted/dropped bytes (no OS path exists in the webview) to a temp
+   * file the agent can read. Returns the absolute path.
+   */
+  "attachments.store": { name: string; base64: string };
 
   "sessions.discover": { projectPath?: string };
   "sessions.create": SessionLaunchConfig;
@@ -227,6 +234,8 @@ export interface ResponsePayloads {
   "project.diff": import("./domain").GitDiff;
   "project.files": { files: string[]; truncated: boolean };
   "project.readFile": { file: string; content: string; binary: boolean; truncated: boolean };
+  "path.open": { opened: boolean };
+  "attachments.store": { path: string };
 
   "sessions.discover": { sessions: DiscoveredSession[] };
   "sessions.create": { session: SessionSummary };

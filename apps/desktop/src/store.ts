@@ -35,7 +35,12 @@ import { loadPrefs, type Prefs, type SessionPreset, savePrefs } from "./lib/pref
 // ---------------------------------------------------------------------------
 
 export type TranscriptItem =
-  | { kind: "user"; id: string; text: string }
+  | {
+      kind: "user";
+      id: string;
+      text: string;
+      attachments?: Array<{ kind: "image" | "file"; name: string; path?: string }>;
+    }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean }
   | {
       kind: "tool";
@@ -482,7 +487,10 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
       return {
         ...v,
         summary: { ...v.summary, messageCount: v.summary.messageCount + 1 },
-        transcript: [...t, { kind: "user", id: e.messageId, text: e.text }],
+        transcript: [
+          ...t,
+          { kind: "user", id: e.messageId, text: e.text, attachments: e.attachments },
+        ],
       };
     }
 
@@ -857,7 +865,8 @@ export function fmtCount(n: number): string {
 
 export function fmtCost(n?: number): string | null {
   if (typeof n !== "number" || !Number.isFinite(n)) return null;
-  return n < 0.01 && n > 0 ? "<$0.01" : `$${n.toFixed(2)}`;
+  if (n < 0.01 && n > 0) return "<$0.01";
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export function fmtDuration(ms: number): string {

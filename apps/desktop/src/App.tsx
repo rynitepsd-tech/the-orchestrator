@@ -19,6 +19,7 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Composer } from "./components/Composer";
+import { Home } from "./components/Home";
 import { Inspector } from "./components/Inspector";
 import { NewSession } from "./components/NewSession";
 import { Onboarding } from "./components/Onboarding";
@@ -248,7 +249,7 @@ export function App(): JSX.Element {
   };
 
   // ---- actions ------------------------------------------------------------
-  const createSession = async (config: SessionLaunchConfig) => {
+  const createSession = async (config: SessionLaunchConfig): Promise<string | undefined> => {
     setCreating(true);
     try {
       // Open the project FIRST: if the folder is bad we fail before a worker
@@ -258,11 +259,31 @@ export function App(): JSX.Element {
       useStore.getState().addProject(proj.project);
       useStore.getState().addSession(res.session, config.advisors ?? []);
       useStore.getState().setNewSession(false);
+      return res.session.sessionId;
     } catch (e) {
       useStore.getState().setEngineError(e as never);
+      return undefined;
     } finally {
       setCreating(false);
     }
+  };
+
+  // Home-screen launch: create the session and fire the first message in one
+  // motion, so "type what you want, hit Enter" is the whole flow.
+  const launchWithPrompt = async (config: SessionLaunchConfig, firstMessage: string) => {
+    const id = await createSession(config);
+    if (!id) return;
+    useStore.getState().apply({
+      type: "user.message",
+      sessionId: id,
+      messageId: `u${Date.now()}`,
+      text: firstMessage,
+    });
+    void engine
+      .request("session.prompt", { sessionId: id, text: firstMessage, whenBusy: "steer" })
+      .catch((e) => {
+        useStore.getState().setEngineError(e);
+      });
   };
 
   // Whole-row click makes accidental double-activation easy; one resume of the
@@ -319,7 +340,11 @@ export function App(): JSX.Element {
     return () => window.removeEventListener("orchestrator:fork", onFork);
   }, [forkSession]);
 
-  const send = (text: string, whenBusy: "steer" | "queue") => {
+  const send = (
+    text: string,
+    whenBusy: "steer" | "queue",
+    attachments: Array<{ kind: "image" | "file"; name: string; path: string }> = [],
+  ) => {
     if (!s.visibleSessionId) return;
     const id = s.visibleSessionId;
     // Optimistically show the user's message immediately; the worker echoes it
@@ -330,10 +355,20 @@ export function App(): JSX.Element {
       sessionId: id,
       messageId: `u${Date.now()}`,
       text,
+      attachments: attachments.map((a) => ({ kind: a.kind, name: a.name, path: a.path })),
     });
-    void engine.request("session.prompt", { sessionId: id, text, whenBusy }).catch((e) => {
-      useStore.getState().setEngineError(e);
-    });
+    void engine
+      .request("session.prompt", {
+        sessionId: id,
+        text,
+        whenBusy,
+        attachments: attachments.length
+          ? attachments.map((a) => ({ kind: a.kind, path: a.path }))
+          : undefined,
+      })
+      .catch((e) => {
+        useStore.getState().setEngineError(e);
+      });
   };
 
   const abort = useCallback(() => {
@@ -665,15 +700,11 @@ export function App(): JSX.Element {
                 />
               </>
             ) : (
-              <div className="empty" style={{ marginTop: "18vh" }}>
-                <h3>No session selected</h3>
-                Choose a project and start an OMP session.
-                <div style={{ marginTop: 14 }}>
-                  <button className="btn btn-primary" onClick={() => s.setNewSession(true)}>
-                    New Session
-                  </button>
-                </div>
-              </div>
+              <Home
+                busy={creating}
+                disabled={s.engineStage === "offline"}
+                onLaunch={(config, msg) => void launchWithPrompt(config, msg)}
+              />
             )}
           </>
         )}

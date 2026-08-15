@@ -57,6 +57,8 @@ export interface Prefs {
    * the top.
    */
   sessionOrder: string[];
+  /** Preset the home screen launches with; undefined = OMP defaults. */
+  defaultPreset?: string;
 }
 
 const KEY = "orchestrator.prefs.v1";

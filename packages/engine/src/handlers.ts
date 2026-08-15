@@ -108,6 +108,40 @@ export async function handleRequest(
       return readProjectFile(String(p.path), String(p.file));
     }
 
+    case "attachments.store": {
+      const { mkdirSync, writeFileSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const b64 = String(p.base64 ?? "");
+      // ~32MB of base64 ≈ 24MB of bytes — above every provider's image cap.
+      if (b64.length > 32 * 1024 * 1024) {
+        throw Object.assign(new Error("Attachment is too large (24MB max)."), {
+          kind: "configuration",
+        });
+      }
+      const safe = String(p.name ?? "attachment")
+        .replace(/[^\w.-]+/g, "_")
+        .slice(-80);
+      const dir = join(tmpdir(), "orchestrator-attachments");
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, `${Date.now().toString(36)}-${safe}`);
+      writeFileSync(path, Buffer.from(b64, "base64"));
+      return { path };
+    }
+
+    case "path.open": {
+      // Only user clicks reach here; the engine still refuses paths that don't
+      // exist so a hallucinated path can't launch apps with garbage input.
+      const { existsSync } = await import("node:fs");
+      const target = String(p.path);
+      if (!existsSync(target)) {
+        throw Object.assign(new Error(`No such file: ${target}`), { kind: "configuration" });
+      }
+      const args = p.reveal ? ["open", "-R", target] : ["open", target];
+      Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
+      return { opened: true };
+    }
+
     // --- sessions ----------------------------------------------------------
     case "sessions.discover":
       return { sessions: await m.discoverSessions(p?.projectPath) };

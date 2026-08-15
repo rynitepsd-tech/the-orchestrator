@@ -11,20 +11,86 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JSX, ReactNode } from "react";
 import { memo } from "react";
+import { engine } from "../engine-client";
 
 function isSafeHref(href: string): boolean {
   return /^https?:\/\//i.test(href);
 }
 
-/** Inline spans: `code`, **bold**, *italic*, [text](url). */
-function renderInline(text: string, keyBase: string): ReactNode[] {
+/**
+ * Does this inline-code span look like a file reference worth linking?
+ * Slash-containing paths always qualify; bare names need a real extension so
+ * `console.log` and `useStore.getState` stay plain code.
+ */
+const PATHY_RX =
+  /^(~?[\w.@-]*(?:\/[\w.@-]+)+|[\w@-][\w.@-]*\.(?:tsx?|jsx?|mjs|cjs|json|css|scss|md|rs|py|go|java|kt|rb|sh|zsh|bash|yml|yaml|toml|html|xml|svg|txt|lock|sql|swift|c|h|cpp|hpp|cs|php|vue|svelte|conf|ini|plist|png|jpe?g|gif|webp|pdf))(:\d+(?::\d+)?)?$/;
+
+/** Open a file reference through the engine (which owns filesystem access). */
+function openFileRef(ref: string, projectPath?: string): void {
+  const bare = ref.replace(/:\d+(?::\d+)?$/, "");
+  const abs = bare.startsWith("/") || bare.startsWith("~") ? bare : `${projectPath}/${bare}`;
+  void engine.request("path.open", { path: abs }).catch(() => {});
+}
+
+/** A clickable inline-code file reference. */
+function FileRef({ text, projectPath }: { text: string; projectPath?: string }): JSX.Element {
+  return (
+    <button
+      type="button"
+      className="file-ref file-ref-code"
+      title="Click to open"
+      onClick={() => openFileRef(text, projectPath)}
+    >
+      {text}
+    </button>
+  );
+}
+
+const URL_RX = /https?:\/\/[^\s<>()]+/g;
+
+/** Plain text, with bare URLs promoted to clickable links. */
+function pushPlain(nodes: ReactNode[], text: string, keyBase: string, k: () => number): void {
+  URL_RX.lastIndex = 0;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = URL_RX.exec(text))) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    // Trailing punctuation belongs to the prose, not the URL.
+    const href = m[0].replace(/[.,;:!?'")\]]+$/, "");
+    nodes.push(
+      <a
+        key={`${keyBase}-u${k()}`}
+        href={href}
+        onClick={(e) => {
+          e.preventDefault();
+          void openUrl(href);
+        }}
+      >
+        {href}
+      </a>,
+    );
+    last = m.index + href.length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+}
+
+/** Inline spans: `code`, **bold**, *italic*, [text](url), bare URLs, file refs. */
+function renderInline(text: string, keyBase: string, projectPath?: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   // Tokenize by inline code first so markup inside code stays literal.
   const parts = text.split(/(`[^`\n]+`)/g);
-  let k = 0;
+  let kn = 0;
+  const k = () => kn++;
   for (const part of parts) {
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
-      nodes.push(<code key={`${keyBase}-c${k++}`}>{part.slice(1, -1)}</code>);
+      const code = part.slice(1, -1);
+      nodes.push(
+        PATHY_RX.test(code) ? (
+          <FileRef key={`${keyBase}-c${k()}`} text={code} projectPath={projectPath} />
+        ) : (
+          <code key={`${keyBase}-c${k()}`}>{code}</code>
+        ),
+      );
       continue;
     }
     // bold / italic / links on the remaining text
@@ -32,19 +98,19 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = rx.exec(part))) {
-      if (m.index > last) nodes.push(part.slice(last, m.index));
+      if (m.index > last) pushPlain(nodes, part.slice(last, m.index), keyBase, k);
       const tok = m[0];
       if (tok.startsWith("**")) {
-        nodes.push(<strong key={`${keyBase}-b${k++}`}>{tok.slice(2, -2)}</strong>);
+        nodes.push(<strong key={`${keyBase}-b${k()}`}>{tok.slice(2, -2)}</strong>);
       } else if (tok.startsWith("*")) {
-        nodes.push(<em key={`${keyBase}-i${k++}`}>{tok.slice(1, -1)}</em>);
+        nodes.push(<em key={`${keyBase}-i${k()}`}>{tok.slice(1, -1)}</em>);
       } else {
         const lm = /\[([^\]]+)\]\(([^)\s]+)\)/.exec(tok);
         if (lm && isSafeHref(lm[2])) {
           const href = lm[2];
           nodes.push(
             <a
-              key={`${keyBase}-a${k++}`}
+              key={`${keyBase}-a${k()}`}
               href={href}
               onClick={(e) => {
                 // External links open in the system browser, never the webview.
@@ -55,13 +121,26 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
               {lm[1]}
             </a>,
           );
+        } else if (lm && PATHY_RX.test(lm[2])) {
+          // Markdown links to files, the way agents cite code: [foo.ts:42](src/foo.ts:42)
+          const target = lm[2];
+          nodes.push(
+            <button
+              type="button"
+              key={`${keyBase}-a${k()}`}
+              className="file-ref file-ref-link"
+              onClick={() => openFileRef(target, projectPath)}
+            >
+              {lm[1]}
+            </button>,
+          );
         } else {
           nodes.push(tok);
         }
       }
       last = m.index + tok.length;
     }
-    if (last < part.length) nodes.push(part.slice(last));
+    if (last < part.length) pushPlain(nodes, part.slice(last), keyBase, k);
   }
   return nodes;
 }
@@ -173,7 +252,13 @@ function cells(row: string): string[] {
     .map((c) => c.trim());
 }
 
-export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.Element {
+export const Markdown = memo(function Markdown({
+  text,
+  projectPath,
+}: {
+  text: string;
+  projectPath?: string;
+}): JSX.Element {
   const blocks = parseBlocks(text);
   return (
     <div className="md">
@@ -182,7 +267,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.
         switch (b.kind) {
           case "h": {
             const H = `h${Math.min(6, (b.level ?? 1) + 2)}` as unknown as "h3";
-            return <H key={key}>{renderInline(b.lines[0] ?? "", key)}</H>;
+            return <H key={key}>{renderInline(b.lines[0] ?? "", key, projectPath)}</H>;
           }
           case "code":
             return (
@@ -194,7 +279,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.
             return (
               <ul key={key}>
                 {b.lines.map((l, j) => (
-                  <li key={j}>{renderInline(l, `${key}-${j}`)}</li>
+                  <li key={j}>{renderInline(l, `${key}-${j}`, projectPath)}</li>
                 ))}
               </ul>
             );
@@ -202,7 +287,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.
             return (
               <ol key={key}>
                 {b.lines.map((l, j) => (
-                  <li key={j}>{renderInline(l, `${key}-${j}`)}</li>
+                  <li key={j}>{renderInline(l, `${key}-${j}`, projectPath)}</li>
                 ))}
               </ol>
             );
@@ -210,7 +295,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.
             return (
               <blockquote key={key}>
                 {b.lines.map((l, j) => (
-                  <p key={j}>{renderInline(l, `${key}-${j}`)}</p>
+                  <p key={j}>{renderInline(l, `${key}-${j}`, projectPath)}</p>
                 ))}
               </blockquote>
             );
@@ -222,7 +307,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.
                   <thead>
                     <tr>
                       {cells(head ?? "").map((c, j) => (
-                        <th key={j}>{renderInline(c, `${key}-h${j}`)}</th>
+                        <th key={j}>{renderInline(c, `${key}-h${j}`, projectPath)}</th>
                       ))}
                     </tr>
                   </thead>
@@ -230,7 +315,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.
                     {rest.map((r, j) => (
                       <tr key={j}>
                         {cells(r).map((c, jc) => (
-                          <td key={jc}>{renderInline(c, `${key}-${j}-${jc}`)}</td>
+                          <td key={jc}>{renderInline(c, `${key}-${j}-${jc}`, projectPath)}</td>
                         ))}
                       </tr>
                     ))}
@@ -242,7 +327,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.
           case "hr":
             return <hr key={key} />;
           default:
-            return <p key={key}>{renderInline(b.lines.join(" "), key)}</p>;
+            return <p key={key}>{renderInline(b.lines.join(" "), key, projectPath)}</p>;
         }
       })}
     </div>

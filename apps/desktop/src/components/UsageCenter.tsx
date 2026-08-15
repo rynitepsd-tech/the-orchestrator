@@ -1,12 +1,15 @@
 /**
- * Global usage centre.
+ * Global usage centre, T3-style.
  *
- * Aggregates the engine's persistent usage index across sessions, projects,
- * models, and actors. All numbers come from the normalized usage subsystem —
- * nothing is re-derived in React, and absent cost is "unavailable", never $0.
+ * A big raw-cost headline with per-provider share bars, a daily cost/tokens
+ * area chart, a stat row (processed / cached / uncached / output / savings),
+ * and a model-or-day breakdown table. All numbers come from the normalized
+ * usage subsystem — nothing is re-derived in React, and absent cost is
+ * "unavailable", never $0. Cache savings are the one estimate on the page and
+ * are labeled as such (token counts × catalogue rates).
  */
 
-import type { TokenCounts, UsageRecord } from "@orchestrator/protocol";
+import type { ModelInfo, TokenCounts, UsageRecord } from "@orchestrator/protocol";
 import type { JSX } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { engine } from "../engine-client";
@@ -31,8 +34,28 @@ function sinceFor(range: Range): string | undefined {
   }
 }
 
-function sumT(t: TokenCounts): number {
-  return t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheWriteTokens;
+/** Stable accent per provider; unknown providers cycle the tail palette. */
+const PROVIDER_COLORS: Record<string, string> = {
+  anthropic: "#ff8f66",
+  openai: "#e8e8e8",
+  google: "#7d93ff",
+  openrouter: "#59d4c4",
+  xai: "#d9a441",
+};
+const FALLBACK_COLORS = ["#b28dff", "#6fc1ff", "#8be59a", "#f2a0c0", "#c9c9c9"];
+
+function providerColor(provider: string, index: number): string {
+  return PROVIDER_COLORS[provider] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+}
+
+function providerLabel(p: string): string {
+  if (p === "openai") return "OpenAI";
+  return p.charAt(0).toUpperCase() + p.slice(1);
+}
+
+function fmtDay(iso: string): string {
+  const d = new Date(`${iso}T12:00:00`);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function UsageCenter(): JSX.Element {
@@ -40,10 +63,12 @@ export function UsageCenter(): JSX.Element {
   const updatePrefs = useStore((s) => s.updatePrefs);
   const globalUsage = useStore((s) => s.globalUsage);
   const setGlobalUsage = useStore((s) => s.setGlobalUsage);
+  const models = useStore((s) => s.models);
   const [range, setRange] = useState<Range>(prefs.usageRange);
   const [reindexing, setReindexing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [modelFilter, setModelFilter] = useState<string | null>(null);
+  const [chartMode, setChartMode] = useState<"cost" | "tokens">("cost");
+  const [breakdown, setBreakdown] = useState<"model" | "day">("model");
 
   const refresh = async (r: Range) => {
     try {
@@ -76,19 +101,22 @@ export function UsageCenter(): JSX.Element {
     }
   };
 
-  const records = useMemo(() => {
-    let rows = globalUsage?.records ?? [];
-    if (modelFilter) rows = rows.filter((r) => `${r.provider}/${r.model}` === modelFilter);
-    return rows;
-  }, [globalUsage, modelFilter]);
+  const records = globalUsage?.records ?? [];
+  const agg = useMemo(() => aggregate(records, models), [records, models]);
 
-  const agg = useMemo(() => aggregate(records), [records]);
-  const b = globalUsage?.breakdown;
+  const rangeLabel =
+    agg.firstDay && agg.lastDay
+      ? agg.firstDay === agg.lastDay
+        ? fmtDay(agg.firstDay)
+        : `${fmtDay(agg.firstDay)} to ${fmtDay(agg.lastDay)}`
+      : "";
 
   return (
     <div className="usage-center">
       <div className="row usage-toolbar">
         <h2 style={{ margin: 0 }}>Usage</h2>
+        <span className="hint">{rangeLabel}</span>
+        <span className="spacer" />
         <div className="segmented">
           {(["today", "7d", "30d", "all"] as const).map((r) => (
             <button
@@ -96,214 +124,439 @@ export function UsageCenter(): JSX.Element {
               className={`seg${range === r ? " on" : ""}`}
               onClick={() => setRangeAndSave(r)}
             >
-              {r === "today"
-                ? "Today"
-                : r === "7d"
-                  ? "7 days"
-                  : r === "30d"
-                    ? "30 days"
-                    : "All time"}
+              {r === "today" ? "Today" : r === "7d" ? "7 days" : r === "30d" ? "30 days" : "All"}
             </button>
           ))}
         </div>
-        <span className="spacer" />
-        {modelFilter && (
-          <button className="chip chip-btn" onClick={() => setModelFilter(null)}>
-            {modelFilter} ×
-          </button>
-        )}
-        <button className="btn" disabled={reindexing} onClick={() => void reindex()}>
-          {reindexing ? "Reindexing…" : "Reindex from session files"}
+        <button
+          className="btn"
+          disabled={reindexing}
+          onClick={() => void reindex()}
+          title="Rebuild the usage index from persisted OMP session files"
+        >
+          {reindexing ? "Reindexing…" : "⟳"}
         </button>
       </div>
 
       {error && <div className="banner">{error}</div>}
 
-      {!b || records.length === 0 ? (
+      {records.length === 0 ? (
         <div className="empty" style={{ marginTop: "10vh" }}>
           <h3>No usage in this period</h3>
           Run sessions, or reindex to pull history from your persisted OMP sessions.
         </div>
       ) : (
-        <div className="usage-grid">
-          <section>
-            <div className="section-label">Totals</div>
-            <table className="usage-table">
-              <tbody>
-                <tr>
-                  <td>Total usage</td>
-                  <td className="num">{fmtTokens(agg.total)}</td>
-                  <td className="num">{fmtCost(agg.cost) ?? "$—"}</td>
-                </tr>
-                <tr>
-                  <td>Primary agents</td>
-                  <td className="num">{fmtTokens(agg.byActor.primary)}</td>
-                  <td />
-                </tr>
-                <tr>
-                  <td>Advisors</td>
-                  <td className="num">{fmtTokens(agg.byActor.advisor)}</td>
-                  <td />
-                </tr>
-                <tr>
-                  <td>Subagents</td>
-                  <td className="num">{fmtTokens(agg.byActor.subagent)}</td>
-                  <td />
-                </tr>
-              </tbody>
-            </table>
-            {agg.costPartial && (
+        <>
+          <div className="usage-hero">
+            <div className="usage-hero-left">
+              <div className="stat-label">Raw token cost</div>
+              <div className="usage-cost-big">
+                {fmtCost(agg.cost) ?? "$—"}
+                {agg.cost !== undefined && <span className="usage-cost-star">*</span>}
+              </div>
+              <div className="hint">* if billed at full API rate</div>
+
+              <div className="provider-list">
+                {agg.byProvider.map((p) => (
+                  <div key={p.provider} className="provider-row">
+                    <div className="provider-row-head">
+                      <span className="provider-dot" style={{ background: p.color }} />
+                      <span className="provider-name">{providerLabel(p.provider)}</span>
+                      <span className="spacer" />
+                      <span className="provider-cost">{fmtCost(p.cost) ?? "—"}</span>
+                    </div>
+                    <div className="provider-bar">
+                      <div
+                        className="provider-bar-fill"
+                        style={{ width: `${Math.max(1, p.share * 100)}%`, background: p.color }}
+                      />
+                    </div>
+                    <div className="hint">
+                      {(p.share * 100).toFixed(1)}% of {agg.cost !== undefined ? "cost" : "tokens"}{" "}
+                      · {fmtTokens(p.tokens)} tokens
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="usage-hero-chart">
+              <div className="row">
+                <span className="stat-label">Daily {chartMode}</span>
+                <span className="spacer" />
+                <div className="segmented">
+                  <button
+                    className={`seg${chartMode === "cost" ? " on" : ""}`}
+                    onClick={() => setChartMode("cost")}
+                  >
+                    Cost
+                  </button>
+                  <button
+                    className={`seg${chartMode === "tokens" ? " on" : ""}`}
+                    onClick={() => setChartMode("tokens")}
+                  >
+                    Tokens
+                  </button>
+                </div>
+                <div className="chart-legend">
+                  {agg.byProvider.map((p) => (
+                    <span key={p.provider} className="chart-legend-item">
+                      <span className="provider-dot" style={{ background: p.color }} />
+                      {providerLabel(p.provider)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <DailyChart days={agg.days} series={agg.daily} mode={chartMode} />
+            </div>
+          </div>
+
+          <div className="stat-row">
+            <div className="stat-tile">
+              <div className="stat-label">Processed tokens</div>
+              <div className="stat-value">{fmtTokens(agg.total)}</div>
               <div className="hint">
-                {fmtCost(agg.cost) ?? "$0.00"} reported — cost unavailable for{" "}
-                {fmtCount(agg.modelsWithoutCost)} model{agg.modelsWithoutCost === 1 ? "" : "s"}.
+                {agg.activeDays > 0 &&
+                  `${fmtTokens(Math.round(agg.total / agg.activeDays))} per active day`}
+              </div>
+            </div>
+            <div className="stat-tile">
+              <div className="stat-label">Cached input</div>
+              <div className="stat-value">{fmtTokens(agg.tokens.cacheReadTokens)}</div>
+              <div className="hint">
+                {agg.observedInput > 0 &&
+                  `${((agg.tokens.cacheReadTokens / agg.observedInput) * 100).toFixed(1)}% of observed input`}
+              </div>
+            </div>
+            <div className="stat-tile">
+              <div className="stat-label">Uncached input</div>
+              <div className="stat-value">{fmtTokens(agg.tokens.inputTokens)}</div>
+              <div className="hint">{fmtTokens(agg.tokens.cacheWriteTokens)} cache writes</div>
+            </div>
+            <div className="stat-tile">
+              <div className="stat-label">Output</div>
+              <div className="stat-value">{fmtTokens(agg.tokens.outputTokens)}</div>
+              <div className="hint">across {fmtCount(agg.sessionCount)} sessions</div>
+            </div>
+            {agg.cacheSavings !== undefined && agg.cost !== undefined && agg.cost > 0 && (
+              <div className="stat-tile">
+                <div className="stat-label">Cache savings</div>
+                <div className="stat-value">{fmtCost(agg.cacheSavings)}</div>
+                <div className="hint">
+                  est. · {(agg.cacheSavings / agg.cost).toFixed(1)}x the raw token cost
+                </div>
               </div>
             )}
-          </section>
+          </div>
 
-          <section>
-            <div className="section-label">By model</div>
-            <table className="usage-table">
+          <div className="usage-breakdown">
+            <div className="row">
+              <h3 style={{ margin: 0 }}>Breakdown</h3>
+              <span className="spacer" />
+              <div className="segmented">
+                <button
+                  className={`seg${breakdown === "model" ? " on" : ""}`}
+                  onClick={() => setBreakdown("model")}
+                >
+                  Model
+                </button>
+                <button
+                  className={`seg${breakdown === "day" ? " on" : ""}`}
+                  onClick={() => setBreakdown("day")}
+                >
+                  Day
+                </button>
+              </div>
+            </div>
+            <table className="usage-table breakdown-table">
               <thead>
                 <tr>
-                  <th>Model</th>
-                  <th className="num">Input</th>
-                  <th className="num">Output</th>
-                  <th className="num">Total</th>
+                  <th>{breakdown === "model" ? "Model" : "Day"}</th>
                   <th className="num">Cost</th>
+                  <th className="num">Share</th>
+                  <th className="num">Tokens</th>
                 </tr>
               </thead>
               <tbody>
-                {agg.byModel.map((m) => (
-                  <tr
-                    key={m.key}
-                    className="clickable"
-                    onClick={() => setModelFilter(modelFilter === m.key ? null : m.key)}
-                  >
-                    <td className="mono">{m.key}</td>
-                    <td className="num">{fmtTokens(m.tokens.inputTokens)}</td>
-                    <td className="num">{fmtTokens(m.tokens.outputTokens)}</td>
-                    <td className="num">{fmtTokens(sumT(m.tokens))}</td>
-                    <td className="num">{fmtCost(m.cost) ?? ""}</td>
+                {(breakdown === "model" ? agg.byModel : agg.byDay).map((row) => (
+                  <tr key={row.key}>
+                    <td>
+                      {"color" in row && (
+                        <span className="provider-dot" style={{ background: row.color }} />
+                      )}{" "}
+                      <span className={breakdown === "model" ? "mono" : undefined}>
+                        {row.label}
+                      </span>
+                    </td>
+                    <td className="num">{fmtCost(row.cost) ?? "—"}</td>
+                    <td className="num">{(row.share * 100).toFixed(1)}%</td>
+                    <td className="num">{fmtTokens(row.tokens)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </section>
+          </div>
 
-          {agg.advisors.length > 0 && (
+          <div className="usage-grid">
             <section>
-              <div className="section-label">Advisors</div>
+              <div className="section-label">By session</div>
               <table className="usage-table">
                 <tbody>
-                  {agg.advisors.map((a) => (
-                    <tr key={a.name}>
-                      <td>{a.name}</td>
-                      <td className="num">{fmtTokens(a.total)}</td>
-                      <td className="num">{fmtCost(a.cost) ?? ""}</td>
+                  {agg.bySession.slice(0, 20).map((s) => (
+                    <tr key={s.key}>
+                      <td className="mono" title={s.key}>
+                        {s.key.slice(0, 8)}
+                      </td>
+                      <td title={s.project}>{s.project.split("/").pop() || "—"}</td>
+                      <td className="num">{fmtTokens(s.total)}</td>
+                      <td className="num">{fmtCost(s.cost) ?? ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {agg.bySession.length > 20 && (
+                <div className="hint">
+                  Top 20 of {fmtCount(agg.bySession.length)} sessions shown.
+                </div>
+              )}
+            </section>
+
+            <section>
+              <div className="section-label">By project</div>
+              <table className="usage-table">
+                <tbody>
+                  {agg.byProject.map((p) => (
+                    <tr key={p.key}>
+                      <td title={p.key}>{p.key.split("/").pop() || p.key}</td>
+                      <td className="num">{fmtTokens(p.total)}</td>
+                      <td className="num">{fmtCost(p.cost) ?? ""}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </section>
-          )}
 
-          <section>
-            <div className="section-label">By session</div>
-            <table className="usage-table">
-              <thead>
-                <tr>
-                  <th>Session</th>
-                  <th>Project</th>
-                  <th className="num">Total</th>
-                  <th className="num">Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agg.bySession.slice(0, 30).map((s) => (
-                  <tr key={s.key}>
-                    <td className="mono" title={s.key}>
-                      {s.key.slice(0, 8)}
-                    </td>
-                    <td title={s.project}>{s.project.split("/").pop() || "—"}</td>
-                    <td className="num">{fmtTokens(s.total)}</td>
-                    <td className="num">{fmtCost(s.cost) ?? ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {agg.bySession.length > 30 && (
-              <div className="hint">Top 30 of {fmtCount(agg.bySession.length)} sessions shown.</div>
+            {agg.advisors.length > 0 && (
+              <section>
+                <div className="section-label">Advisors</div>
+                <table className="usage-table">
+                  <tbody>
+                    {agg.advisors.map((a) => (
+                      <tr key={a.name}>
+                        <td>{a.name}</td>
+                        <td className="num">{fmtTokens(a.total)}</td>
+                        <td className="num">{fmtCost(a.cost) ?? ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
             )}
-          </section>
 
-          <section>
-            <div className="section-label">By project</div>
-            <table className="usage-table">
-              <tbody>
-                {agg.byProject.map((p) => (
-                  <tr key={p.key}>
-                    <td title={p.key}>{p.key.split("/").pop() || p.key}</td>
-                    <td className="num">{fmtTokens(p.total)}</td>
-                    <td className="num">{fmtCost(p.cost) ?? ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-
-          <section>
-            <QuotaSection />
-          </section>
-        </div>
+            <section>
+              <QuotaSection />
+            </section>
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-function aggregate(records: UsageRecord[]) {
-  const byActor = { primary: 0, advisor: 0, subagent: 0 };
-  const models = new Map<
-    string,
-    { tokens: TokenCounts; cost: number; hasCost: boolean; missing: boolean }
-  >();
+// ---------------------------------------------------------------------------
+// Daily area chart (inline SVG, no dependencies)
+// ---------------------------------------------------------------------------
+
+interface DailySeries {
+  provider: string;
+  color: string;
+  cost: number[];
+  tokens: number[];
+}
+
+/** Smooth a polyline with quadratic midpoint curves. */
+function smoothPath(pts: Array<[number, number]>): string {
+  if (pts.length === 0) return "";
+  if (pts.length === 1) return `M ${pts[0][0]} ${pts[0][1]}`;
+  let d = `M ${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [x0, y0] = pts[i];
+    const [x1, y1] = pts[i + 1];
+    d += ` Q ${x0} ${y0} ${(x0 + x1) / 2} ${(y0 + y1) / 2}`;
+  }
+  const last = pts[pts.length - 1];
+  d += ` L ${last[0]} ${last[1]}`;
+  return d;
+}
+
+function DailyChart({
+  days,
+  series,
+  mode,
+}: {
+  days: string[];
+  series: DailySeries[];
+  mode: "cost" | "tokens";
+}): JSX.Element {
+  const W = 640;
+  const H = 210;
+  const PAD_L = 46;
+  const PAD_B = 22;
+  const PAD_T = 10;
+
+  const max = Math.max(1e-9, ...series.flatMap((s) => (mode === "cost" ? s.cost : s.tokens)));
+  const x = (i: number) =>
+    PAD_L + (days.length <= 1 ? 0.5 : i / (days.length - 1)) * (W - PAD_L - 8);
+  const y = (v: number) => PAD_T + (1 - v / max) * (H - PAD_T - PAD_B);
+
+  const fmtY = (v: number) => (mode === "cost" ? (fmtCost(v) ?? "") : fmtTokens(v));
+
+  return (
+    <svg
+      className="daily-chart"
+      viewBox={`0 0 ${W} ${H}`}
+      role="img"
+      aria-label={`Daily ${mode} by provider`}
+    >
+      {/* gridlines at 50% and 100% */}
+      {[0.5, 1].map((f) => (
+        <g key={f}>
+          <line x1={PAD_L} x2={W - 8} y1={y(max * f)} y2={y(max * f)} className="chart-grid" />
+          <text x={PAD_L - 6} y={y(max * f) + 4} className="chart-tick" textAnchor="end">
+            {fmtY(max * f)}
+          </text>
+        </g>
+      ))}
+      <line x1={PAD_L} x2={W - 8} y1={y(0)} y2={y(0)} className="chart-grid baseline" />
+
+      {series.map((s) => {
+        const vals = mode === "cost" ? s.cost : s.tokens;
+        const pts = vals.map((v, i) => [x(i), y(v)] as [number, number]);
+        const line = smoothPath(pts);
+        const area = `${line} L ${x(vals.length - 1)} ${y(0)} L ${x(0)} ${y(0)} Z`;
+        return (
+          <g key={s.provider}>
+            <path d={area} fill={s.color} opacity={0.14} />
+            <path d={line} fill="none" stroke={s.color} strokeWidth={1.8} />
+          </g>
+        );
+      })}
+
+      {days.length > 0 && (
+        <>
+          <text x={PAD_L} y={H - 6} className="chart-tick">
+            {fmtDay(days[0]).toUpperCase()}
+          </text>
+          {days.length > 2 && (
+            <text
+              x={x(Math.floor((days.length - 1) / 2))}
+              y={H - 6}
+              className="chart-tick"
+              textAnchor="middle"
+            >
+              {fmtDay(days[Math.floor((days.length - 1) / 2)]).toUpperCase()}
+            </text>
+          )}
+          {days.length > 1 && (
+            <text x={x(days.length - 1)} y={H - 6} className="chart-tick" textAnchor="end">
+              {fmtDay(days[days.length - 1]).toUpperCase()}
+            </text>
+          )}
+        </>
+      )}
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Aggregation
+// ---------------------------------------------------------------------------
+
+function aggregate(records: UsageRecord[], models: ModelInfo[]) {
+  const tokens: TokenCounts = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  const providers = new Map<string, { tokens: number; cost: number; hasCost: boolean }>();
+  const modelAgg = new Map<string, { tokens: number; cost: number; hasCost: boolean }>();
+  const dayAgg = new Map<string, { tokens: number; cost: number; hasCost: boolean }>();
+  const dailyByProvider = new Map<string, Map<string, { cost: number; tokens: number }>>();
   const sessionsAgg = new Map<
     string,
     { total: number; cost: number; hasCost: boolean; project: string }
   >();
   const projects = new Map<string, { total: number; cost: number; hasCost: boolean }>();
   const advisorsAgg = new Map<string, { total: number; cost: number; hasCost: boolean }>();
+
+  // Catalogue rates for the savings estimate (rates are $/M tokens).
+  const rates = new Map<string, { input: number; cacheRead: number }>();
+  for (const m of models) {
+    if (m.cost) rates.set(m.key, { input: m.cost.input, cacheRead: m.cost.cacheRead });
+  }
+
   let total = 0;
   let cost = 0;
   let hasCost = false;
-  let costPartial = false;
+  let cacheSavings = 0;
+  let hasSavings = false;
 
   for (const r of records) {
     const t = r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens;
     total += t;
-    byActor[r.actorType] += t;
+    tokens.inputTokens += r.inputTokens;
+    tokens.outputTokens += r.outputTokens;
+    tokens.cacheReadTokens += r.cacheReadTokens;
+    tokens.cacheWriteTokens += r.cacheWriteTokens;
     if (typeof r.cost === "number") {
       cost += r.cost;
       hasCost = true;
-    } else {
-      costPartial = true;
     }
 
-    const mk = `${r.provider}/${r.model}`;
-    const m = models.get(mk) ?? {
-      tokens: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
-      cost: 0,
-      hasCost: false,
-      missing: false,
-    };
-    m.tokens.inputTokens += r.inputTokens;
-    m.tokens.outputTokens += r.outputTokens;
-    m.tokens.cacheReadTokens += r.cacheReadTokens;
-    m.tokens.cacheWriteTokens += r.cacheWriteTokens;
+    const rate = rates.get(`${r.provider}/${r.model}`);
+    if (rate && rate.input > rate.cacheRead && r.cacheReadTokens > 0) {
+      cacheSavings += (r.cacheReadTokens * (rate.input - rate.cacheRead)) / 1_000_000;
+      hasSavings = true;
+    }
+
+    const pv = providers.get(r.provider) ?? { tokens: 0, cost: 0, hasCost: false };
+    pv.tokens += t;
     if (typeof r.cost === "number") {
-      m.cost += r.cost;
-      m.hasCost = true;
-    } else m.missing = true;
-    models.set(mk, m);
+      pv.cost += r.cost;
+      pv.hasCost = true;
+    }
+    providers.set(r.provider, pv);
+
+    const mk = `${r.provider}/${r.model}`;
+    const mv = modelAgg.get(mk) ?? { tokens: 0, cost: 0, hasCost: false };
+    mv.tokens += t;
+    if (typeof r.cost === "number") {
+      mv.cost += r.cost;
+      mv.hasCost = true;
+    }
+    modelAgg.set(mk, mv);
+
+    const day = (r.completedAt ?? r.startedAt ?? "").slice(0, 10);
+    if (day) {
+      const dv = dayAgg.get(day) ?? { tokens: 0, cost: 0, hasCost: false };
+      dv.tokens += t;
+      if (typeof r.cost === "number") {
+        dv.cost += r.cost;
+        dv.hasCost = true;
+      }
+      dayAgg.set(day, dv);
+
+      let perDay = dailyByProvider.get(r.provider);
+      if (!perDay) {
+        perDay = new Map();
+        dailyByProvider.set(r.provider, perDay);
+      }
+      const cell = perDay.get(day) ?? { cost: 0, tokens: 0 };
+      cell.tokens += t;
+      cell.cost += r.cost ?? 0;
+      perDay.set(day, cell);
+    }
 
     const sk = r.ompSessionId || r.sessionId;
     const s = sessionsAgg.get(sk) ?? { total: 0, cost: 0, hasCost: false, project: r.projectId };
@@ -334,15 +587,76 @@ function aggregate(records: UsageRecord[]) {
     }
   }
 
+  // Share denominators: cost when we have it, tokens otherwise.
+  const shareOf = (c: number, tk: number, has: boolean) =>
+    hasCost && cost > 0 && has ? c / cost : total > 0 ? tk / total : 0;
+
+  const byProvider = [...providers.entries()]
+    .map(([provider, v]) => ({
+      provider,
+      tokens: v.tokens,
+      cost: v.hasCost ? v.cost : undefined,
+      share: shareOf(v.cost, v.tokens, v.hasCost),
+    }))
+    .sort((a, b) => b.share - a.share)
+    .map((p, i) => ({ ...p, color: providerColor(p.provider, i) }));
+
+  // Continuous day axis from first to last observed day.
+  const sortedDays = [...dayAgg.keys()].sort();
+  const days: string[] = [];
+  if (sortedDays.length > 0) {
+    const first = new Date(`${sortedDays[0]}T12:00:00`);
+    const last = new Date(`${sortedDays[sortedDays.length - 1]}T12:00:00`);
+    for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
+      days.push(d.toISOString().slice(0, 10));
+    }
+  }
+
+  const daily: DailySeries[] = byProvider.map((p) => {
+    const perDay = dailyByProvider.get(p.provider);
+    return {
+      provider: p.provider,
+      color: p.color,
+      cost: days.map((d) => perDay?.get(d)?.cost ?? 0),
+      tokens: days.map((d) => perDay?.get(d)?.tokens ?? 0),
+    };
+  });
+
+  const providerColorOf = (key: string) =>
+    byProvider.find((p) => key.startsWith(`${p.provider}/`))?.color;
+
   return {
     total,
+    tokens,
+    observedInput: tokens.inputTokens + tokens.cacheReadTokens,
     cost: hasCost ? cost : undefined,
-    costPartial,
-    modelsWithoutCost: [...models.values()].filter((m) => m.missing).length,
-    byActor,
-    byModel: [...models.entries()]
-      .map(([key, v]) => ({ key, tokens: v.tokens, cost: v.hasCost ? v.cost : undefined }))
-      .sort((a, b) => sumT(b.tokens) - sumT(a.tokens)),
+    cacheSavings: hasSavings ? cacheSavings : undefined,
+    activeDays: dayAgg.size,
+    sessionCount: sessionsAgg.size,
+    firstDay: sortedDays[0],
+    lastDay: sortedDays[sortedDays.length - 1],
+    days,
+    daily,
+    byProvider,
+    byModel: [...modelAgg.entries()]
+      .map(([key, v]) => ({
+        key,
+        label: key.split("/").slice(1).join("/") || key,
+        color: providerColorOf(key),
+        tokens: v.tokens,
+        cost: v.hasCost ? v.cost : undefined,
+        share: shareOf(v.cost, v.tokens, v.hasCost),
+      }))
+      .sort((a, b) => b.share - a.share),
+    byDay: [...dayAgg.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([key, v]) => ({
+        key,
+        label: fmtDay(key),
+        tokens: v.tokens,
+        cost: v.hasCost ? v.cost : undefined,
+        share: shareOf(v.cost, v.tokens, v.hasCost),
+      })),
     bySession: [...sessionsAgg.entries()]
       .map(([key, v]) => ({
         key,

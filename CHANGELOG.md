@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- **Near-black theme.** The session view and sidebars dropped to T3-style
+  near-black; cards and bubbles pop harder against both.
+- **Drag reorder actually works now.** Tauri's native drag-drop layer was
+  swallowing HTML5 drag events in the webview (`dragDropEnabled`), so project
+  and session dragging never fired. Disabled it; dragging works.
+- **A real home screen.** With no session selected: "What should we build in
+  <project>?" over a big composer. Your default preset and last-worked folder
+  are pre-selected and changeable inline; Enter creates the session and sends
+  the first message. The preset choice persists as your default.
+- **Usage, rebuilt T3-style.** Big raw-token-cost headline ("* if billed at
+  full API rate"), per-provider share bars, a daily cost/tokens area chart,
+  a stat row (processed / cached / uncached / output / estimated cache
+  savings), and a Model/Day breakdown table. Session, project, advisor, and
+  quota sections remain below.
+- **Attach images and files.** + button, paste a screenshot, or drop files
+  onto the composer. Images go to the model as real image input (resized and
+  capped via OMP's own loader); other files are passed by path for the agent
+  to read. Attachment chips render on your message.
+- **Clickable files and links.** File paths in responses (inline code,
+  markdown links) and in tool cards open the file with one click, routed
+  through the engine; bare URLs in prose open in your browser.
+
 ## 0.3.10
 
 - **Roomier prose.** Paragraphs, lists, and headings in responses get real

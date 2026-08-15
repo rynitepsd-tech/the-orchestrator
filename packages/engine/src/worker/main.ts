@@ -854,6 +854,36 @@ async function handle(req: any): Promise<unknown> {
       const behavior = req.payload.whenBusy === "queue" ? "followUp" : "steer";
       if (busy && req.payload.whenBusy === "reject") throw new Error("Session is busy");
 
+      // Attachments: images become real ImageContent the model can see
+      // (loadImageInput handles resize/size caps/format quirks); other files
+      // are referenced by path so the agent reads them with its own tools.
+      let promptText = String(req.payload.text);
+      const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+      const atts = Array.isArray(req.payload.attachments) ? req.payload.attachments : [];
+      for (const a of atts) {
+        if (a?.kind === "image" && a.path) {
+          try {
+            const { loadImageInput } = await import(
+              "@oh-my-pi/pi-coding-agent/utils/image-loading"
+            );
+            const loaded = await loadImageInput({
+              path: String(a.path),
+              cwd: boot.projectPath,
+              autoResize: true,
+            });
+            if (loaded) {
+              images.push({ type: "image", data: loaded.data, mimeType: loaded.mimeType });
+              continue;
+            }
+          } catch (e) {
+            err("image attachment failed to load", { path: a.path, error: String(e) });
+          }
+          promptText += `\n\n[Attached image could not be loaded: ${a.path}]`;
+        } else if (a?.path) {
+          promptText += `\n\nAttached file: ${a.path}`;
+        }
+      }
+
       setRunState("queued");
       // The turn runs in the background: the host gets an immediate ack so the
       // user can switch sessions while this one keeps working.
@@ -862,7 +892,10 @@ async function handle(req: any): Promise<unknown> {
         // actually occurred — an aborted turn must never report "completed".
         let outcome: Extract<RunState, "completed" | "interrupted" | "error"> = "completed";
         try {
-          await s.prompt(String(req.payload.text), { streamingBehavior: behavior });
+          await s.prompt(promptText, {
+            streamingBehavior: behavior,
+            images: images.length ? images : undefined,
+          });
           // abort() resolves the prompt rather than rejecting it, so trust the
           // run state the abort handler recorded.
           if (runState === "interrupted" || runState === "stopping") outcome = "interrupted";

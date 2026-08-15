@@ -24,6 +24,7 @@ export function Transcript({
   items: TranscriptItem[];
   sessionId: string;
 }): JSX.Element {
+  const projectPath = useStore((s) => s.sessions[sessionId]?.summary.projectPath);
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const [shown, setShown] = useState(WINDOW);
@@ -71,9 +72,15 @@ export function Transcript({
           )}
           {toNodes(visible).map((n) =>
             n.kind === "plain" ? (
-              <Item key={n.item.id} item={n.item} sessionId={sessionId} />
+              <Item key={n.item.id} item={n.item} sessionId={sessionId} projectPath={projectPath} />
             ) : (
-              <WorkGroup key={n.key} items={n.items} sessionId={sessionId} live={n.live} />
+              <WorkGroup
+                key={n.key}
+                items={n.items}
+                sessionId={sessionId}
+                live={n.live}
+                projectPath={projectPath}
+              />
             ),
           )}
         </div>
@@ -202,10 +209,12 @@ function WorkGroup({
   items,
   sessionId,
   live,
+  projectPath,
 }: {
   items: TranscriptItem[];
   sessionId: string;
   live: boolean;
+  projectPath?: string;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ms = items.reduce(
@@ -245,7 +254,7 @@ function WorkGroup({
       {open && (
         <div className="work-body">
           {items.map((item) => (
-            <Item key={item.id} item={item} sessionId={sessionId} />
+            <Item key={item.id} item={item} sessionId={sessionId} projectPath={projectPath} />
           ))}
         </div>
       )}
@@ -260,13 +269,28 @@ function WorkGroup({
 const Item = memo(function Item({
   item,
   sessionId,
+  projectPath,
 }: {
   item: TranscriptItem;
   sessionId: string;
+  projectPath?: string;
 }): JSX.Element | null {
   switch (item.kind) {
     case "user":
-      return <div className="msg-user">{item.text}</div>;
+      return (
+        <div className="msg-user">
+          {item.attachments && item.attachments.length > 0 && (
+            <div className="attachment-row">
+              {item.attachments.map((a, i) => (
+                <span key={i} className="chip attachment-chip" title={a.path}>
+                  {a.kind === "image" ? "🖼" : "📄"} {a.name}
+                </span>
+              ))}
+            </div>
+          )}
+          {item.text}
+        </div>
+      );
     case "assistant": {
       // Thinking is visible live while the model reasons, then tucks behind a
       // dropdown the moment answer text arrives — the transcript shows answers,
@@ -294,15 +318,15 @@ const Item = memo(function Item({
               // the final render swaps in the full markdown tree.
               <div className="streaming-text">{item.text}</div>
             ) : (
-              <Markdown text={item.text} />
+              <Markdown text={item.text} projectPath={projectPath} />
             ))}
         </div>
       );
     }
     case "tool":
-      return <ToolCard item={item} />;
+      return <ToolCard item={item} projectPath={projectPath} />;
     case "advisor":
-      return <AdvisorCard item={item} />;
+      return <AdvisorCard item={item} projectPath={projectPath} />;
     case "subagent":
       return <SubagentCard item={item} />;
     case "approval":
@@ -355,11 +379,21 @@ function toolTitle(name: string): { label: string; mcp?: string } {
 
 const ToolCard = memo(function ToolCard({
   item,
+  projectPath,
 }: {
   item: Extract<TranscriptItem, { kind: "tool" }>;
+  projectPath?: string;
 }): JSX.Element {
   const { label, mcp } = toolTitle(item.name);
   const d = item.detail;
+  // File-flavoured tool calls get a clickable path, like Codex/Claude Code.
+  const clickPath =
+    d?.kind === "edit" || d?.kind === "write" || d?.kind === "read" ? d.path : undefined;
+  const openPath = () => {
+    if (!clickPath) return;
+    const abs = clickPath.startsWith("/") ? clickPath : `${projectPath}/${clickPath}`;
+    void engine.request("path.open", { path: abs }).catch(() => {});
+  };
   // One quiet line per tool call; output/diff only on request. Errors
   // auto-expand — those are the ones worth reading.
   const [openState, setOpen] = useState<boolean | null>(null);
@@ -376,9 +410,23 @@ const ToolCard = memo(function ToolCard({
         {hasBody && <span className="tool-chevron">{open ? "▾" : "▸"}</span>}
         {mcp && <span className="chip mcp-chip">MCP · {mcp}</span>}
         <span className="tool-name">{label}</span>
-        <span className="tool-arg mono" title={argSummary(item.name, item.args, d)}>
-          {argSummary(item.name, item.args, d)}
-        </span>
+        {clickPath ? (
+          <button
+            type="button"
+            className="tool-arg mono file-ref"
+            title={`${argSummary(item.name, item.args, d)} — click to open`}
+            onClick={(e) => {
+              e.stopPropagation();
+              openPath();
+            }}
+          >
+            {argSummary(item.name, item.args, d)}
+          </button>
+        ) : (
+          <span className="tool-arg mono" title={argSummary(item.name, item.args, d)}>
+            {argSummary(item.name, item.args, d)}
+          </span>
+        )}
         <span className="spacer" />
         {item.state === "running" && <span className="hint">running…</span>}
         {d?.kind === "edit" && (
@@ -489,8 +537,10 @@ export const Diff = memo(function Diff({ diff }: { diff: string }): JSX.Element 
 
 const AdvisorCard = memo(function AdvisorCard({
   item,
+  projectPath,
 }: {
   item: Extract<TranscriptItem, { kind: "advisor" }>;
+  projectPath?: string;
 }): JSX.Element {
   return (
     <div className={`advisor-card ${item.severity}`}>
@@ -509,7 +559,7 @@ const AdvisorCard = memo(function AdvisorCard({
         )}
       </div>
       <div className="advisor-body">
-        <Markdown text={item.text} />
+        <Markdown text={item.text} projectPath={projectPath} />
       </div>
     </div>
   );
