@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.5
+
+- **Traffic lights sit inside the bar.** The macOS window controls are
+  padded down and in, left-aligned with the search box and centred on the
+  logo row — like every other Mac app.
+- **Panel toggles are real icons.** The sidebar/inspector toggles swap text
+  glyphs for stroke icons, so they sit level with the wordmark.
+- **Links are blue again** — a dedicated link colour, separate from the
+  forest-green accent chrome.
+- The redundant folder button left the file preview header; "Open in
+  folder" lives in the Open dropdown.
+
 ## 0.4.4
 
 - **Agents see your real PATH.** Finder-launched apps get macOS's minimal

@@ -22,7 +22,7 @@ import { Composer } from "./components/Composer";
 import { Home } from "./components/Home";
 import { Inbox } from "./components/Inbox";
 import { Inspector } from "./components/Inspector";
-import { FolderIcon } from "./components/icons";
+import { FolderIcon, PanelLeftIcon, PanelRightIcon } from "./components/icons";
 import { NewSession } from "./components/NewSession";
 import { Onboarding } from "./components/Onboarding";
 import { PendingBar } from "./components/PendingBar";
@@ -537,7 +537,7 @@ export function App(): JSX.Element {
       title="Toggle sidebar (⌘1)"
       onClick={() => s.toggleSidebar()}
     >
-      ◧
+      <PanelLeftIcon />
     </button>
   );
   const logo = (
@@ -552,7 +552,7 @@ export function App(): JSX.Element {
       title="Toggle inspector (⌘2)"
       onClick={() => s.toggleInspector()}
     >
-      ◨
+      <PanelRightIcon />
     </button>
   );
 

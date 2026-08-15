@@ -23,6 +23,7 @@
 
   --accent: #1e4d36;
   --accent-soft: rgba(30, 77, 54, 0.12);
+  --link: #2563eb;
   --teal: #17897c;
 
   --ok: #1d7a4c;
@@ -61,6 +62,7 @@
 
     --accent: #31815a;
     --accent-soft: rgba(49, 129, 90, 0.16);
+    --link: #60a5fa;
     --teal: #59d4c4;
 
     --ok: #4ac07d;
@@ -86,6 +88,7 @@
   --text-faint: #6b7280;
   --accent: #31815a;
   --accent-soft: rgba(49, 129, 90, 0.16);
+  --link: #60a5fa;
   --teal: #59d4c4;
   --ok: #4ac07d;
   --warn: #d9a441;
@@ -1141,7 +1144,7 @@ button {
   color: var(--text-muted);
 }
 .md a {
-  color: var(--accent);
+  color: var(--link);
   text-decoration: none;
 }
 .md a:hover {
@@ -1527,14 +1530,14 @@ button {
 }
 
 /* ---- file links + attachments ---- */
-/* Links read as links at rest — accent-coloured before any hover. */
+/* Links read as links at rest — link-blue before any hover. */
 .file-ref {
   cursor: pointer;
   padding: 0;
   text-align: left;
-  color: var(--accent);
+  color: var(--link);
   text-decoration: underline;
-  text-decoration-color: var(--accent);
+  text-decoration-color: var(--link);
   text-underline-offset: 2px;
 }
 .file-ref:hover {
@@ -1552,7 +1555,7 @@ button {
 .file-ref-link {
   font-family: var(--mono);
   font-size: 0.92em;
-  color: var(--accent);
+  color: var(--link);
   text-decoration: none;
 }
 .file-ref-link:hover {

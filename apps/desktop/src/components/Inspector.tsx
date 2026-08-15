@@ -23,7 +23,6 @@ import {
   type SessionView,
   useStore,
 } from "../store";
-import { FolderIcon } from "./icons";
 import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
 import { Diff } from "./Transcript";
@@ -685,13 +684,6 @@ function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
             {viewSource ? "View preview" : "View source"}
           </button>
         )}
-        <button
-          className="icon-btn"
-          title="Open file location"
-          onClick={() => openWith({ reveal: true })}
-        >
-          <FolderIcon />
-        </button>
         <div className="fp-open" onClick={(e) => e.stopPropagation()}>
           <button
             className="btn fp-open-main"

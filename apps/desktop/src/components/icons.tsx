@@ -36,6 +36,24 @@ export function FolderIcon({ size = 13 }: { size?: number }): JSX.Element {
   );
 }
 
+export function PanelLeftIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg {...base(size)} aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+    </svg>
+  );
+}
+
+export function PanelRightIcon({ size = 16 }: { size?: number }): JSX.Element {
+  return (
+    <svg {...base(size)} aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
+    </svg>
+  );
+}
+
 export function InboxIcon({ size = 14 }: { size?: number }): JSX.Element {
   return (
     <svg {...base(size)} aria-hidden="true">
