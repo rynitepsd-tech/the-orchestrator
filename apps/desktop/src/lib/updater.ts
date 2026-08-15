@@ -44,13 +44,19 @@ export async function installUpdate(): Promise<void> {
   if (!pending || st.updateBusy) return;
   st.setUpdateBusy(true);
   try {
-    await pending.downloadAndInstall();
+    // The chip may be hours old and more releases may have shipped since.
+    // Re-check at click time so one install always lands on the LATEST
+    // version — never a stale middle release that asks for a second update.
+    const update = (await check().catch(() => null)) ?? pending;
+    pending = update;
+    st.setUpdateAvailable({ version: update.version, notes: update.body ?? undefined });
+    await update.downloadAndInstall();
     st.setUpdateBusy(false);
     const running = Object.values(st.sessions).filter((v) => isActive(v.summary.runState)).length;
     const restart = await ask(
       running > 0
-        ? `Update ${pending.version} is installed. Restarting now will stop ${running} running session${running === 1 ? "" : "s"}. Restart?`
-        : `Update ${pending.version} is installed. Restart now?`,
+        ? `Update ${update.version} is installed. Restarting now will stop ${running} running session${running === 1 ? "" : "s"}. Restart?`
+        : `Update ${update.version} is installed. Restart now?`,
       { title: "The Orchestrator", kind: "info" },
     );
     if (restart) await relaunch();

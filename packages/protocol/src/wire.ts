@@ -129,6 +129,8 @@ export interface RequestPayloads {
   "project.readFile": { path: string; file: string };
   /** Open a file/folder with the OS default app, or reveal it in Finder. */
   "path.open": { path: string; reveal?: boolean };
+  /** Commit the working tree, push, and open a PR (branching off default). */
+  "project.ship": { path: string; title: string; body?: string };
   /**
    * Persist pasted/dropped bytes (no OS path exists in the webview) to a temp
    * file the agent can read. Returns the absolute path.
@@ -149,6 +151,13 @@ export interface RequestPayloads {
   };
   "session.abort": { sessionId: SessionId };
   "session.compact": { sessionId: SessionId };
+  /** User messages that can serve as rewind targets, in conversation order. */
+  "session.rewindPoints": { sessionId: SessionId };
+  /**
+   * Rewind the CONVERSATION to before a user message (OMP tree navigation).
+   * Files on disk are untouched; the message text returns for editing.
+   */
+  "session.rewind": { sessionId: SessionId; entryId: string };
   /**
    * Fork a session. Either a live session (`sessionId`) or a persisted session
    * file (`sourcePath`) can be forked; the fork becomes a new live session.
@@ -236,6 +245,16 @@ export interface ResponsePayloads {
   "project.readFile": { file: string; content: string; binary: boolean; truncated: boolean };
   "path.open": { opened: boolean };
   "attachments.store": { path: string };
+  "session.rewindPoints": { points: Array<{ entryId: string; text: string }> };
+  "session.rewind": { cancelled: boolean; editorText?: string };
+  "project.ship": {
+    branch: string;
+    createdBranch: boolean;
+    committed: boolean;
+    pushed: boolean;
+    prUrl?: string;
+    note?: string;
+  };
 
   "sessions.discover": { sessions: DiscoveredSession[] };
   "sessions.create": { session: SessionSummary };

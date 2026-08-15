@@ -117,6 +117,16 @@ export function Composer({
     taRef.current?.focus();
   }, [sessionId]);
 
+  // A rewound message comes back here for editing.
+  const prefill = useStore((s) => s.composerPrefill);
+  useEffect(() => {
+    if (prefill && prefill.sessionId === sessionId) {
+      setText(prefill.text);
+      useStore.getState().setComposerPrefill(undefined);
+      taRef.current?.focus();
+    }
+  }, [prefill, sessionId]);
+
   const pickFiles = async () => {
     const picked = await openFileDialog({ multiple: true, title: "Attach files" }).catch(
       () => null,

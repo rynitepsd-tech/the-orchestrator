@@ -68,6 +68,20 @@ export interface UserMessageAdded extends EventBase {
   attachments?: Array<{ kind: "image" | "file"; name: string; path?: string }>;
 }
 
+// --- todo list -------------------------------------------------------------
+
+export interface TodoTaskItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+  blocker?: string;
+}
+
+/** Full snapshot of the agent's todo list after every `todo` tool call. */
+export interface TodoUpdated extends EventBase {
+  type: "todo.update";
+  phases: Array<{ name: string; tasks: TodoTaskItem[] }>;
+}
+
 // --- tools -----------------------------------------------------------------
 
 export interface ToolStarted extends EventBase {
@@ -310,7 +324,8 @@ export type ProductEvent =
   | SessionFailed
   | SessionFinished
   | SessionPersisted
-  | ExtensionUIRequested;
+  | ExtensionUIRequested
+  | TodoUpdated;
 
 export type ProductEventType = ProductEvent["type"];
 

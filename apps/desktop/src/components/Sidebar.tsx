@@ -393,14 +393,29 @@ export function Sidebar({
   );
 }
 
-function stateDotClass(v: SessionView): string {
-  const s = v.summary.runState;
-  if (v.pendingInteractions > 0 || s === "waiting") return "dot needs-input";
-  if (s === "error") return "dot error";
-  if (s === "interrupted") return "dot interrupted";
-  if (isActive(s)) return "dot active";
-  if (s === "completed") return "dot done";
-  return "dot idle";
+/**
+ * Session state at a glance: yellow blink = answer me (stops blinking once
+ * you're looking at it), quiet three-dot wave = working, solid blue = finished
+ * since you last looked (select clears it), red = failed, gray = idle.
+ */
+function StatusIndicator({ view, active }: { view: SessionView; active: boolean }): JSX.Element {
+  const s = view.summary;
+  if (view.pendingInteractions > 0 || s.runState === "waiting") {
+    return <span className={`dot attention${active ? "" : " blink"}`} aria-hidden />;
+  }
+  if (isActive(s.runState)) {
+    return (
+      <span className="working-dots" aria-hidden>
+        <span />
+        <span />
+        <span />
+      </span>
+    );
+  }
+  if (s.runState === "error") return <span className="dot error" aria-hidden />;
+  if (s.runState === "interrupted") return <span className="dot interrupted" aria-hidden />;
+  if (s.runState === "completed" && s.unread) return <span className="dot finished" aria-hidden />;
+  return <span className="dot idle" aria-hidden />;
 }
 
 function SessionRow({
@@ -425,6 +440,13 @@ function SessionRow({
   const advisorsOn = view.advisors.filter((a) => a.enabled).length;
   const needsInput = view.pendingInteractions > 0 || s.runState === "waiting";
   const status = needsInput ? "Needs input" : runStateLabel(s.runState, s.activity);
+  // Plan progress, visible without opening the session.
+  const todoTasks = view.todoPhases?.flatMap((p) => p.tasks) ?? [];
+  const todoDone = todoTasks.filter(
+    (t) => t.status === "completed" || t.status === "abandoned",
+  ).length;
+  const todoFraction =
+    todoTasks.length > 0 && todoDone < todoTasks.length ? `${todoDone}/${todoTasks.length}` : null;
 
   return (
     <button
@@ -447,16 +469,18 @@ function SessionRow({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <span className={stateDotClass(view)} aria-hidden />
+      <StatusIndicator view={view} active={active} />
       <span className="session-col">
         <span className="session-title">{s.title}</span>
         <span className="session-sub hint">
           {modelBasename(s.model)}
           {advisorsOn > 0 && ` · ${advisorsOn} advisor${advisorsOn > 1 ? "s" : ""}`}
         </span>
-        <span className={`session-status hint${needsInput ? " attention" : ""}`}>{status}</span>
+        <span className={`session-status hint${needsInput ? " attention" : ""}`}>
+          {status}
+          {todoFraction && <span className="todo-fraction"> · {todoFraction} ✓</span>}
+        </span>
       </span>
-      {s.unread && <span className="unread-dot" title="Unread" />}
     </button>
   );
 }

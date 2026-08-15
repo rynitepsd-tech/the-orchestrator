@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Composer } from "./components/Composer";
 import { Home } from "./components/Home";
+import { Inbox } from "./components/Inbox";
 import { Inspector } from "./components/Inspector";
 import { NewSession } from "./components/NewSession";
 import { Onboarding } from "./components/Onboarding";
@@ -28,6 +29,7 @@ import { PromptDialog } from "./components/PromptDialog";
 import { QuitDialog } from "./components/QuitDialog";
 import { Settings } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
+import { TodoStrip } from "./components/TodoStrip";
 import { Transcript } from "./components/Transcript";
 import { UsageCenter } from "./components/UsageCenter";
 import { engine } from "./engine-client";
@@ -482,7 +484,19 @@ export function App(): JSX.Element {
   };
 
   const enabledAdvisors = view?.advisors.filter((a) => a.enabled) ?? [];
-  const pendingTotal = Object.values(s.sessions).reduce((n, v) => n + v.pendingInteractions, 0);
+  // Inbox badge: blocked sessions + unread finishes + failures.
+  const inboxCount = Object.values(s.sessions).reduce(
+    (n, v) =>
+      n +
+      (v.pendingInteractions > 0 || v.summary.runState === "waiting"
+        ? 1
+        : v.summary.unread && v.summary.runState === "completed"
+          ? 1
+          : v.summary.runState === "error" || v.summary.runState === "interrupted"
+            ? 1
+            : 0),
+    0,
+  );
 
   const showInspector = s.inspectorOpen && s.mainView !== "usage";
 
@@ -528,19 +542,13 @@ export function App(): JSX.Element {
             {s.updateBusy ? "Updating…" : `Update to ${s.updateAvailable.version}`}
           </button>
         )}
-        {pendingTotal > 0 && (
-          <button
-            className="chip attention chip-btn"
-            title="Sessions waiting for your input"
-            onClick={() => {
-              const st = useStore.getState();
-              const waiting = Object.values(st.sessions).find((v) => v.pendingInteractions > 0);
-              if (waiting) st.select(waiting.summary.sessionId);
-            }}
-          >
-            {pendingTotal} needs input
-          </button>
-        )}
+        <button
+          className={`icon-btn inbox-btn${s.mainView === "inbox" ? " on" : ""}`}
+          title="Review inbox — everything waiting on you"
+          onClick={() => s.setMainView(s.mainView === "inbox" ? "sessions" : "inbox")}
+        >
+          ▤{inboxCount > 0 && <span className="inbox-badge">{inboxCount}</span>}
+        </button>
         <span className="spacer" data-tauri-drag-region />
         {view?.context && (
           <span
@@ -590,6 +598,8 @@ export function App(): JSX.Element {
       <main className="main">
         {s.mainView === "usage" ? (
           <UsageCenter />
+        ) : s.mainView === "inbox" ? (
+          <Inbox />
         ) : (
           <>
             {s.engineStage === "offline" && (
@@ -686,6 +696,8 @@ export function App(): JSX.Element {
                     </span>
                   )}
                 </div>
+
+                {view.todoPhases && <TodoStrip phases={view.todoPhases} />}
 
                 <Transcript items={view.transcript} sessionId={view.summary.sessionId} />
 

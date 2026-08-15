@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Session dots that mean something.** Yellow blinking dot = the session
+  needs your input (stops blinking once you're looking at it), a quiet
+  three-dot wave = working, solid blue = finished since you last looked
+  (clears on click), red = failed.
+- **Commit, Push & PR in one click** from the Changes panel: branches off the
+  default branch when needed, commits everything, pushes, and opens a PR via
+  gh — one confirm, then a link to the PR. Degrades gracefully without gh.
+- **Review inbox.** A titlebar inbox (with badge) flattens everything waiting
+  on you across sessions: approvals answerable right there, finished sessions
+  to open or mark reviewed, and failures.
+- **Rewind.** Hover a message of yours and click ↺ to rewind the conversation
+  to before it (OMP tree navigation, same session file). The message text
+  returns to the composer for editing. Conversation-only — files on disk are
+  not changed, and rewind is offered only while the session is at rest.
+- **Live plan strip.** When the agent keeps a todo list, a pinned strip shows
+  "3/7" and the task in flight, expandable to the full phased checklist; the
+  sidebar row shows the fraction too. Restored on resume.
+- **Updates land on the latest version.** Installing an update now re-checks
+  the feed at click time, so stacked releases never require two manual
+  updates.
+
 - **Near-black theme.** The session view and sidebars dropped to T3-style
   near-black; cards and bubbles pop harder against both.
 - **Drag reorder actually works now.** Tauri's native drag-drop layer was

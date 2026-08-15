@@ -83,6 +83,14 @@ export function replayEventsFromEntries(sessionId: string, entries: any[]): Prod
           typeof msg.details?.wallTimeMs === "number" ? msg.details.wallTimeMs : undefined,
         detail: { kind: "other" },
       });
+      // Mirror the live mapper: replayed todo results restore the checklist.
+      if (
+        (toolNames.get(callId) === "todo" || msg.toolName === "todo") &&
+        !isError &&
+        Array.isArray(msg.details?.phases)
+      ) {
+        out.push({ type: "todo.update", sessionId, phases: msg.details.phases });
+      }
       toolNames.delete(callId);
       continue;
     }

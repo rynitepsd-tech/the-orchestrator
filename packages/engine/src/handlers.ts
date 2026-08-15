@@ -108,6 +108,14 @@ export async function handleRequest(
       return readProjectFile(String(p.path), String(p.file));
     }
 
+    case "project.ship": {
+      const { shipChanges } = await import("@orchestrator/omp-adapter");
+      return shipChanges(String(p.path), {
+        title: String(p.title),
+        body: p.body ? String(p.body) : undefined,
+      });
+    }
+
     case "attachments.store": {
       const { mkdirSync, writeFileSync } = await import("node:fs");
       const { tmpdir } = await import("node:os");
@@ -165,6 +173,12 @@ export async function handleRequest(
 
     case "session.compact":
       return m.route(String(p.sessionId), "session.compact", p) as never;
+
+    case "session.rewindPoints":
+      return m.route(String(p.sessionId), "session.rewindPoints", p) as never;
+
+    case "session.rewind":
+      return m.route(String(p.sessionId), "session.rewind", p) as never;
 
     case "session.fork": {
       // Fork a live session (by id) or a persisted file (by path).

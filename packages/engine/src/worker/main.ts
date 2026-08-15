@@ -940,6 +940,41 @@ async function handle(req: any): Promise<unknown> {
       emitContext();
       return { ok: true };
 
+    case "session.rewindPoints": {
+      const points = (s.getUserMessagesForBranching?.() ?? []) as Array<{
+        entryId: string;
+        text: string;
+      }>;
+      return {
+        points: points.map((p) => ({ entryId: String(p.entryId), text: String(p.text ?? "") })),
+      };
+    }
+
+    case "session.rewind": {
+      if (s.isStreaming) throw new Error("Stop the run before rewinding.");
+      // navigateTree stays in the SAME session file and hands the target
+      // message's text back for editing. Conversation-only: files on disk
+      // keep whatever state the agent left them in.
+      const res = await s.navigateTree(String(req.payload.entryId), { summarize: false });
+      if (res?.cancelled) return { cancelled: true };
+      // The replay buffer describes a conversation that no longer exists —
+      // rebuild it from the now-current branch so the host can rehydrate.
+      history.length = 0;
+      historyBase = 0;
+      try {
+        const entries = (sessionManager as any).getBranch?.() ?? [];
+        for (const ev of replayEventsFromEntries(boot.sessionId, entries)) history.push(ev);
+      } catch (e) {
+        err(`post-rewind replay failed: ${String(e)}`);
+      }
+      const ctx = contextUsageOf(session);
+      if (ctx) history.push({ type: "context.update", sessionId: boot.sessionId, context: ctx });
+      return {
+        cancelled: false,
+        editorText: String(res?.editorText ?? res?.selectedText ?? "") || undefined,
+      };
+    }
+
     case "session.setFastMode": {
       // setFastMode returns false when the model has no service-tier family.
       const ok = Boolean(s.setFastMode?.(Boolean(req.payload.enabled)));

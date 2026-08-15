@@ -8,6 +8,8 @@
  */
 
 import type { GitDiff, ProviderQuota } from "@orchestrator/protocol";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JSX } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { engine } from "../engine-client";
@@ -184,6 +186,11 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
   const [selected, setSelected] = useState<string | null>(null);
   const [diff, setDiff] = useState<GitDiff | null>(null);
   const [loading, setLoading] = useState(false);
+  const [shipping, setShipping] = useState(false);
+  const [shipped, setShipped] = useState<{ prUrl?: string; branch: string; note?: string } | null>(
+    null,
+  );
+  const [shipError, setShipError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -224,6 +231,58 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
     (v) => v.summary.projectId === view.summary.projectId && isActive(v.summary.runState),
   ).length;
 
+  // One confirm, then the whole exit ramp: branch if needed, commit, push, PR.
+  const ship = async () => {
+    if (!changes || shipping) return;
+    const onDefault = changes.branch === "main" || changes.branch === "master";
+    const yes = await ask(
+      `Commit ${fmtCount(changes.files.length)} changed file${changes.files.length === 1 ? "" : "s"}${
+        onDefault
+          ? `, on a new branch (you're on ${changes.branch})`
+          : ` on ${changes.branch ?? "the current branch"}`
+      }, push, and open a pull request?`,
+      { title: "Commit, Push & PR", kind: "info" },
+    );
+    if (!yes) return;
+    setShipping(true);
+    setShipError(null);
+    setShipped(null);
+    try {
+      const res = await engine.request(
+        "project.ship",
+        { path: view.summary.projectPath, title: view.summary.title },
+        180_000,
+      );
+      setShipped({ prUrl: res.prUrl, branch: res.branch, note: res.note });
+      await refresh();
+    } catch (e) {
+      setShipError(String((e as { message?: string })?.message ?? e));
+    } finally {
+      setShipping(false);
+    }
+  };
+
+  const shipStatus = (
+    <>
+      {shipError && <div className="banner">{shipError}</div>}
+      {shipped && (
+        <div className="ship-result">
+          ✓ Shipped on <span className="mono">{shipped.branch}</span>
+          {shipped.prUrl && (
+            <button
+              type="button"
+              className="btn btn-ghost ship-pr-link"
+              onClick={() => void openUrl(shipped.prUrl!)}
+            >
+              Open PR ↗
+            </button>
+          )}
+          {shipped.note && <div className="hint">{shipped.note}</div>}
+        </div>
+      )}
+    </>
+  );
+
   if (!changes || changes.files.length === 0) {
     return (
       <div>
@@ -236,6 +295,7 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
             Refresh
           </button>
         </div>
+        {shipStatus}
         <div className="empty">
           {changes ? "The working tree is clean." : "Not a git repository, or git is unavailable."}
         </div>
@@ -254,7 +314,16 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
         <button className="btn btn-ghost" onClick={() => void refresh()}>
           Refresh
         </button>
+        <button
+          className="btn btn-primary"
+          disabled={shipping}
+          onClick={() => void ship()}
+          title="Commit everything, push (branching off the default branch if needed), and open a PR"
+        >
+          {shipping ? "Shipping…" : "Commit, Push & PR"}
+        </button>
       </div>
+      {shipStatus}
       {activeHere > 1 && (
         <div className="hint" style={{ margin: "6px 0" }}>
           {activeHere} active sessions share this working tree — changes are not attributable to one

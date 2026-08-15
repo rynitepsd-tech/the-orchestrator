@@ -23,6 +23,7 @@ import type {
   ProviderQuota,
   RunState,
   SessionSummary,
+  TodoTaskItem,
   ToolDetail,
   UsageBreakdown,
   UsageRecord,
@@ -110,13 +111,15 @@ export interface SessionView {
   advisorStates: Record<string, AdvisorState>;
   /** Pending interactions (approvals + extension UI) awaiting the user. */
   pendingInteractions: number;
+  /** The agent's live todo list (full snapshot from the todo tool). */
+  todoPhases?: Array<{ name: string; tasks: TodoTaskItem[] }>;
   error?: EngineErrorPayload;
   /** Set when the worker died; the session can be resumed from persistence. */
   interrupted?: boolean;
 }
 
 export type InspectorTab = "changes" | "files" | "usage";
-export type MainView = "sessions" | "usage" | "settings";
+export type MainView = "sessions" | "usage" | "settings" | "inbox";
 
 export interface GlobalUsageState {
   records: UsageRecord[];
@@ -167,6 +170,8 @@ interface AppState {
   quitConfirm?: { running: number };
   /** Session id being renamed via the rename dialog (WKWebView has no prompt()). */
   renameTarget?: string;
+  /** Text handed to the composer (e.g. a rewound message returned for editing). */
+  composerPrefill?: { sessionId: string; text: string };
 
   // updater
   updateAvailable?: { version: string; notes?: string };
@@ -187,6 +192,8 @@ interface AppState {
   /** Drag reorder: move one session next to another in the sidebar. */
   moveSession(dragId: string, targetId: string): void;
   select(id: string): void;
+  /** Clear a session's unread flag without navigating to it. */
+  markRead(id: string): void;
   apply(e: ProductEvent): void;
   hydrateTranscript(sessionId: string, events: ProductEvent[]): void;
   updatePrefs(patch: Partial<Prefs>): void;
@@ -200,6 +207,7 @@ interface AppState {
   setNewSession(open: boolean): void;
   setQuitConfirm(q?: { running: number }): void;
   setRenameTarget(id?: string): void;
+  setComposerPrefill(p?: { sessionId: string; text: string }): void;
   setUpdateAvailable(u?: { version: string; notes?: string }): void;
   setUpdateBusy(busy: boolean): void;
   markAllInterrupted(reason: string): void;
@@ -336,6 +344,15 @@ export const useStore = create<AppState>((set, get) => ({
       };
     }),
 
+  markRead: (id) =>
+    set((s) => {
+      const v = s.sessions[id];
+      if (!v?.summary.unread) return {};
+      return {
+        sessions: { ...s.sessions, [id]: { ...v, summary: { ...v.summary, unread: false } } },
+      };
+    }),
+
   setMainView: (mainView) => set({ mainView }),
   setInspectorTab: (inspectorTab) => set({ inspectorTab, inspectorOpen: true }),
   toggleInspector: () => set((s) => ({ inspectorOpen: !s.inspectorOpen })),
@@ -345,6 +362,7 @@ export const useStore = create<AppState>((set, get) => ({
   setNewSession: (newSessionOpen) => set({ newSessionOpen }),
   setQuitConfirm: (quitConfirm) => set({ quitConfirm }),
   setRenameTarget: (renameTarget) => set({ renameTarget }),
+  setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
   setUpdateAvailable: (updateAvailable) => set({ updateAvailable }),
   setUpdateBusy: (updateBusy) => set({ updateBusy }),
 
@@ -757,6 +775,9 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
             };
       return { ...v, transcript: copy };
     }
+
+    case "todo.update":
+      return { ...v, todoPhases: e.phases };
 
     case "usage.update":
       return { ...v, usage: e.breakdown };

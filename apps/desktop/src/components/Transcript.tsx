@@ -9,11 +9,60 @@
  */
 
 import type { ToolDetail } from "@orchestrator/protocol";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { fmtCount, fmtDuration, fmtTokens, type TranscriptItem, useStore } from "../store";
+import {
+  fmtCount,
+  fmtDuration,
+  fmtTokens,
+  isActive,
+  type TranscriptItem,
+  useStore,
+} from "../store";
 import { Markdown } from "./Markdown";
+
+/**
+ * Rewind the conversation to before a user message (OMP tree navigation).
+ * The transcript's user bubbles and OMP's branchable user entries are the
+ * same list in the same order; the text check catches any drift and refuses
+ * rather than rewinding to the wrong place. Conversation-only — files on
+ * disk stay as the agent left them.
+ */
+async function rewindTo(
+  sessionId: string,
+  items: TranscriptItem[],
+  item: Extract<TranscriptItem, { kind: "user" }>,
+): Promise<void> {
+  const yes = await ask(
+    "Rewind the conversation to before this message? The message text returns to the composer for editing. Files on disk are not changed.",
+    { title: "Rewind", kind: "warning" },
+  );
+  if (!yes) return;
+  const st = useStore.getState();
+  try {
+    const { points } = await engine.request("session.rewindPoints", { sessionId });
+    const userItems = items.filter((i) => i.kind === "user");
+    const idx = userItems.findIndex((i) => i.id === item.id);
+    const norm = (t: string) => t.trim().slice(0, 120);
+    let point = idx >= 0 && idx < points.length ? points[idx] : undefined;
+    if (!point || norm(point.text) !== norm(item.text)) {
+      const matches = points.filter((p) => norm(p.text) === norm(item.text));
+      point = matches.length === 1 ? matches[0] : undefined;
+    }
+    if (!point) {
+      throw new Error("Couldn't match this message to a rewind point — try an adjacent one.");
+    }
+    const res = await engine.request("session.rewind", { sessionId, entryId: point.entryId });
+    if (res.cancelled) return;
+    const t = await engine.request("session.transcript", { sessionId });
+    st.hydrateTranscript(sessionId, t.events);
+    st.setComposerPrefill({ sessionId, text: res.editorText ?? item.text });
+  } catch (e) {
+    st.setEngineError(e as never);
+  }
+}
 
 const WINDOW = 300;
 
@@ -25,6 +74,9 @@ export function Transcript({
   sessionId: string;
 }): JSX.Element {
   const projectPath = useStore((s) => s.sessions[sessionId]?.summary.projectPath);
+  const runState = useStore((s) => s.sessions[sessionId]?.summary.runState);
+  // Rewind is only offered at rest — mid-run history surgery is a footgun.
+  const canRewind = runState !== undefined && !isActive(runState);
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const [shown, setShown] = useState(WINDOW);
@@ -72,7 +124,17 @@ export function Transcript({
           )}
           {toNodes(visible).map((n) =>
             n.kind === "plain" ? (
-              <Item key={n.item.id} item={n.item} sessionId={sessionId} projectPath={projectPath} />
+              <Item
+                key={n.item.id}
+                item={n.item}
+                sessionId={sessionId}
+                projectPath={projectPath}
+                onRewind={
+                  canRewind && n.item.kind === "user"
+                    ? () => void rewindTo(sessionId, items, n.item as never)
+                    : undefined
+                }
+              />
             ) : (
               <WorkGroup
                 key={n.key}
@@ -270,15 +332,27 @@ const Item = memo(function Item({
   item,
   sessionId,
   projectPath,
+  onRewind,
 }: {
   item: TranscriptItem;
   sessionId: string;
   projectPath?: string;
+  onRewind?: () => void;
 }): JSX.Element | null {
   switch (item.kind) {
     case "user":
       return (
         <div className="msg-user">
+          {onRewind && (
+            <button
+              type="button"
+              className="rewind-btn"
+              title="Rewind the conversation to before this message (files are not changed)"
+              onClick={onRewind}
+            >
+              ↺
+            </button>
+          )}
           {item.attachments && item.attachments.length > 0 && (
             <div className="attachment-row">
               {item.attachments.map((a, i) => (

@@ -161,7 +161,7 @@ export class EventMapper {
         const raw = contentText(ev.result);
         const { output, truncated } = sanitizeOutput(raw);
         const isError = ev.isError === true;
-        return [
+        const events: ProductEvent[] = [
           {
             type: "tool.end",
             sessionId,
@@ -179,6 +179,13 @@ export class EventMapper {
             detail: toolDetail(String(ev.toolName ?? ""), ev, rememberedArgs),
           },
         ];
+        // The todo tool's result carries the full post-op list; surface it as
+        // its own event so the UI can pin live progress.
+        const phases = ev.result?.details?.phases;
+        if (String(ev.toolName) === "todo" && !isError && Array.isArray(phases)) {
+          events.push({ type: "todo.update", sessionId, phases });
+        }
+        return events;
       }
 
       case "turn_end": {
