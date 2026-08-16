@@ -184,7 +184,7 @@ type RenderNode =
 
 /** Items that must never disappear into a collapsed work group. */
 function alwaysVisible(i: TranscriptItem): boolean {
-  if (i.kind === "user" || i.kind === "system" || i.kind === "advisor") return true;
+  if (i.kind === "user" || i.kind === "system") return true;
   if ((i.kind === "approval" || i.kind === "interaction") && i.state === "pending") return true;
   return false;
 }
@@ -222,15 +222,17 @@ function toNodes(items: TranscriptItem[]): RenderNode[] {
       bucket.length = 0;
     };
     turn.forEach((it, i) => {
-      if (i === lastAnswer || alwaysVisible(it)) {
-        // The answer itself, or a kind that never collapses.
+      // Work before the latest answer is history; work after it (or with no
+      // answer yet) is still in flight.
+      const live = lastAnswer === -1 || i > lastAnswer;
+      // Advisor notes stay visible while the agent is still acting on them;
+      // once it has answered PAST one, the note is part of how the answer was
+      // made and folds into the work line with everything else.
+      if (i === lastAnswer || alwaysVisible(it) || (it.kind === "advisor" && live)) {
         flushBucket();
         nodes.push({ kind: "plain", item: it });
         return;
       }
-      // Work before the latest answer is history; work after it (or with no
-      // answer yet) is still in flight.
-      const live = lastAnswer === -1 || i > lastAnswer;
       if (bucket.length && bucketLive !== live) flushBucket();
       bucketLive = live;
       bucket.push(it);
@@ -304,6 +306,10 @@ function WorkGroup({
         <span>{label}</span>
         <span className="hint">
           {fmtCount(items.length)} step{items.length === 1 ? "" : "s"}
+          {(() => {
+            const notes = items.filter((i) => i.kind === "advisor").length;
+            return notes > 0 ? ` · ${notes} advisor note${notes === 1 ? "" : "s"}` : "";
+          })()}
         </span>
       </button>
       {preview && (
@@ -408,8 +414,13 @@ const Item = memo(function Item({
     case "interaction":
       return <InteractionCard item={item} sessionId={sessionId} />;
     case "system":
+      // End-of-turn markers get a full-width divider so "done" is unmissable.
       return item.tone === "info" ? (
-        <div className="hint center">{item.text}</div>
+        item.text.startsWith("✓") ? (
+          <div className="turn-done">{item.text}</div>
+        ) : (
+          <div className="hint center">{item.text}</div>
+        )
       ) : (
         <div className={`banner${item.tone === "warn" ? " warn" : ""}`}>{item.text}</div>
       );

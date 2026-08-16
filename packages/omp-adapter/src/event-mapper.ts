@@ -203,6 +203,25 @@ export class EventMapper {
         return [];
       }
 
+      case "notice": {
+        // Upstream routes real failure causes here (e.g. `Advisor "X"
+        // unavailable for provider/model: 401 …`). Dropping them leaves the UI
+        // saying "stopped after repeated failures" with no why.
+        const raw = String((ev as any).level ?? "");
+        if (raw !== "warning" && raw !== "error") return [];
+        const message = String((ev as any).message ?? "").trim();
+        if (!message) return [];
+        return [
+          {
+            type: "session.notice",
+            sessionId,
+            level: raw === "error" ? "error" : "warning",
+            message,
+            source: (ev as any).source ? String((ev as any).source) : undefined,
+          },
+        ];
+      }
+
       default:
         return [];
     }

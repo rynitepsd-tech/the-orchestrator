@@ -266,6 +266,20 @@ export interface SessionFailed extends EventBase {
 export interface SessionFinished extends EventBase {
   type: "session.finished";
   runState: Extract<RunState, "completed" | "interrupted" | "error">;
+  /** Wall-clock length of the turn, when the runtime measured it. */
+  durationMs?: number;
+}
+
+/**
+ * An OMP runtime notice worth showing (advisor model failures, degraded
+ * capabilities). Carries the REAL underlying error text — the advisor state
+ * machine alone only knows "error".
+ */
+export interface SessionNotice extends EventBase {
+  type: "session.notice";
+  level: "warning" | "error";
+  message: string;
+  source?: string;
 }
 
 /** Emitted when the engine persists the session, so the UI can link to it. */
@@ -323,6 +337,7 @@ export type ProductEvent =
   | SessionCompacted
   | SessionFailed
   | SessionFinished
+  | SessionNotice
   | SessionPersisted
   | ExtensionUIRequested
   | TodoUpdated;

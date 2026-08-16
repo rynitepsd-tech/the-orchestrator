@@ -24,6 +24,7 @@
   --accent: #1e4d36;
   --accent-soft: rgba(30, 77, 54, 0.12);
   --link: #2563eb;
+  --scroll-thumb: rgba(0, 0, 0, 0.26);
   --teal: #17897c;
 
   --ok: #1d7a4c;
@@ -63,6 +64,7 @@
     --accent: #31815a;
     --accent-soft: rgba(49, 129, 90, 0.16);
     --link: #60a5fa;
+    --scroll-thumb: rgba(255, 255, 255, 0.16);
     --teal: #59d4c4;
 
     --ok: #4ac07d;
@@ -89,6 +91,7 @@
   --accent: #31815a;
   --accent-soft: rgba(49, 129, 90, 0.16);
   --link: #60a5fa;
+  --scroll-thumb: rgba(255, 255, 255, 0.16);
   --teal: #59d4c4;
   --ok: #4ac07d;
   --warn: #d9a441;
@@ -117,6 +120,36 @@ body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+/* Scrollbars: invisible at rest, a faint pill while the pane is hovered, and
+ * the SAME faint pill under the cursor — never the native bright hover. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+:hover::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: var(--scroll-thumb);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 
 button {
@@ -203,12 +236,14 @@ button {
   overflow: hidden;
 }
 
-/* Cramped middle: drop effort, the "Context" word, and the usage chip. */
+/* Cramped middle: drop effort, the "Context" word, the usage chip, and the
+ * live status note — the title keeps its room. */
 @container (max-width: 620px) {
   .chip-effort,
   .ctx-label,
   .chip-usage,
-  .chip-advisors {
+  .chip-advisors,
+  .crumb-status {
     display: none;
   }
 }
@@ -247,11 +282,18 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* The title must survive a tight bar; the status yields first. */
+  min-width: 70px;
+  flex: 0 1 auto;
 }
 .crumb-status {
   color: var(--text-faint);
   font-size: 13px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  flex: 0 4 auto;
 }
 
 .titlebar-sub {
@@ -453,10 +495,10 @@ button {
 
 /* Finished since you last looked: solid blue, cleared on click. */
 .dot.finished {
-  background: var(--accent);
+  background: var(--link);
 }
 
-/* Working: a quiet three-dot wave, deliberately low key. */
+/* Working: a small three-dot wave in the accent — visibly alive, not gray. */
 .working-dots {
   display: inline-flex;
   gap: 3px;
@@ -464,13 +506,12 @@ button {
   margin-top: 8px;
   justify-self: center;
   flex: none;
-  opacity: 0.5;
 }
 .working-dots span {
   width: 3.5px;
   height: 3.5px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: var(--accent);
   animation: working-dot 1.3s ease-in-out infinite;
 }
 .working-dots span:nth-child(2) {
@@ -1168,6 +1209,10 @@ button {
   border: 1px solid var(--border);
   padding: 3px 8px;
   text-align: left;
+  /* .md's word-break: break-word lets auto-layout crush a column to single
+   * characters. Words stay whole here; wide tables scroll in the wrapper. */
+  word-break: normal;
+  overflow-wrap: normal;
 }
 .md th {
   background: var(--bg-sunken);
@@ -1224,6 +1269,23 @@ button {
 .file-preview {
   max-height: 320px;
   overflow: auto;
+}
+
+/* End-of-turn divider: a full-width rule either side of the ✓ line. */
+.turn-done {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.turn-done::before,
+.turn-done::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
 }
 
 /* ---- condensed work groups (Codex-style "Worked for …") ---- */

@@ -27,15 +27,28 @@ import { Markdown } from "./Markdown";
 import { ResizeHandle } from "./ResizeHandle";
 import { Diff } from "./Transcript";
 
-function Row({ label, tokens, cost }: { label: string; tokens: number; cost?: number }) {
+function Row({
+  label,
+  tokens,
+  cost,
+  hideCost,
+}: {
+  label: string;
+  tokens: number;
+  cost?: number;
+  /** Two-column tables (no costs anywhere) keep the numbers on the right edge. */
+  hideCost?: boolean;
+}) {
   const c = fmtCost(cost);
   return (
     <tr>
       <td>{label}</td>
       <td className="num">{fmtTokens(tokens)}</td>
-      <td className="num" style={{ color: "var(--text-faint)" }}>
-        {c ?? ""}
-      </td>
+      {!hideCost && (
+        <td className="num" style={{ color: "var(--text-faint)" }}>
+          {c ?? ""}
+        </td>
+      )}
     </tr>
   );
 }
@@ -131,13 +144,13 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
       <div className="section-label">Breakdown</div>
       <table className="usage-table">
         <tbody>
-          <Row label="Input" tokens={u.total.inputTokens} />
-          <Row label="Output" tokens={u.total.outputTokens} />
+          <Row label="Input" tokens={u.total.inputTokens} hideCost />
+          <Row label="Output" tokens={u.total.outputTokens} hideCost />
           {u.total.cacheReadTokens > 0 && (
-            <Row label="Cache read" tokens={u.total.cacheReadTokens} />
+            <Row label="Cache read" tokens={u.total.cacheReadTokens} hideCost />
           )}
           {u.total.cacheWriteTokens > 0 && (
-            <Row label="Cache write" tokens={u.total.cacheWriteTokens} />
+            <Row label="Cache write" tokens={u.total.cacheWriteTokens} hideCost />
           )}
         </tbody>
       </table>

@@ -234,6 +234,14 @@ const created = await OMP.createAgentSession({
   // A missing UI must never imply consent; approvals bridge to the host.
   autoApprove: boot.autoApprove,
   hasUI: true,
+  // Advisors interject mid-turn as steering messages; without this, the
+  // model's post-advisory message reads as a reply to the reviewer and the
+  // user never gets a clean final answer.
+  appendSystemPrompt:
+    "Advisor agents may interject review notes (as <advisory> messages) while you work. " +
+    "Weigh them on their merits — but your final message each turn must be a complete, " +
+    "standalone answer addressed to the user. Never address the advisor, and never let " +
+    "a revision read as a reply to the review; restate the full outcome for the user.",
 } as never);
 const session = created.session;
 const mcpManager: any = (created as any).mcpManager;
@@ -619,12 +627,13 @@ function refreshAdvisors(): void {
         advisorName: name,
         error: {
           kind: state === "quota-exhausted" ? "provider-quota" : "model-unavailable",
+          // The store prefixes "<name> advisor:", so no name here.
           message:
             state === "quota-exhausted"
-              ? `${name} advisor paused: usage limit reached for its configured model.`
+              ? "Paused — usage limit reached for its configured model."
               : state === "no-model"
-                ? `${name} advisor has no resolvable model.`
-                : `${name} advisor stopped after repeated failures.`,
+                ? "No resolvable model."
+                : "Stopped after repeated failures — it will retry on your next message.",
           retryable: state === "quota-exhausted",
         },
         primaryUnaffected: true,
@@ -772,7 +781,7 @@ async function applyAdvisors(list: AdvisorConfig[]): Promise<AdvisorConfig[]> {
           advisorName: a.name,
           error: {
             kind: "model-unavailable",
-            message: `${a.name} advisor could not start — its model${a.model ? ` (${a.model})` : ""} did not resolve.`,
+            message: `Could not start — its model${a.model ? ` (${a.model})` : ""} did not resolve.`,
           },
           primaryUnaffected: true,
         });
@@ -889,7 +898,22 @@ async function handle(req: any): Promise<unknown> {
         }
       }
 
+      // A halted advisor runtime never retries on its own; a fresh user turn
+      // is the natural retry boundary. Rebuild failed advisors so one bad
+      // spell doesn't silence review for the rest of the session.
+      if (advisors.size > 0 && [...lastAdvisorState.values()].includes("failed")) {
+        try {
+          await applyAdvisors([...advisors.values()]);
+          for (const [id, st] of lastAdvisorState) {
+            if (st === "failed") lastAdvisorState.delete(id);
+          }
+        } catch {
+          /* advisor revival must never block the prompt */
+        }
+      }
+
       setRunState("queued");
+      const turnStartedAt = Date.now();
       // The turn runs in the background: the host gets an immediate ack so the
       // user can switch sessions while this one keeps working.
       void (async () => {
@@ -913,7 +937,12 @@ async function handle(req: any): Promise<unknown> {
         } finally {
           flush();
           setRunState(outcome);
-          emit({ type: "session.finished", sessionId: boot.sessionId, runState: outcome });
+          emit({
+            type: "session.finished",
+            sessionId: boot.sessionId,
+            runState: outcome,
+            durationMs: Date.now() - turnStartedAt,
+          });
           checkPersisted();
         }
       })();

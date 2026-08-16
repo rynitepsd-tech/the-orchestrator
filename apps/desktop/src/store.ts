@@ -914,10 +914,27 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         transcript: [...t, { kind: "system", id: nextId(), text: e.error.message, tone: "error" }],
       };
 
+    case "session.notice":
+      // Runtime notices carry the REAL cause behind terse state flips (which
+      // model, which error) — e.g. `Advisor "Architect" unavailable for …: 401`.
+      return {
+        ...v,
+        transcript: [
+          ...t,
+          {
+            kind: "system",
+            id: nextId(),
+            text: e.message,
+            tone: e.level === "error" ? "error" : "warn",
+          },
+        ],
+      };
+
     case "session.finished": {
       // A clear end-of-turn marker in the transcript, honest about advisors:
       // "done" with a reviewer still reading is not done yet.
       const reviewing = Object.values(v.advisorStates).some((st) => st === "reviewing");
+      const took = e.durationMs && e.durationMs >= 1000 ? ` in ${fmtDuration(e.durationMs)}` : "";
       const marker: TranscriptItem | null =
         e.runState === "completed"
           ? {
@@ -925,8 +942,8 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
               id: nextId(),
               tone: "info",
               text: reviewing
-                ? "✓ Turn finished — advisors are still reviewing and may add notes"
-                : "✓ Done",
+                ? `✓ Turn finished${took} — advisors are still reviewing and may add notes`
+                : `✓ Done${took}`,
             }
           : null;
       return {

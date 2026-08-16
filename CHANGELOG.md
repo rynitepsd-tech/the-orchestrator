@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0
+
+- **Advisor failures explain themselves and heal.** The real cause (model,
+  error text) now reaches the transcript — the app was silently dropping
+  OMP's notice events — and a stopped advisor is rebuilt on your next
+  message instead of staying dead for the session.
+- **Turns condense completely.** Advisor notes stay visible while the agent
+  acts on them, then fold into the "Worked for …" line with everything else
+  (the line counts them). One line per turn, answer right below, duration in
+  a full-width "✓ Done in …" divider.
+- **Final answers address you.** Sessions carry a standing instruction:
+  weigh advisories, but the last message each turn must be a standalone
+  answer to the user — never a reply to the reviewer.
+- **Status dots mean something.** Working is an accent-green wave, finished
+  is solid blue; the gray-forever look is gone.
+- **Quiet scrollbars.** Invisible at rest, faint while hovered — never the
+  native bright thumb.
+- **Tables stop crushing.** Markdown table columns keep words whole; wide
+  tables scroll instead of squeezing to single characters.
+- Usage Breakdown numbers right-align; the breadcrumb title survives a
+  cramped bar (the live status truncates or hides first).
+
 ## 0.4.5
 
 - **Traffic lights sit inside the bar.** The macOS window controls are
