@@ -113,6 +113,18 @@ export interface ToolCompleted extends EventBase {
   durationMs?: number;
   /** Structured detail for rich rendering (diffs, match counts, etc.). */
   detail?: ToolDetail;
+  /**
+   * Raw OMP result, passed through (redacted, size-capped) for the
+   * <omp-tool-view> renderer. Absent for oversized results and old replays —
+   * `output`/`detail` remain the fallback.
+   */
+  ompResult?: OmpToolResult;
+}
+
+export interface OmpToolResult {
+  content: unknown[];
+  details?: Record<string, unknown>;
+  isError?: boolean;
 }
 
 export type ToolDetail =

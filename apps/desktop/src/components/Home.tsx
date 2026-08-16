@@ -8,8 +8,8 @@
  * the full sheet for advisor surgery.
  */
 
-import type { SessionLaunchConfig } from "@orchestrator/protocol";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import type { ApprovalMode, SessionLaunchConfig } from "@orchestrator/protocol";
+import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { useMemo, useRef, useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
@@ -41,7 +41,19 @@ export function Home({
   const [projectPath, setProjectPath] = useState(projects[0] ?? "");
   const [projectMenu, setProjectMenu] = useState(false);
   const [text, setText] = useState("");
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("always-ask");
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const pickApproval = async (mode: ApprovalMode) => {
+    if (mode === "yolo") {
+      const yes = await ask(
+        "Full access lets the agent run commands and edit files without asking first. Launch sessions this way?",
+        { title: "Full access", kind: "warning" },
+      );
+      if (!yes) return;
+    }
+    setApprovalMode(mode);
+  };
 
   const preset: SessionPreset | undefined =
     prefs.presets.find((p) => p.name === prefs.defaultPreset) ?? prefs.presets[0];
@@ -59,6 +71,7 @@ export function Home({
         thinkingLevel: preset?.thinkingLevel,
         fastMode: preset?.fastMode || undefined,
         advisors: preset?.advisors ?? [],
+        approvalMode: approvalMode === "always-ask" ? undefined : approvalMode,
       },
       text.trim(),
       preset?.name,
@@ -137,6 +150,24 @@ export function Home({
               </option>
             ))}
             <option value="__new">＋ New preset…</option>
+          </select>
+
+          {/* Permission mode the session launches with (server-enforced). */}
+          <select
+            className="input home-select"
+            value={approvalMode}
+            title={
+              approvalMode === "yolo"
+                ? "Full access — tools run without prompts."
+                : approvalMode === "write"
+                  ? "Auto-accept edits — file edits run without prompts; commands still ask."
+                  : "Manual — every gated tool asks before running."
+            }
+            onChange={(e) => void pickApproval(e.target.value as ApprovalMode)}
+          >
+            <option value="always-ask">Manual</option>
+            <option value="write">Auto edits</option>
+            <option value="yolo">Full access</option>
           </select>
 
           {/* Project: last-worked first, with the rest one click away. */}

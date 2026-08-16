@@ -19,12 +19,41 @@
  * event degrades to "not displayed" instead of breaking the session.
  */
 import {
+  type OmpToolResult,
   type ProductEvent,
   type RunState,
   redactValue,
   sanitizeOutput,
   type ToolDetail,
 } from "@orchestrator/protocol";
+
+/** Byte budget for the raw pass-through result (base64 images included). */
+const OMP_RESULT_MAX_BYTES = 768 * 1024;
+
+/**
+ * The raw OMP result, redacted, for the <omp-tool-view> renderer. Oversized
+ * results are dropped rather than truncated — a mangled payload renders
+ * worse than the text fallback the UI already has.
+ */
+function rawToolResult(result: any, isError: boolean): OmpToolResult | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const payload: OmpToolResult = {
+    content: Array.isArray(result.content) ? result.content : [],
+    details:
+      result.details && typeof result.details === "object"
+        ? (result.details as Record<string, unknown>)
+        : undefined,
+    isError: isError || undefined,
+  };
+  try {
+    if (Buffer.byteLength(JSON.stringify(payload), "utf8") > OMP_RESULT_MAX_BYTES) {
+      return undefined;
+    }
+  } catch {
+    return undefined; // non-serializable (cycles) — the text fallback stands
+  }
+  return redactValue(payload);
+}
 
 /** Loose view of an upstream event; upstream types are not re-exported wholesale. */
 type OmpEvent = Record<string, any>;
@@ -177,6 +206,7 @@ export class EventMapper {
                   ? Date.now() - startedAt
                   : undefined,
             detail: toolDetail(String(ev.toolName ?? ""), ev, rememberedArgs),
+            ompResult: rawToolResult(ev.result, isError),
           },
         ];
         // The todo tool's result carries the full post-op list; surface it as

@@ -18,6 +18,7 @@ import type {
   EngineStage,
   GitChanges,
   ModelInfo,
+  OmpToolResult,
   ProductEvent,
   ProjectInfo,
   ProviderInfo,
@@ -55,6 +56,8 @@ export type TranscriptItem =
       error?: string;
       durationMs?: number;
       detail?: ToolDetail;
+      /** Raw OMP result for the <omp-tool-view> renderer. */
+      ompResult?: OmpToolResult;
     }
   | {
       kind: "advisor";
@@ -697,7 +700,10 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
       return { ...v, transcript: copy };
     }
 
-    case "tool.start":
+    case "tool.start": {
+      // Idempotent by callId: hydrate/live races re-apply the same start,
+      // which used to leave a phantom twin card stuck "running" forever.
+      if (t.some((x) => x.kind === "tool" && x.callId === e.callId)) return v;
       return {
         ...v,
         transcript: [
@@ -713,6 +719,7 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
           },
         ],
       };
+    }
 
     case "tool.update": {
       const idx = lastIndex(t, (x) => x.kind === "tool" && x.callId === e.callId);
@@ -735,6 +742,7 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         error: e.error,
         durationMs: e.durationMs,
         detail: e.detail,
+        ompResult: e.ompResult,
       };
       return { ...v, transcript: copy };
     }

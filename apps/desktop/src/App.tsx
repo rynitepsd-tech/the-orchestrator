@@ -271,6 +271,11 @@ export function App(): JSX.Element {
       const res = await engine.request("sessions.create", config);
       useStore.getState().addProject(proj.project);
       useStore.getState().addSession(res.session, config.advisors ?? []);
+      // The launch-time mode is already enforced worker-side; record it so
+      // the composer chip shows it and it persists across restarts.
+      if (config.approvalMode) {
+        useStore.getState().setSessionApproval(res.session.sessionId, config.approvalMode);
+      }
       useStore.getState().setNewSession(false);
       return res.session.sessionId;
     } catch (e) {

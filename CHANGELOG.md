@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.2
+
+- **Every tool renders properly.** OMP's own `<omp-tool-view>` component now
+  draws the ~35 tools that used to show as plain text — todo, task, hub,
+  lsp, eval, browser, github, memory, fetch, web_search, and a real card
+  for MCP/unknown tools. Bundled with the app and auto-synced to the OMP
+  release; bash/edit/write/read/search keep their native cards.
+- **Permission mode at launch.** The Manual / Auto edits / Full access
+  switch is on the new-session composer too — sessions are born with the
+  chosen mode enforced from the first tool call.
+- **Ship is branch-safe** — a clean-but-ahead default branch no longer gets
+  pushed to directly; shippable work always moves to a new branch first.
+- **Updater edge cases** — "no update available" is authoritative (never
+  reinstalls a stale pending release), the restart prompt counts running
+  sessions at prompt time, and signature-verification failures surface even
+  during silent background checks.
+- Phantom duplicate tool cards from replay races are gone; the About/
+  diagnostics OMP version is real instead of "unknown"; provider credential
+  origins are readable; the watchdog config editor reads the actual
+  WATCHDOG.yml.
+
 ## 0.5.1
 
 - **OMP 17.3.4** ships inside this update: monorepo edit-rejection fix,

@@ -1288,6 +1288,30 @@ button {
   border-top: 1px solid var(--border);
 }
 
+/* ---- OMP tool-view cards ---- */
+/* Bridge our tokens to the component's host variables (it reads both the
+ * primary and the alias names; set both so future renames keep working). */
+.tool-omp {
+  --fg: var(--text);
+  --fg-muted: var(--text-muted);
+  --muted: var(--text-muted);
+  --fg-faint: var(--text-faint);
+  --dim: var(--text-faint);
+  --err: var(--danger);
+  --error: var(--danger);
+  --success: var(--ok);
+  --warning: var(--warn);
+  --bg-inset: var(--bg-sunken);
+  --info-bg: var(--bg-sunken);
+  --container-bg: var(--bg-raised);
+  --ring: var(--accent);
+  --font-mono: var(--mono);
+  margin: 2px 0;
+}
+.tool-omp omp-tool-view {
+  display: block;
+}
+
 /* ---- condensed work groups (Codex-style "Worked for …") ---- */
 .work-head {
   display: flex;

@@ -11,7 +11,7 @@
 import type { ToolDetail } from "@orchestrator/protocol";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { engine } from "../engine-client";
 import {
   fmtCount,
@@ -21,6 +21,7 @@ import {
   type TranscriptItem,
   useStore,
 } from "../store";
+import type { OmpToolViewData, OmpToolViewElement } from "../types/omp-tool-view";
 import { Markdown } from "./Markdown";
 
 /**
@@ -462,6 +463,54 @@ function toolTitle(name: string): { label: string; mcp?: string } {
   return { label: name };
 }
 
+/**
+ * Tools with a NATIVE card here: file-link clicks, inline diffs, and the
+ * compact one-line style. Everything else renders through OMP's own
+ * <omp-tool-view> component — ~35 specialized renderers (todo, task, hub,
+ * lsp, eval, browser, github, memory…) plus a decent generic card for
+ * MCP/unknown tools, kept in sync with the OMP release automatically.
+ */
+const NATIVE_TOOL_NAMES = new Set([
+  "bash",
+  "edit",
+  "ast_edit",
+  "write",
+  "read",
+  "grep",
+  "ast_grep",
+  "glob",
+  "search",
+]);
+
+function OmpToolCard({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }): JSX.Element {
+  const ref = useRef<OmpToolViewElement>(null);
+  const data = useMemo<OmpToolViewData>(
+    () => ({
+      name: item.name,
+      args: (item.args ?? {}) as Record<string, unknown>,
+      result: item.ompResult
+        ? {
+            // content must be an array — the renderer iterates it unguarded.
+            content: item.ompResult.content ?? [],
+            details: item.ompResult.details,
+            isError: item.ompResult.isError,
+          }
+        : undefined,
+      running: item.state === "running" || undefined,
+    }),
+    [item.name, item.args, item.ompResult, item.state],
+  );
+  // The element takes its payload via PROPERTY; attributes are not observed.
+  useEffect(() => {
+    if (ref.current) ref.current.data = data;
+  }, [data]);
+  return (
+    <div className="tool-omp">
+      <omp-tool-view ref={ref} />
+    </div>
+  );
+}
+
 const ToolCard = memo(function ToolCard({
   item,
   projectPath,
@@ -471,6 +520,11 @@ const ToolCard = memo(function ToolCard({
 }): JSX.Element {
   const { label, mcp } = toolTitle(item.name);
   const d = item.detail;
+  // Rich rendering for the long tail — only when we have the raw payload
+  // (or the call is still running); old replays keep the text fallback.
+  if (!NATIVE_TOOL_NAMES.has(item.name) && (item.state === "running" || item.ompResult)) {
+    return <OmpToolCard item={item} />;
+  }
   // File-flavoured tool calls get a clickable path, like Codex/Claude Code.
   const clickPath =
     d?.kind === "edit" || d?.kind === "write" || d?.kind === "read" ? d.path : undefined;

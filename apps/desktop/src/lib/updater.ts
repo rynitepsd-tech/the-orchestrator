@@ -29,9 +29,20 @@ export async function checkForUpdates(opts: { silent: boolean }): Promise<void> 
       }
     }
   } catch (e) {
-    // Expected in dev builds and before the release feed exists.
+    const msg = String((e as Error)?.message ?? e);
+    // A signature failure is not "offline" — it means the feed served an
+    // artifact that does not verify against our pinned key. Silent mode must
+    // not swallow that; it is the one updater error worth interrupting for.
+    if (/signature|minisign|verif/i.test(msg)) {
+      st.setEngineError({
+        kind: "configuration",
+        message: `Update signature verification failed — the update was NOT installed. (${msg})`,
+      } as never);
+      return;
+    }
+    // Everything else is expected in dev builds and before the feed exists.
     if (!opts.silent) {
-      await message(`Could not check for updates: ${String((e as Error)?.message ?? e)}`, {
+      await message(`Could not check for updates: ${msg}`, {
         title: "The Orchestrator",
         kind: "warning",
       });
@@ -47,12 +58,31 @@ export async function installUpdate(): Promise<void> {
     // The chip may be hours old and more releases may have shipped since.
     // Re-check at click time so one install always lands on the LATEST
     // version — never a stale middle release that asks for a second update.
-    const update = (await check().catch(() => null)) ?? pending;
+    // check() resolving null is AUTHORITATIVE (nothing to install — yanked or
+    // already current) and must not fall back to the stale pending update;
+    // only a rejected check (offline) keeps it.
+    let update = pending;
+    try {
+      const fresh = await check();
+      if (fresh === null) {
+        pending = null;
+        st.setUpdateAvailable(undefined);
+        st.setUpdateBusy(false);
+        return;
+      }
+      update = fresh;
+    } catch {
+      /* could not re-check — proceed with the update we already know about */
+    }
     pending = update;
     st.setUpdateAvailable({ version: update.version, notes: update.body ?? undefined });
     await update.downloadAndInstall();
     st.setUpdateBusy(false);
-    const running = Object.values(st.sessions).filter((v) => isActive(v.summary.runState)).length;
+    // Count running sessions NOW — the download took a while and the
+    // function-start snapshot is stale.
+    const running = Object.values(useStore.getState().sessions).filter((v) =>
+      isActive(v.summary.runState),
+    ).length;
     const restart = await ask(
       running > 0
         ? `Update ${update.version} is installed. Restarting now will stop ${running} running session${running === 1 ? "" : "s"}. Restart?`

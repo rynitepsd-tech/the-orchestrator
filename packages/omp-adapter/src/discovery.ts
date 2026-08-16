@@ -38,10 +38,11 @@ export function ompAgentDir(): string {
 /** The version of the OMP SDK actually loaded at runtime. */
 export function ompVersion(): string {
   try {
-    // Resolved from the installed package, not hardcoded, so a bundled
-    // upgrade cannot silently disagree with what the About window claims.
-    const pkg = require("@oh-my-pi/pi-coding-agent/package.json");
-    return String(pkg.version ?? "unknown");
+    // OMP exports its own VERSION constant — the only lookup that survives
+    // bundling into the compiled engine binary (package.json isn't in the
+    // exports map, so requiring it throws and reported "unknown" forever).
+    const v = (OMP as any).VERSION;
+    return v ? String(v) : "unknown";
   } catch {
     return "unknown";
   }
@@ -124,14 +125,21 @@ export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderI
   for (const [name, list] of byProvider) {
     let credentialSource: string | undefined;
     try {
-      credentialSource = (auth as any).getCredentialOrigin?.(name);
+      // Returns { kind, envVar? } — naive String() rendered "[object Object]".
+      const origin = (auth as any).getCredentialOrigin?.(name);
+      credentialSource =
+        origin && typeof origin === "object"
+          ? [origin.kind, origin.envVar && `(${origin.envVar})`].filter(Boolean).join(" ")
+          : origin
+            ? String(origin)
+            : undefined;
     } catch {
       credentialSource = undefined;
     }
     out.push({
       name,
       authenticated: list[0]?.authenticated ?? configured.includes(name),
-      credentialSource: credentialSource ? String(credentialSource) : undefined,
+      credentialSource: credentialSource || undefined,
       modelCount: list.length,
     });
   }
@@ -461,7 +469,16 @@ export async function loadWatchdogConfig(cwd: string): Promise<unknown | null> {
   try {
     const m = await import("@oh-my-pi/pi-coding-agent/advisor/index");
     const load = (m as any).loadWatchdogConfigFile;
-    return typeof load === "function" ? await load(cwd) : null;
+    const resolvePath = (m as any).resolveAdvisorConfigEditPath;
+    if (typeof load !== "function") return null;
+    // Upstream wants the FILE path (WATCHDOG.yml), not the project dir —
+    // passing the dir always yielded the empty doc, and saving an empty doc
+    // deletes the file.
+    const filePath =
+      typeof resolvePath === "function"
+        ? await resolvePath("project", { projectDir: cwd, agentDir: ompAgentDir() })
+        : `${cwd}/WATCHDOG.yml`;
+    return await load(filePath);
   } catch {
     return null;
   }

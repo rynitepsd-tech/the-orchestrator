@@ -75,7 +75,9 @@ export async function shipChanges(cwd: string, opts: ShipOptions): Promise<ShipR
     /* no origin/HEAD ref — assume main */
   }
   let createdBranch = false;
-  if (branch === defaultBranch && dirty) {
+  // Anything shippable on the default branch moves to a new branch first —
+  // including the clean-but-ahead case, which used to push straight to main.
+  if (branch === defaultBranch) {
     const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, "");
     branch = `orch/${slugify(opts.title)}-${stamp}`;
     await git(cwd, ["checkout", "-b", branch]);
