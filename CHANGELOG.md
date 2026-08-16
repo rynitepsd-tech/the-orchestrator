@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.3
+
+- **"Turn finished" waits for the advisors.** The end-of-turn marker stays a
+  pulsing "Advisors reviewing…" line until the last reviewer settles, then
+  becomes "✓ Turn finished in X" — no more "finished" next to "still
+  reviewing". The sidebar, command palette, and inbox agree: a session under
+  review shows working dots and "Advisors reviewing", and only files as
+  Finished when review is done.
+- **Watch the agent work, Fable-style.** Nothing condenses mid-turn anymore:
+  the live timeline streams expanded — narration between compact activity
+  rows ("Ran 6 commands, read 2 files, edited store.ts +12 -1", expandable
+  to the full cards), thinking previews that show each thought's first line
+  instead of identical "Thought process" rows, and collapsible advisor notes
+  (blockers open by default). When the turn actually finishes, it all folds
+  into one Codex-style "Worked for X" line — real wall time, expandable —
+  followed by the answer and a clickable edited-files row with diffstats.
+- **The real final answer stays visible.** Advisor-triggered follow-up work
+  no longer swallows the answer that preceded it: turn boundaries are now
+  structural, so each finished run keeps its own answer out in the open
+  instead of folding a 55-minute report into the thinking dump of the next
+  segment.
+
 ## 0.5.2
 
 - **Every tool renders properly.** OMP's own `<omp-tool-view>` component now

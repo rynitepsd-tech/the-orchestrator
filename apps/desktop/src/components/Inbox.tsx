@@ -10,7 +10,13 @@
 import type { JSX } from "react";
 import { useState } from "react";
 import { engine } from "../engine-client";
-import { fmtCount, type SessionView, type TranscriptItem, useStore } from "../store";
+import {
+  advisorsReviewing,
+  fmtCount,
+  type SessionView,
+  type TranscriptItem,
+  useStore,
+} from "../store";
 
 type PendingItem = Extract<TranscriptItem, { kind: "approval" | "interaction" }>;
 
@@ -36,7 +42,11 @@ export function Inbox(): JSX.Element {
     .sort((a, b) => (b.summary.lastActivityAt ?? "").localeCompare(a.summary.lastActivityAt ?? ""));
   const finished = views
     .filter(
-      (v) => v.summary.unread && v.summary.runState === "completed" && v.pendingInteractions === 0,
+      (v) =>
+        v.summary.unread &&
+        v.summary.runState === "completed" &&
+        v.pendingInteractions === 0 &&
+        !advisorsReviewing(v),
     )
     .sort((a, b) => (b.summary.lastActivityAt ?? "").localeCompare(a.summary.lastActivityAt ?? ""));
   const failed = views

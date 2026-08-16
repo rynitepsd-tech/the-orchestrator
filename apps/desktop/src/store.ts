@@ -104,7 +104,18 @@ export type TranscriptItem =
       ui: Extract<ProductEvent, { type: "extension.ui.request" }>["ui"];
       state: "pending" | "resolved" | "cancelled";
     }
-  | { kind: "system"; id: string; text: string; tone: "info" | "warn" | "error" };
+  | { kind: "system"; id: string; text: string; tone: "info" | "warn" | "error" }
+  | {
+      /**
+       * End-of-turn marker. `pending` while advisors are still reviewing —
+       * the turn is only announced as finished once they're done. Also the
+       * boundary the transcript condenses work groups at.
+       */
+      kind: "turn-end";
+      id: string;
+      durationMs?: number;
+      pending: boolean;
+    };
 
 export interface SessionView {
   summary: SessionSummary;
@@ -487,6 +498,13 @@ export const useStore = create<AppState>((set, get) => ({
       const sessions: Record<string, SessionView> = {};
       for (const [id, v] of Object.entries(s.sessions)) {
         const active = !["idle", "completed", "interrupted", "error"].includes(v.summary.runState);
+        // A dead worker sends no more advisor.state events — settle any marker
+        // still waiting on review so it can't spin forever.
+        const settled = v.transcript.some((i) => i.kind === "turn-end" && i.pending)
+          ? v.transcript.map((i) =>
+              i.kind === "turn-end" && i.pending ? { ...i, pending: false } : i,
+            )
+          : v.transcript;
         sessions[id] = active
           ? {
               ...v,
@@ -494,11 +512,13 @@ export const useStore = create<AppState>((set, get) => ({
               interrupted: true,
               pendingInteractions: 0,
               transcript: [
-                ...v.transcript,
+                ...settled,
                 { kind: "system", id: nextId(), text: reason, tone: "error" },
               ],
             }
-          : v;
+          : settled !== v.transcript
+            ? { ...v, transcript: settled }
+            : v;
       }
       return { sessions };
     }),
@@ -839,8 +859,31 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         ],
       };
 
-    case "advisor.state":
-      return { ...v, advisorStates: { ...v.advisorStates, [e.advisorId]: e.state } };
+    case "advisor.state": {
+      const advisorStates = { ...v.advisorStates, [e.advisorId]: e.state };
+      // The last reviewer settling (done, failed, paused…) is what actually
+      // ends the turn: finalize any end-of-turn marker held back for review.
+      const reviewing = Object.values(advisorStates).some((st) => st === "reviewing");
+      let transcript = v.transcript;
+      if (!reviewing && transcript.some((i) => i.kind === "turn-end" && i.pending)) {
+        transcript = transcript.map((i) =>
+          i.kind === "turn-end" && i.pending ? { ...i, pending: false } : i,
+        );
+      } else if (reviewing && !isActive(v.summary.runState)) {
+        // A review can start a beat AFTER session.finished landed; a marker
+        // already announced as finished for the current turn goes back to
+        // pending (never one an earlier turn has moved past).
+        const idx = lastIndex(transcript, (i) => i.kind === "turn-end");
+        const cur =
+          idx >= 0 ? (transcript[idx] as Extract<TranscriptItem, { kind: "turn-end" }>) : null;
+        if (cur && !cur.pending && !transcript.slice(idx + 1).some((i) => i.kind === "user")) {
+          const copy = [...transcript];
+          copy[idx] = { ...cur, pending: true };
+          transcript = copy;
+        }
+      }
+      return { ...v, advisorStates, transcript };
+    }
 
     case "advisor.failed":
       return {
@@ -985,25 +1028,19 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
     }
 
     case "session.finished": {
-      // A clear end-of-turn marker in the transcript, honest about advisors:
-      // "done" with a reviewer still reading is not done yet.
+      // A structural end-of-turn marker: the transcript condenses the turn's
+      // work at it, and it stays `pending` (not announced as finished) until
+      // every advisor has stopped reviewing — "done" with a reviewer still
+      // reading is not done yet.
       const reviewing = Object.values(v.advisorStates).some((st) => st === "reviewing");
-      const took = e.durationMs && e.durationMs >= 1000 ? ` in ${fmtDuration(e.durationMs)}` : "";
       const marker: TranscriptItem | null =
         e.runState === "completed"
-          ? {
-              kind: "system",
-              id: nextId(),
-              tone: "info",
-              text: reviewing
-                ? `✓ Turn finished${took} — advisors are still reviewing and may add notes`
-                : `✓ Done${took}`,
-            }
+          ? { kind: "turn-end", id: nextId(), durationMs: e.durationMs, pending: reviewing }
           : null;
-      // Idempotence under hydrate/live races: a marker identical to the one
-      // already at the tail is the same event applied twice, not a new turn.
+      // Idempotence under hydrate/live races: a turn-end already at the tail
+      // is the same event applied twice, not a new turn.
       const tail = v.transcript[v.transcript.length - 1];
-      const isDup = marker && tail?.kind === "system" && tail.text === marker.text;
+      const isDup = marker && tail?.kind === "turn-end";
       return {
         ...v,
         transcript: marker && !isDup ? [...v.transcript, marker] : v.transcript,
@@ -1082,6 +1119,11 @@ export function runStateLabel(s: RunState, activity?: string): string {
 
 export function isActive(s: RunState): boolean {
   return !["idle", "completed", "interrupted", "error"].includes(s);
+}
+
+/** True while any advisor is still reviewing — the turn isn't finished yet. */
+export function advisorsReviewing(v: SessionView): boolean {
+  return Object.values(v.advisorStates).some((st) => st === "reviewing");
 }
 
 /** Short display name for a provider-qualified model key. */

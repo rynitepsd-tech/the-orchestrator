@@ -123,7 +123,7 @@ export function Transcript({
               </button>
             </div>
           )}
-          {toNodes(visible).map((n) =>
+          {toNodes(visible, runState !== undefined && isActive(runState)).map((n) =>
             n.kind === "plain" ? (
               <Item
                 key={n.item.id}
@@ -136,12 +136,15 @@ export function Transcript({
                     : undefined
                 }
               />
+            ) : n.kind === "files" ? (
+              <FilesRow key={n.key} files={n.files} projectPath={projectPath} />
             ) : (
               <WorkGroup
                 key={n.key}
                 items={n.items}
                 sessionId={sessionId}
                 live={n.live}
+                durationMs={n.durationMs}
                 projectPath={projectPath}
               />
             ),
@@ -170,88 +173,291 @@ export function Transcript({
 // ---------------------------------------------------------------------------
 // Turn condensing
 //
-// Once a turn's answer arrives, the work that produced it — thinking-only
-// messages, tool calls, subagents, settled approvals — condenses into one
-// "Worked for …" line before the answer. Work still in flight (no answer yet)
-// gathers into a LIVE group: one status line naming the current step, with the
-// latest thinking previewed underneath, expandable to the full step list —
-// never a wall of interleaved cards. Advisor notes, system lines, and anything
-// pending never condense.
+// While a turn is running, NOTHING condenses: the work streams as an open
+// timeline — thinking, tool calls, subagents — so the user can watch where
+// the agent is heading and steer or stop it. Advisor notes and anything
+// pending stay outside the timeline, always visible.
+//
+// Only when the turn is completely finished (a turn-end marker arrives, a new
+// user message starts the next turn, or the session is at rest) does the work
+// collapse into one Codex-style "Worked for …" line, followed by the final
+// answer and the files it edited.
 // ---------------------------------------------------------------------------
+
+type EditedFile = { path: string; additions: number; deletions: number; created?: boolean };
 
 type RenderNode =
   | { kind: "plain"; item: TranscriptItem }
-  | { kind: "work"; key: string; items: TranscriptItem[]; live: boolean };
+  | { kind: "work"; key: string; items: TranscriptItem[]; live: boolean; durationMs?: number }
+  | { kind: "files"; key: string; files: EditedFile[] };
 
 /** Items that must never disappear into a collapsed work group. */
 function alwaysVisible(i: TranscriptItem): boolean {
-  if (i.kind === "user" || i.kind === "system") return true;
+  if (i.kind === "user" || i.kind === "system" || i.kind === "turn-end") return true;
   if ((i.kind === "approval" || i.kind === "interaction") && i.state === "pending") return true;
   return false;
 }
 
-/**
- * Condensing, done completely: within a turn (user message to user message),
- * EVERYTHING that led to the latest answer — thinking, tool calls, subagents,
- * settled approvals, and intermediate narration — folds into a single
- * "Worked" line before that answer. Only the latest answer stays out. Work
- * with no answer yet (before the first answer, or after one when the agent
- * keeps going) gathers into a live group instead of streaming as loose cards.
- * Advisor notes, system lines, and pending approvals are always visible.
- */
-function toNodes(items: TranscriptItem[]): RenderNode[] {
-  const nodes: RenderNode[] = [];
-  let turn: TranscriptItem[] = [];
+/** Files the segment's successful edit/write tool calls touched, deduped. */
+function editedFiles(items: TranscriptItem[]): EditedFile[] {
+  const map = new Map<string, EditedFile>();
+  for (const it of items) {
+    if (it.kind !== "tool" || it.state !== "ok") continue;
+    const d = it.detail;
+    if (!d || (d.kind !== "edit" && d.kind !== "write")) continue;
+    const f = map.get(d.path) ?? { path: d.path, additions: 0, deletions: 0 };
+    if (d.kind === "edit") {
+      f.additions += d.additions;
+      f.deletions += d.deletions;
+    } else if (d.created) {
+      f.created = true;
+    }
+    map.set(d.path, f);
+  }
+  return [...map.values()];
+}
 
-  const flushTurn = () => {
-    if (!turn.length) return;
-    // The latest answer in this turn (streaming or not — once answer text
-    // exists, the work that produced it is history).
+/**
+ * Segments are delimited by user messages and turn-end markers. An open
+ * (still-running) segment renders as live groups with everything visible;
+ * a finished one condenses everything but its final answer into a single
+ * "Worked for …" line, with an edited-files row after the answer.
+ */
+function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] {
+  const nodes: RenderNode[] = [];
+  let seg: TranscriptItem[] = [];
+
+  const flushSegment = (closed: boolean, durationMs?: number) => {
+    if (!seg.length) return;
+    const segment = seg;
+    seg = [];
+
+    if (!closed) {
+      // Still running: advisor notes and alwaysVisible items stay plain; all
+      // work gathers into live groups that render expanded.
+      const bucket: TranscriptItem[] = [];
+      const flushBucket = () => {
+        if (!bucket.length) return;
+        nodes.push({ kind: "work", key: `wg-${bucket[0].id}`, items: [...bucket], live: true });
+        bucket.length = 0;
+      };
+      for (const it of segment) {
+        // System notices ride inside the live timeline (it's expanded, so
+        // they're visible) rather than splitting it into several pulsing
+        // groups; the closed pass pulls them back out as plain lines.
+        if ((alwaysVisible(it) && it.kind !== "system") || it.kind === "advisor") {
+          flushBucket();
+          nodes.push({ kind: "plain", item: it });
+        } else {
+          bucket.push(it);
+        }
+      }
+      flushBucket();
+      return;
+    }
+
+    // Finished: the last answer stays out; everything else — thinking,
+    // tools, subagents, settled approvals, advisor notes, intermediate
+    // narration — folds into the "Worked" line.
     let lastAnswer = -1;
-    for (let i = turn.length - 1; i >= 0; i--) {
-      const it = turn[i];
+    for (let i = segment.length - 1; i >= 0; i--) {
+      const it = segment[i];
       if (it.kind === "assistant" && it.text) {
         lastAnswer = i;
         break;
       }
     }
+    const files = editedFiles(segment);
+    let filesEmitted = false;
     const bucket: TranscriptItem[] = [];
-    let bucketLive = false;
+    let firstBucket = true;
     const flushBucket = () => {
       if (!bucket.length) return;
-      nodes.push({ kind: "work", key: `wg-${bucket[0].id}`, items: [...bucket], live: bucketLive });
+      nodes.push({
+        kind: "work",
+        key: `wg-${bucket[0].id}`,
+        items: [...bucket],
+        live: false,
+        // The turn's wall time labels the main work line; splinter buckets
+        // (split off by system lines) fall back to their summed durations.
+        durationMs: firstBucket ? durationMs : undefined,
+      });
+      firstBucket = false;
       bucket.length = 0;
     };
-    turn.forEach((it, i) => {
-      // Work before the latest answer is history; work after it (or with no
-      // answer yet) is still in flight.
-      const live = lastAnswer === -1 || i > lastAnswer;
-      // Advisor notes stay visible while the agent is still acting on them;
-      // once it has answered PAST one, the note is part of how the answer was
-      // made and folds into the work line with everything else.
-      if (i === lastAnswer || alwaysVisible(it) || (it.kind === "advisor" && live)) {
+    segment.forEach((it, i) => {
+      if (i === lastAnswer || alwaysVisible(it)) {
         flushBucket();
         nodes.push({ kind: "plain", item: it });
+        if (i === lastAnswer && files.length) {
+          nodes.push({ kind: "files", key: `files-${it.id}`, files });
+          filesEmitted = true;
+        }
         return;
       }
-      if (bucket.length && bucketLive !== live) flushBucket();
-      bucketLive = live;
       bucket.push(it);
     });
     flushBucket();
-    turn = [];
+    // A segment with edits but no answer (interrupted turn) still lists them.
+    if (files.length && !filesEmitted) {
+      nodes.push({ kind: "files", key: `files-${segment[0].id}`, files });
+    }
   };
 
   for (const item of items) {
     if (item.kind === "user") {
-      flushTurn();
+      flushSegment(true);
+      nodes.push({ kind: "plain", item });
+    } else if (item.kind === "turn-end") {
+      flushSegment(true, item.durationMs);
       nodes.push({ kind: "plain", item });
     } else {
-      turn.push(item);
+      seg.push(item);
     }
   }
-  flushTurn();
+  // The trailing segment is live only while the session is actually running;
+  // at rest (including hydrated sessions with no markers) it condenses.
+  flushSegment(!sessionActive);
   return nodes;
+}
+
+// ---------------------------------------------------------------------------
+// Work-group body: Fable-style timeline
+//
+// Inside an expanded work group, consecutive tool calls fold into one compact
+// row — "Ran 6 commands, read 2 files, edited store.ts +12 -1" — expandable
+// to the individual cards. Narration, thinking, subagents, and everything
+// else render between those rows, so the timeline reads as prose punctuated
+// by activity summaries instead of a wall of tool cards.
+// ---------------------------------------------------------------------------
+
+type ToolItem = Extract<TranscriptItem, { kind: "tool" }>;
+
+type BodyNode =
+  | { kind: "item"; item: TranscriptItem }
+  | { kind: "tools"; key: string; tools: ToolItem[] };
+
+/** Chunk a group's items so consecutive tool calls share one summary row. */
+function toBodyNodes(items: TranscriptItem[]): BodyNode[] {
+  const nodes: BodyNode[] = [];
+  let run: ToolItem[] = [];
+  const flush = () => {
+    if (!run.length) return;
+    nodes.push({ kind: "tools", key: `tr-${run[0].id}`, tools: run });
+    run = [];
+  };
+  for (const it of items) {
+    if (it.kind === "tool") run.push(it);
+    else {
+      flush();
+      nodes.push({ kind: "item", item: it });
+    }
+  }
+  flush();
+  return nodes;
+}
+
+const base = (p: string) => p.split("/").pop() || p;
+
+/** "Ran 6 commands, read 2 files, edited store.ts +12 -1" */
+function toolRunSummary(tools: ToolItem[]): string {
+  type Cat = "cmd" | "read" | "edit" | "search" | "other";
+  const catOf = (t: ToolItem): Cat => {
+    const k = t.detail?.kind;
+    if (k === "bash" || t.name === "bash") return "cmd";
+    if (k === "read" || t.name === "read") return "read";
+    if (k === "edit" || k === "write" || ["edit", "ast_edit", "write"].includes(t.name))
+      return "edit";
+    if (k === "search" || ["grep", "ast_grep", "glob", "search"].includes(t.name)) return "search";
+    return "other";
+  };
+  const order: Cat[] = [];
+  const n: Record<Cat, number> = { cmd: 0, read: 0, edit: 0, search: 0, other: 0 };
+  const readPaths = new Set<string>();
+  const editPaths = new Set<string>();
+  const otherLabels = new Set<string>();
+  let additions = 0;
+  let deletions = 0;
+  let query: string | undefined;
+  for (const t of tools) {
+    const c = catOf(t);
+    if (!order.includes(c)) order.push(c);
+    n[c]++;
+    const d = t.detail;
+    if (c === "read" && d?.kind === "read") readPaths.add(d.path);
+    if (c === "edit" && (d?.kind === "edit" || d?.kind === "write")) editPaths.add(d.path);
+    if (c === "edit" && d?.kind === "edit") {
+      additions += d.additions;
+      deletions += d.deletions;
+    }
+    if (c === "search" && d?.kind === "search") query = d.query;
+    if (c === "other") otherLabels.add(toolTitle(t.name).label);
+  }
+  const parts = order.map((c) => {
+    switch (c) {
+      case "cmd":
+        return n.cmd === 1 ? "ran a command" : `ran ${n.cmd} commands`;
+      case "read": {
+        const files = readPaths.size || n.read;
+        return files === 1
+          ? `read ${readPaths.size === 1 ? base([...readPaths][0]) : "a file"}`
+          : `read ${files} files`;
+      }
+      case "edit": {
+        const files = editPaths.size || n.edit;
+        const what =
+          files === 1
+            ? `edited ${editPaths.size === 1 ? base([...editPaths][0]) : "a file"}`
+            : `edited ${files} files`;
+        return additions > 0 || deletions > 0 ? `${what} +${additions} -${deletions}` : what;
+      }
+      case "search":
+        return n.search === 1
+          ? query
+            ? `searched "${query.length > 30 ? `${query.slice(0, 30)}…` : query}"`
+            : "ran a search"
+          : `ran ${n.search} searches`;
+      case "other":
+        return n.other === 1
+          ? `used ${[...otherLabels][0]}`
+          : otherLabels.size === 1
+            ? `used ${[...otherLabels][0]} ×${n.other}`
+            : `made ${n.other} tool calls`;
+    }
+  });
+  const s = parts.join(", ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function ToolRunRow({
+  tools,
+  sessionId,
+  projectPath,
+}: {
+  tools: ToolItem[];
+  sessionId: string;
+  projectPath?: string;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const running = tools.some((t) => t.state === "running");
+  const failed = tools.filter((t) => t.state === "error").length;
+  return (
+    <div className={`tool-run${open ? " open" : ""}`}>
+      <button className="tool-run-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <span className="tool-chevron">{open ? "▾" : "▸"}</span>
+        <span className="tool-run-summary">{toolRunSummary(tools)}</span>
+        {running && <span className="hint">running…</span>}
+        {failed > 0 && <span className="chip warn-chip">{failed} failed</span>}
+      </button>
+      {open && (
+        <div className="tool-run-body">
+          {tools.map((t) => (
+            <Item key={t.id} item={t} sessionId={sessionId} projectPath={projectPath} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** What the agent is doing right now, from the newest item of a live group. */
@@ -263,7 +469,7 @@ function liveLabel(items: TranscriptItem[]): string {
       return `Running ${label}`;
     }
     if (it.kind === "subagent" && it.state === "running") return "Running subagent";
-    if (it.kind === "assistant" && it.streaming) return "Thinking…";
+    if (it.kind === "assistant" && it.streaming) return it.text ? "Responding…" : "Thinking…";
     // Anything settled below this point is done work, not current activity.
     if (it.kind === "tool" || it.kind === "subagent" || it.kind === "assistant") break;
   }
@@ -274,21 +480,32 @@ function WorkGroup({
   items,
   sessionId,
   live,
+  durationMs,
   projectPath,
 }: {
   items: TranscriptItem[];
   sessionId: string;
   live: boolean;
+  /** Wall time of the finished turn, from its turn-end marker. */
+  durationMs?: number;
   projectPath?: string;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const ms = items.reduce(
+  // Live groups stream expanded so the user can watch the agent work; the
+  // moment the turn finishes they condense to one line. A manual toggle wins
+  // either way, but resets when the group settles so finishing collapses it.
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!live) setToggled(null);
+  }, [live]);
+  const open = toggled ?? live;
+  const summed = items.reduce(
     (n, i) => n + ((i.kind === "tool" || i.kind === "subagent") && i.durationMs ? i.durationMs : 0),
     0,
   );
-  const label = live ? liveLabel(items) : ms > 0 ? `Worked for ${fmtDuration(ms)}` : "Worked";
-  // Collapsed live groups still show where the reasoning is going: the tail of
-  // the newest thinking, clipped to its last few lines.
+  const ms = durationMs ?? summed;
+  const label = live ? liveLabel(items) : ms >= 1000 ? `Worked for ${fmtDuration(ms)}` : "Worked";
+  // A manually-collapsed live group still shows where the reasoning is going:
+  // the tail of the newest thinking, clipped to its last few lines.
   let preview: string | undefined;
   if (live && !open) {
     for (let i = items.length - 1; i >= 0; i--) {
@@ -301,7 +518,7 @@ function WorkGroup({
   }
   return (
     <div className={`work-group${open ? " open" : ""}${live ? " live" : ""}`}>
-      <button className="work-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+      <button className="work-head" onClick={() => setToggled(!open)} aria-expanded={open}>
         <span className="tool-chevron">{open ? "▾" : "▸"}</span>
         {live && <span className="work-live-dot" aria-hidden />}
         <span>{label}</span>
@@ -322,11 +539,61 @@ function WorkGroup({
       )}
       {open && (
         <div className="work-body">
-          {items.map((item) => (
-            <Item key={item.id} item={item} sessionId={sessionId} projectPath={projectPath} />
-          ))}
+          {toBodyNodes(items).map((n) =>
+            n.kind === "item" ? (
+              <Item key={n.item.id} item={n.item} sessionId={sessionId} projectPath={projectPath} />
+            ) : (
+              <ToolRunRow
+                key={n.key}
+                tools={n.tools}
+                sessionId={sessionId}
+                projectPath={projectPath}
+              />
+            ),
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Post-answer list of the files a finished turn edited, Codex-style. */
+function FilesRow({
+  files,
+  projectPath,
+}: {
+  files: EditedFile[];
+  projectPath?: string;
+}): JSX.Element {
+  return (
+    <div className="files-row">
+      <span className="hint">Edited</span>
+      {files.map((f) => {
+        const rel =
+          projectPath && f.path.startsWith(`${projectPath}/`)
+            ? f.path.slice(projectPath.length + 1)
+            : f.path;
+        const abs = f.path.startsWith("/") ? f.path : projectPath ? `${projectPath}/${f.path}` : "";
+        return (
+          <button
+            key={f.path}
+            type="button"
+            className="file-chip"
+            title={`${f.path} — click to preview`}
+            disabled={!abs}
+            onClick={() => abs && useStore.getState().openFilePreview({ path: abs, projectPath })}
+          >
+            <span className="file-chip-name mono">{rel}</span>
+            {f.created && <span className="hint">new</span>}
+            {(f.additions > 0 || f.deletions > 0) && (
+              <span className="diffstat">
+                <span className="add">+{f.additions}</span>{" "}
+                <span className="del">-{f.deletions}</span>
+              </span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -388,8 +655,11 @@ const Item = memo(function Item({
                 </div>
               </div>
             ) : (
+              // The summary previews the thought's first line so a scrolling
+              // timeline shows where the reasoning went, not a wall of
+              // identical "Thought process" rows.
               <details className="thinking">
-                <summary>Thought process</summary>
+                <summary title="Thought process">{thinkingPreview(item.thinking)}</summary>
                 <div className="thinking-body">{item.thinking}</div>
               </details>
             ))}
@@ -415,20 +685,39 @@ const Item = memo(function Item({
     case "interaction":
       return <InteractionCard item={item} sessionId={sessionId} />;
     case "system":
-      // End-of-turn markers get a full-width divider so "done" is unmissable.
       return item.tone === "info" ? (
-        item.text.startsWith("✓") ? (
-          <div className="turn-done">{item.text}</div>
-        ) : (
-          <div className="hint center">{item.text}</div>
-        )
+        <div className="hint center">{item.text}</div>
       ) : (
         <div className={`banner${item.tone === "warn" ? " warn" : ""}`}>{item.text}</div>
+      );
+    case "turn-end":
+      // The turn is only announced as finished once advisors are done —
+      // "finished" with a reviewer still reading would be a contradiction.
+      return item.pending ? (
+        <div className="turn-done pending">
+          <span className="work-live-dot" aria-hidden />
+          Advisors reviewing…
+        </div>
+      ) : (
+        <div className="turn-done">
+          ✓ Turn finished
+          {item.durationMs && item.durationMs >= 1000 ? ` in ${fmtDuration(item.durationMs)}` : ""}
+        </div>
       );
     default:
       return null;
   }
 });
+
+/** First meaningful line of a thought, clipped for use as a summary label. */
+function thinkingPreview(thinking: string): string {
+  const line =
+    thinking
+      .split("\n")
+      .find((l) => l.trim())
+      ?.trim() ?? "Thought process";
+  return line.length > 110 ? `${line.slice(0, 110)}…` : line;
+}
 
 // ---- tools ----------------------------------------------------------------
 
@@ -682,9 +971,19 @@ const AdvisorCard = memo(function AdvisorCard({
   item: Extract<TranscriptItem, { kind: "advisor" }>;
   projectPath?: string;
 }): JSX.Element {
+  // Blockers open by default — they're the ones that change what happens
+  // next. Everything else collapses to its header with a one-line preview.
+  const [open, setOpen] = useState(item.severity === "blocker");
+  const preview = item.text.replace(/\s+/g, " ").trim();
   return (
     <div className={`advisor-card ${item.severity}`}>
-      <div className="advisor-head">
+      <button
+        type="button"
+        className="advisor-head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span className="tool-chevron">{open ? "▾" : "▸"}</span>
         <span className="advisor-name">{item.name}</span>
         <span className={`severity-badge ${item.severity}`}>
           {item.severity === "unknown" ? "note" : item.severity}
@@ -697,10 +996,13 @@ const AdvisorCard = memo(function AdvisorCard({
             })}
           </span>
         )}
-      </div>
-      <div className="advisor-body">
-        <Markdown text={item.text} projectPath={projectPath} />
-      </div>
+        {!open && <span className="advisor-preview hint">{preview}</span>}
+      </button>
+      {open && (
+        <div className="advisor-body">
+          <Markdown text={item.text} projectPath={projectPath} />
+        </div>
+      )}
     </div>
   );
 });

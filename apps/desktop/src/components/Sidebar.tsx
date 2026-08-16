@@ -11,7 +11,14 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { DragEvent, JSX } from "react";
 import { useMemo, useState } from "react";
 import { engine } from "../engine-client";
-import { isActive, modelBasename, runStateLabel, type SessionView, useStore } from "../store";
+import {
+  advisorsReviewing,
+  isActive,
+  modelBasename,
+  runStateLabel,
+  type SessionView,
+  useStore,
+} from "../store";
 import { ChartIcon, FolderIcon, GearIcon, InboxIcon } from "./icons";
 import { ResizeHandle } from "./ResizeHandle";
 
@@ -505,7 +512,8 @@ function StatusIndicator({ view, active }: { view: SessionView; active: boolean 
   if (view.pendingInteractions > 0 || s.runState === "waiting") {
     return <span className={`dot attention${active ? "" : " blink"}`} aria-hidden />;
   }
-  if (isActive(s.runState)) {
+  // Advisors still reading count as "working" — the turn isn't finished yet.
+  if (isActive(s.runState) || (s.runState === "completed" && advisorsReviewing(view))) {
     return (
       <span className="working-dots" aria-hidden>
         <span />
@@ -541,7 +549,11 @@ function SessionRow({
   const s = view.summary;
   const advisorsOn = view.advisors.filter((a) => a.enabled).length;
   const needsInput = view.pendingInteractions > 0 || s.runState === "waiting";
-  const status = needsInput ? "Needs input" : runStateLabel(s.runState, s.activity);
+  const status = needsInput
+    ? "Needs input"
+    : s.runState === "completed" && advisorsReviewing(view)
+      ? "Advisors reviewing"
+      : runStateLabel(s.runState, s.activity);
   // Plan progress, visible without opening the session.
   const todoTasks = view.todoPhases?.flatMap((p) => p.tasks) ?? [];
   const todoDone = todoTasks.filter(

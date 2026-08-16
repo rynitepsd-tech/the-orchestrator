@@ -7,7 +7,7 @@
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { isActive, modelBasename, runStateLabel, useStore } from "../store";
+import { advisorsReviewing, isActive, modelBasename, runStateLabel, useStore } from "../store";
 
 interface Command {
   id: string;
@@ -131,7 +131,11 @@ export function CommandPalette(): JSX.Element {
       return views.map((v) => ({
         id: v.summary.sessionId,
         label: v.summary.title,
-        hint: `${v.summary.projectPath.split("/").pop()} · ${modelBasename(v.summary.model)} · ${runStateLabel(v.summary.runState)}`,
+        hint: `${v.summary.projectPath.split("/").pop()} · ${modelBasename(v.summary.model)} · ${
+          v.summary.runState === "completed" && advisorsReviewing(v)
+            ? "Advisors reviewing"
+            : runStateLabel(v.summary.runState)
+        }`,
         run: () => store.select(v.summary.sessionId),
       }));
     }
