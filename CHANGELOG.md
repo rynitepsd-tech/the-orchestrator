@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.4
+
+- **"Advisors reviewing" can no longer get stuck.** OMP reports a healthy
+  advisor's runtime as "running" forever — it never meant "reviewing right
+  now". The engine now opens a review window when a turn actually ends and
+  closes it via OMP's real drain signal (`waitForAdvisorCatchup`, the same
+  10-minute mechanism OMP's own print mode uses), so "Advisors reviewing…"
+  resolves to "✓ Turn finished" the moment reviews drain — including after
+  advisor-triggered continuation turns.
+- **Multi-answer turns keep every real answer.** An advisor-driven turn can
+  produce several substantive reports separated by review notes; previously
+  only the literal last message survived condensing, which could leave a
+  trailing bookkeeping remark as "the" answer while the real reports folded
+  into the "Worked" line. Substantive answers (multi-paragraph or long) now
+  stay visible — matching OMP's own never-hide-assistant-text semantics —
+  while one-line narration still condenses.
+- Fixed a React hook-order violation in the tool card that could crash the
+  transcript when a non-native tool's render path changed mid-lifecycle.
+
 ## 0.5.3
 
 - **"Turn finished" waits for the advisors.** The end-of-turn marker stays a

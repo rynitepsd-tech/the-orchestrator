@@ -256,9 +256,15 @@ function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] 
       return;
     }
 
-    // Finished: the last answer stays out; everything else — thinking,
-    // tools, subagents, settled approvals, advisor notes, intermediate
-    // narration — folds into the "Worked" line.
+    // Finished: answers stay out; everything else — thinking, tools,
+    // subagents, settled approvals, advisor notes, intermediate narration —
+    // folds into "Worked" lines. An advisor-driven turn produces SEVERAL real
+    // answers separated by review notes, so every substantive report stays
+    // visible — folding all but the literal last message buried a 20-minute
+    // report under the "Worked" line while a trailing bookkeeping remark
+    // became "the" answer. One-line narration ("Now the db layer:") condenses.
+    const isReport = (it: TranscriptItem): boolean =>
+      it.kind === "assistant" && (it.text.trim().length >= 400 || /\n\s*\n/.test(it.text.trim()));
     let lastAnswer = -1;
     for (let i = segment.length - 1; i >= 0; i--) {
       const it = segment[i];
@@ -286,7 +292,7 @@ function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] 
       bucket.length = 0;
     };
     segment.forEach((it, i) => {
-      if (i === lastAnswer || alwaysVisible(it)) {
+      if (i === lastAnswer || isReport(it) || alwaysVisible(it)) {
         flushBucket();
         nodes.push({ kind: "plain", item: it });
         if (i === lastAnswer && files.length) {
@@ -417,7 +423,7 @@ function toolRunSummary(tools: ToolItem[]): string {
             ? `searched "${query.length > 30 ? `${query.slice(0, 30)}…` : query}"`
             : "ran a search"
           : `ran ${n.search} searches`;
-      case "other":
+      default:
         return n.other === 1
           ? `used ${[...otherLabels][0]}`
           : otherLabels.size === 1
@@ -809,6 +815,10 @@ const ToolCard = memo(function ToolCard({
 }): JSX.Element {
   const { label, mcp } = toolTitle(item.name);
   const d = item.detail;
+  // Hooks live above the OMP-card early return: the return condition can flip
+  // mid-lifecycle (a running tool ending without an OMP payload), and a
+  // changed hook count between renders is a React crash.
+  const [openState, setOpen] = useState<boolean | null>(null);
   // Rich rendering for the long tail — only when we have the raw payload
   // (or the call is still running); old replays keep the text fallback.
   if (!NATIVE_TOOL_NAMES.has(item.name) && (item.state === "running" || item.ompResult)) {
@@ -825,7 +835,6 @@ const ToolCard = memo(function ToolCard({
   };
   // One quiet line per tool call; output/diff only on request. Errors
   // auto-expand — those are the ones worth reading.
-  const [openState, setOpen] = useState<boolean | null>(null);
   const hasBody = Boolean(
     (d?.kind === "edit" && d.diff) || item.output || (item.error && item.state === "error"),
   );

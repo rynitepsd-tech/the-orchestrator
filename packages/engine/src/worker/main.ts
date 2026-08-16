@@ -601,6 +601,43 @@ function checkPersisted(): void {
  */
 const lastAdvisorState = new Map<string, string>();
 
+/**
+ * Whether a post-turn advisor review is actually in flight.
+ *
+ * OMP's `PerAdvisorStat.status === "running"` only means the advisor RUNTIME
+ * is alive — a healthy advisor reports "running" forever, even between
+ * reviews. Mapping that straight to "reviewing" left every finished turn
+ * showing "advisors are still reviewing" until the end of time. The real
+ * signal is `waitForAdvisorCatchup`: a review window opens when a terminal
+ * turn ends and closes when the advisors' backlog (and their emitted notes)
+ * has drained.
+ */
+let advisorReviewGen = 0;
+let advisorReviewInFlight = false;
+const ADVISOR_CATCHUP_MS = 10 * 60_000;
+
+function beginAdvisorReviewWatch(): void {
+  const s: any = session;
+  if (advisors.size === 0 || !s.isAdvisorActive?.()) return;
+  if (typeof s.waitForAdvisorCatchup !== "function") return;
+  const gen = ++advisorReviewGen;
+  advisorReviewInFlight = true;
+  refreshAdvisors(); // "reviewing" goes out before session.finished does
+  void (async () => {
+    try {
+      // Give the just-ended turn a beat to land in the advisors' queues, or
+      // the catchup wait can resolve before the review it should cover starts.
+      await new Promise((r) => setTimeout(r, 1_000));
+      await s.waitForAdvisorCatchup(ADVISOR_CATCHUP_MS);
+    } catch {
+      /* the wait must never wedge the finished state */
+    }
+    if (gen !== advisorReviewGen) return; // a newer turn owns the window now
+    advisorReviewInFlight = false;
+    refreshAdvisors();
+  })();
+}
+
 function refreshAdvisors(): void {
   let stats: any;
   try {
@@ -621,7 +658,9 @@ function refreshAdvisors(): void {
       cfg?.enabled === false
         ? "disabled"
         : per?.status === "running"
-          ? "reviewing"
+          ? advisorReviewInFlight
+            ? "reviewing"
+            : "idle"
           : per?.status === "paused"
             ? "paused"
             : per?.status === "quota_exhausted"
@@ -699,6 +738,11 @@ session.subscribe((ev: any) => {
     emitUsage();
     emitContext();
     checkPersisted();
+    // A terminal turn end opens the advisor review window — for owned prompts
+    // this runs before the prompt resolves (so `session.finished` already sees
+    // "reviewing"), and it equally covers advisor-triggered continuation turns
+    // that never pass through the prompt handler.
+    if (ev.isTerminal !== false) beginAdvisorReviewWatch();
   }
 });
 
