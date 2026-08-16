@@ -185,12 +185,20 @@ class Worker {
     } catch {
       /* fall through to kill */
     }
-    // Give it a beat to exit cleanly, then insist.
+    // Give it a beat to exit cleanly, then insist: SIGTERM (the worker's
+    // handler disposes MCP/LSP children), and SIGKILL if even that hangs.
     const raced = await Promise.race([
       this.#proc.exited,
       new Promise((r) => setTimeout(() => r("timeout"), 5_000)),
     ]);
-    if (raced === "timeout") this.#proc.kill();
+    if (raced === "timeout") {
+      this.#proc.kill();
+      const raced2 = await Promise.race([
+        this.#proc.exited,
+        new Promise((r) => setTimeout(() => r("timeout"), 4_000)),
+      ]);
+      if (raced2 === "timeout") this.#proc.kill(9);
+    }
   }
 }
 

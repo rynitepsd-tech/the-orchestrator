@@ -130,9 +130,9 @@ export interface RequestPayloads {
   /** Open a file/folder with the OS default app (or a named app), or reveal it in Finder. */
   "path.open": { path: string; reveal?: boolean; app?: string };
   /**
-   * Read any user-clicked path for the inspector preview (unlike
-   * project.readFile this is not confined to a project root; only clicks on
-   * rendered file links reach it). Images come back as base64.
+   * Read a clicked file link for the inspector preview. Confined to the
+   * symlink-resolved roots of OPEN projects — everything else returns
+   * kind "denied". Images come back as base64.
    */
   "file.read": { path: string };
   /** Commit the working tree, push, and open a PR (branching off default). */
@@ -251,7 +251,7 @@ export interface ResponsePayloads {
   "project.readFile": { file: string; content: string; binary: boolean; truncated: boolean };
   "path.open": { opened: boolean };
   "file.read": {
-    kind: "text" | "image" | "pdf" | "binary" | "missing" | "directory";
+    kind: "text" | "image" | "pdf" | "binary" | "missing" | "directory" | "denied";
     content?: string;
     base64?: string;
     mime?: string;
@@ -362,6 +362,67 @@ export class FrameDecoder {
 // Runtime validation
 // ---------------------------------------------------------------------------
 
+/**
+ * Every request type, as a runtime value — the compile-time RequestType union
+ * is erased at the IPC boundary, so the engine needs a real list to reject
+ * unknown frames. The `satisfies` + Missing assertion keep it in lockstep
+ * with RequestPayloads: adding a request without listing it here is a type
+ * error.
+ */
+export const REQUEST_TYPES = [
+  "engine.hello",
+  "engine.shutdown",
+  "engine.diagnostics",
+  "models.list",
+  "providers.list",
+  "providers.quota",
+  "providers.login",
+  "providers.logout",
+  "project.open",
+  "project.environment",
+  "project.changes",
+  "project.diff",
+  "project.files",
+  "project.readFile",
+  "path.open",
+  "file.read",
+  "project.ship",
+  "attachments.store",
+  "sessions.discover",
+  "sessions.create",
+  "sessions.close",
+  "sessions.list",
+  "session.prompt",
+  "session.abort",
+  "session.compact",
+  "session.rewindPoints",
+  "session.rewind",
+  "session.fork",
+  "session.setModel",
+  "session.setFastMode",
+  "session.setTitle",
+  "session.setApprovalMode",
+  "session.transcript",
+  "session.advisors.set",
+  "session.advisors.get",
+  "approval.respond",
+  "extension.ui.respond",
+  "slash.list",
+  "mcp.status",
+  "mcp.reconnect",
+  "usage.session",
+  "usage.query",
+  "usage.reindex",
+] as const satisfies readonly RequestType[];
+
+type MissingRequestTypes = Exclude<RequestType, (typeof REQUEST_TYPES)[number]>;
+// If this line errors, a request type was added to RequestPayloads but not
+// to REQUEST_TYPES above.
+const _allRequestTypesListed: MissingRequestTypes extends never ? true : never = true;
+void _allRequestTypesListed;
+
+const REQUEST_TYPE_SET: ReadonlySet<string> = new Set(REQUEST_TYPES);
+
 export function isEngineRequest(v: unknown): v is EngineRequest {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
@@ -369,6 +430,7 @@ export function isEngineRequest(v: unknown): v is EngineRequest {
     typeof o.protocolVersion === "number" &&
     typeof o.requestId === "string" &&
     typeof o.type === "string" &&
+    REQUEST_TYPE_SET.has(o.type) &&
     "payload" in o
   );
 }

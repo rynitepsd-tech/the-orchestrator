@@ -113,46 +113,59 @@ client.
   filesystem-backed asset URL scheme for the webview to walk.
 - **Capabilities are an explicit allowlist**
   (`apps/desktop/src-tauri/capabilities/default.json`), scoped to the `main`
-  window: `core:default`, `core:event:default`, window start-dragging and
-  set-title, the devtools toggle, `dialog:allow-open` / `allow-message` /
-  `allow-confirm`, `notification:default`, and `opener:allow-open-url`. There is
-  no `fs` plugin, no `shell` plugin, and no `http` plugin in the allowlist.
+  window: core window controls, dialogs, notifications, the opener plugin
+  (http/https URLs and reveal-in-Finder only), the updater, and restart. There
+  is no `fs` plugin, no `shell` plugin, and no `http` plugin in the allowlist.
 
-The webview therefore cannot read files, cannot spawn processes, and cannot open
-sockets. Everything privileged — project discovery, session lifecycle, tool
-execution — happens in the engine, which the frontend reaches only over the
-typed NDJSON request/event protocol. `macOSPrivateApi` is enabled for window
+Be honest about what this boundary is: the webview cannot touch the filesystem
+or spawn processes **through Tauri plugins**, but it holds the engine's stdin
+via the `engine_send` command and can send any protocol frame. `isEngineRequest`
+validates the envelope and rejects unknown request types; payloads are validated
+per-handler, not by a central schema. The blast radius of a compromised webview
+is therefore the engine request surface itself. That surface is deliberately
+constrained: all project/file read requests (`project.readFile`,
+`project.files`, `project.diff`, `project.changes`, `project.ship`, `file.read`)
+are confined to the symlink-resolved roots of projects with a live session —
+the engine rejects everything else, so the webview cannot use the pipe as an
+arbitrary file reader. `path.open` launches the OS default app on an existing
+path and returns no file contents. `macOSPrivateApi` is enabled for window
 appearance (transparent titlebar), not for capability.
 
 ## Approvals
 
 Upstream OMP approval semantics are preserved, and the app now bridges them into
 the GUI rather than only inheriting whatever your terminal OMP config allows.
-The isolation layer is explicit about it
-(`packages/omp-adapter/src/isolation.ts`): `autoApprove` defaults to `false` in
-production, and the only place it is ever set true is the supervisor's test
-mode (`packages/engine/src/worker/supervisor.ts`,
-`autoApprove: this.#testMode`), which is reached only when
-`ORCHESTRATOR_TEST_MODE=1`. Sessions are created with `hasUI: true`. **The
-absence of a UI response is never treated as consent** — a tool call awaiting
-approval simply stays blocked until it is answered or the turn is aborted.
+`autoApprove` defaults to `false` in production; the only place it can be true
+is the supervisor's test mode (`packages/engine/src/worker/supervisor.ts`,
+`autoApprove: this.#testMode && config.approvalMode !== "always-ask"`), reached
+only under `ORCHESTRATOR_TEST_MODE=1`. Sessions are created with `hasUI: true`.
+**The absence of a UI response is never treated as consent** — a tool call
+awaiting approval simply stays blocked until it is answered or the turn is
+aborted.
 
-Each worker implements upstream's `ClientBridge.requestPermission`, wired via
-`session.setClientBridge()` immediately after `createAgentSession` (the same
-pattern upstream's own ACP mode uses). A permission gate
-(`packages/omp-adapter/src/acp-permission-gate.ts`) intercepts bash, edit,
-delete, and move before they run, and turns each request into an
-`approval.request` event carrying the exact command and a fixed four-option
-menu: Allow once, Always allow, Reject, Always reject. The host renders that as
-an inline card; `approval.respond` routes the answer back to the right pending
-request, and `allow_always` / `reject_always` are cached per session (per
-`cacheKey`) so repeated identical requests in one session do not re-prompt.
+Two gates cover the tool set, and both are wired:
 
-Per-session **approval mode** — `always-ask`, `write`, or `yolo` — is enforced
-worker-side: `write` auto-allows file edits but still prompts for bash;
-`always-ask` prompts for everything gated; `yolo` auto-allows everything gated.
-None of these bypass the gate itself — they configure what the gate decides
-without asking, not whether the gate runs.
+1. **Upstream's ACP permission gate** (in `@oh-my-pi/pi-coding-agent`,
+   `src/session/acp-permission-gate.ts`) intercepts `bash`, `edit`, `delete`,
+   and `move` and routes them through each worker's
+   `ClientBridge.requestPermission` into an `approval.request` event — the
+   inline card with Allow once / Always allow / Reject / Always reject.
+   `allow_always` / `reject_always` are cached per session so identical
+   requests do not re-prompt.
+2. **OMP's tool-tier gate** covers everything else (`write`, `eval`,
+   `browser`, `computer`, MCP tools…) by tier. The worker binds it to the
+   session's approval mode with a runtime, non-persisted
+   `settings.override("tools.approvalMode", …)` at boot and on every mode
+   change — without that override the tier gate reads the user's global
+   config, which defaults to yolo. `bash`/`delete`/`move` carry per-tool
+   tier allows so the ACP gate remains their single prompter; `edit` stays
+   tier-gated because the ACP gate only prompts for destructive edit ops.
+
+Per-session **approval mode** — `always-ask` (Manual), `write` (Auto-accept
+edits), or `yolo` (Full access) — is set from the composer, enforced
+worker-side, and every change is recorded in the session transcript. A switch
+to Full access requires an explicit confirmation dialog in the UI, and the
+worker announces it with a warning notice.
 
 Aborting a session **cancels any pending approval prompt** for it rather than
 leaving it stuck waiting forever with no way to resolve it from the UI.
@@ -192,12 +205,15 @@ This project adds no network behaviour of its own:
 - No analytics.
 - No crash reporting.
 - No cloud backend, no accounts, no sign-up, no licence check.
-- No update check, and nothing downloaded at runtime — the engine binary and the
-  OMP native addon are shipped inside the bundle.
+- The auto-updater checks the GitHub release feed
+  (`releases/latest/download/latest.json`) and downloads updates from that
+  release only; every artifact is minisign-verified against the public key
+  pinned in `tauri.conf.json` before install. The engine binary and the OMP
+  native addon are shipped inside the bundle, never fetched separately.
 
-The only outbound traffic is OMP's own: calls to the model providers you have
-configured, any MCP servers your OMP configuration starts, and web search or
-fetch if the agent uses those tools. Provider quota figures come from
+The only other outbound traffic is OMP's own: calls to the model providers you
+have configured, any MCP servers your OMP configuration starts, and web search
+or fetch if the agent uses those tools. Provider quota figures come from
 `authStorage.fetchUsageReports()` only; see [USAGE_MODEL.md](./USAGE_MODEL.md).
 
 ## Local data

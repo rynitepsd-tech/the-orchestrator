@@ -145,20 +145,29 @@ export class EngineServer {
   }
 
   emitEvent(event: ProductEvent): void {
+    // Redaction covers events like every other boundary. The two streaming
+    // delta types are exempt for throughput — they carry model prose, and the
+    // complete message is redacted again when it lands in a response replay.
+    const redacted =
+      event.type === "assistant.text" || event.type === "assistant.thinking"
+        ? event
+        : redactValue(event);
     const frame: EngineEventFrame = {
       protocolVersion: PROTOCOL_VERSION,
       sequence: ++this.#sequence,
-      sessionId: (event as { sessionId?: string }).sessionId,
-      event,
+      sessionId: (redacted as { sessionId?: string }).sessionId,
+      event: redacted,
     };
     this.#write(encodeFrame(frame));
   }
 
   emitLifecycle(event: EngineEventFrame["event"]): void {
+    // Lifecycle errors carry auth failure text and worker stderr tails —
+    // exactly the strings most likely to embed a credential.
     const frame: EngineEventFrame = {
       protocolVersion: PROTOCOL_VERSION,
       sequence: ++this.#sequence,
-      event,
+      event: redactValue(event),
     };
     this.#write(encodeFrame(frame));
   }

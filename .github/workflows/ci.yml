@@ -81,9 +81,8 @@ jobs:
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all --check
 
       - name: cargo clippy
-        # Advisory for now: lint findings are reported but do not block the run.
-        # Remove continue-on-error (and keep -D warnings) to make it blocking.
-        continue-on-error: true
+        # Blocking: this is also the only step that COMPILES the Rust shell,
+        # so letting it fail softly meant a broken build could ship.
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Build frontend

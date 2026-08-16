@@ -13,8 +13,9 @@ const SENSITIVE_KEY_RE =
   // snake/kebab compounds and exact words…
   // …plus camelCase compounds (authToken, clientSecret, userApiKey). The
   // camel arm requires the singular capitalised suffix so usage-counter keys
-  // like `inputTokens`/`totalTokens` are never scrubbed.
-  /^(?:(?:.*_)?(?:api[-_]?key|apikey|secret|password|passwd|token|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer|authorization|auth|cookie|session[-_]?key|private[-_]?key|client[-_]?secret|credential[s]?)|[a-z][A-Za-z0-9]*(?:Token|Secret|Password|ApiKey))$/i;
+  // like `inputTokens`/`totalTokens` are never scrubbed. The compound prefix
+  // accepts both separators (x-api-key as well as my_api_key).
+  /^(?:(?:.*[-_])?(?:api[-_]?key|apikey|secret|password|passwd|token|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer|authorization|auth|cookie|session[-_]?key|private[-_]?key|client[-_]?secret|credential[s]?)|[a-z][A-Za-z0-9]*(?:Token|Secret|Password|ApiKey))$/i;
 
 /**
  * Value patterns that look like credentials even under an innocuous key.
@@ -34,14 +35,26 @@ const VALUE_PATTERNS: Array<{ re: RegExp; replace: string }> = [
   { re: /\bAIza[0-9A-Za-z_-]{35}\b/g, replace: REDACTED },
   // JWTs
   { re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, replace: REDACTED },
-  // PEM blocks
+  // Stripe / npm tokens
+  { re: /\b[sr]k_live_[A-Za-z0-9]{16,}/g, replace: REDACTED },
+  { re: /\bnpm_[A-Za-z0-9]{30,}/g, replace: REDACTED },
+  // URL basic auth: scheme://user:password@host
+  { re: /\b(https?:\/\/[^/\s:@]+:)[^/\s:@]+@/gi, replace: `$1${REDACTED}@` },
+  // OAuth-style JSON bodies
   {
-    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    re: /("(?:access|refresh|id)_token"\s*:\s*")[^"]{6,}(")/gi,
+    replace: `$1${REDACTED}$2`,
+  },
+  // PEM / PGP private-key blocks. The body match is BOUNDED — an unclosed
+  // BEGIN header in megabytes of output must not go quadratic (ReDoS).
+  {
+    re: /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,20000}?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/g,
     replace: REDACTED,
   },
-  // key=value / key: value in free text
+  // key=value / key: value in free text. The prefix arm covers env-style
+  // names (GITHUB_TOKEN=, MY_API_KEY:) where \b cannot sit after "_".
   {
-    re: /\b((?:api[-_]?key|token|secret|password|authorization)\s*[=:]\s*)(["']?)[^\s"',;]{6,}\2/gi,
+    re: /\b([\w-]*(?:api[-_]?key|token|secret|password|authorization)\s*[=:]\s*)(["']?)[^\s"',;]{6,}\2/gi,
     replace: `$1${REDACTED}`,
   },
 ];
@@ -63,7 +76,9 @@ export function redactText(input: string): string {
  * is additionally scanned for credential-shaped values.
  */
 export function redactValue<T>(value: T, depth = 0): T {
-  if (depth > 12) return value;
+  // Depth cap fails CLOSED: an over-deep subtree is dropped, never passed
+  // through raw — depth-nesting a secret must not be an escape hatch.
+  if (depth > 12) return "[redacted:depth]" as unknown as T;
 
   if (typeof value === "string") return redactText(value) as unknown as T;
   if (value === null || typeof value !== "object") return value;
@@ -75,7 +90,10 @@ export function redactValue<T>(value: T, depth = 0): T {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     if (SENSITIVE_KEY_RE.test(k)) {
-      out[k] = REDACTED;
+      // Only string-ish values can BE credentials. Replacing a boolean with
+      // the truthy string "[redacted]" flips flags like `secret: false`
+      // (extension inputs would all render as password fields).
+      out[k] = typeof v === "string" || typeof v === "number" ? REDACTED : v;
     } else if (/^env$/i.test(k) && v && typeof v === "object") {
       // Environment maps: redact by key name, keep names visible for debugging.
       const env: Record<string, unknown> = {};
@@ -93,15 +111,18 @@ export function redactValue<T>(value: T, depth = 0): T {
   return out as unknown as T;
 }
 
-/** Redact and truncate a tool output body for transport. */
+/** Truncate FIRST, then redact — the size cap is the ReDoS guard, so the
+ * regexes must only ever see capped input. */
 export function sanitizeOutput(
   text: string,
   maxBytes = 256 * 1024,
 ): { output: string; truncated: boolean } {
-  const redacted = redactText(text);
-  if (Buffer.byteLength(redacted, "utf8") <= maxBytes) {
-    return { output: redacted, truncated: false };
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) {
+    return { output: redactText(text), truncated: false };
   }
-  const buf = Buffer.from(redacted, "utf8").subarray(0, maxBytes);
-  return { output: `${buf.toString("utf8")}\n… output truncated …`, truncated: true };
+  const buf = Buffer.from(text, "utf8").subarray(0, maxBytes);
+  return {
+    output: `${redactText(buf.toString("utf8"))}\n… output truncated …`,
+    truncated: true,
+  };
 }

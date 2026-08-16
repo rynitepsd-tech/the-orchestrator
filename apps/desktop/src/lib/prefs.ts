@@ -63,6 +63,8 @@ export interface Prefs {
   projectAliases: Record<string, string>;
   /** Preset each session runs with, keyed by OMP session path. */
   sessionPresetByPath: Record<string, string>;
+  /** Approval mode each session runs with, keyed by OMP session path. */
+  sessionApprovalByPath: Record<string, string>;
 }
 
 const KEY = "orchestrator.prefs.v1";
@@ -87,6 +89,7 @@ export const DEFAULT_PREFS: Prefs = {
   sessionOrder: [],
   projectAliases: {},
   sessionPresetByPath: {},
+  sessionApprovalByPath: {},
 };
 
 export function loadPrefs(): Prefs {

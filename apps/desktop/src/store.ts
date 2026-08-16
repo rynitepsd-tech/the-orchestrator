@@ -11,6 +11,7 @@ import type {
   AdvisorConfig,
   AdvisorSeverity,
   AdvisorState,
+  ApprovalMode,
   ContextUsage,
   DiscoveredSession,
   EngineErrorPayload,
@@ -115,6 +116,8 @@ export interface SessionView {
   todoPhases?: Array<{ name: string; tasks: TodoTaskItem[] }>;
   /** Name of the preset this session runs with (client-side bookkeeping). */
   presetName?: string;
+  /** Approval mode the session runs with; undefined = always-ask. */
+  approvalMode?: ApprovalMode;
   error?: EngineErrorPayload;
   /** Set when the worker died; the session can be resumed from persistence. */
   interrupted?: boolean;
@@ -232,6 +235,8 @@ interface AppState {
   goHome(): void;
   /** Record which preset a session runs with (persisted by session path). */
   setSessionPreset(id: string, presetName?: string): void;
+  /** Record a session's approval mode (persisted by session path). */
+  setSessionApproval(id: string, mode: ApprovalMode): void;
   /** Seed a session's usage breakdown fetched from the engine index. */
   setSessionUsage(id: string, breakdown: UsageBreakdown): void;
   setUpdateAvailable(u?: { version: string; notes?: string }): void;
@@ -315,8 +320,12 @@ export const useStore = create<AppState>((set, get) => ({
             advisors,
             advisorStates: {},
             pendingInteractions: 0,
-            // Resumed sessions remember which preset they run with.
+            // Resumed sessions remember which preset and approval mode
+            // they run with.
             presetName: path ? s.prefs.sessionPresetByPath[path] : undefined,
+            approvalMode: path
+              ? (s.prefs.sessionApprovalByPath[path] as ApprovalMode | undefined)
+              : undefined,
           },
         },
         // Newest first: a fresh session belongs at the top of its project group.
@@ -418,6 +427,22 @@ export const useStore = create<AppState>((set, get) => ({
         savePrefs(prefs);
       }
       return { sessions: { ...s.sessions, [id]: { ...v, presetName } }, prefs };
+    }),
+
+  setSessionApproval: (id, mode) =>
+    set((s) => {
+      const v = s.sessions[id];
+      if (!v) return {};
+      const path = v.summary.ompSessionPath;
+      let prefs = s.prefs;
+      if (path) {
+        prefs = {
+          ...s.prefs,
+          sessionApprovalByPath: { ...s.prefs.sessionApprovalByPath, [path]: mode },
+        };
+        savePrefs(prefs);
+      }
+      return { sessions: { ...s.sessions, [id]: { ...v, approvalMode: mode } }, prefs };
     }),
 
   setSessionUsage: (id, breakdown) =>
@@ -527,6 +552,19 @@ export const useStore = create<AppState>((set, get) => ({
           },
         };
       }
+      // Same for an approval mode chosen pre-persistence.
+      if (
+        view.approvalMode &&
+        prefs.sessionApprovalByPath[e.ompSessionPath] !== view.approvalMode
+      ) {
+        prefs = {
+          ...prefs,
+          sessionApprovalByPath: {
+            ...prefs.sessionApprovalByPath,
+            [e.ompSessionPath]: view.approvalMode,
+          },
+        };
+      }
       if (prefs !== state.prefs) {
         savePrefs(prefs);
         set({ prefs });
@@ -567,8 +605,12 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
       return { ...v, summary: { ...v.summary, title: e.title } };
 
     case "user.message": {
+      // Hydration and the live stream can race — the same event may be
+      // applied twice (rebuild included it, then the in-flight copy lands).
+      // Events carry ids; applying one twice must be a no-op.
+      if (t.some((x) => x.id === e.messageId)) return v;
       // The UI adds an optimistic bubble at send time (id `u<timestamp>`), and
-      // the worker echoes the same message when OMP starts processing it
+      // the worker echoes the same message when OMP picks it up
       // (id `<session>:u<seq>`). Reconcile the echo into the optimistic bubble
       // instead of rendering the message twice. Replay ids (`:ru<seq>`) never
       // match the optimistic pattern, so history is unaffected.
@@ -914,9 +956,12 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         transcript: [...t, { kind: "system", id: nextId(), text: e.error.message, tone: "error" }],
       };
 
-    case "session.notice":
+    case "session.notice": {
       // Runtime notices carry the REAL cause behind terse state flips (which
       // model, which error) — e.g. `Advisor "Architect" unavailable for …: 401`.
+      // A tail-identical notice is a double-applied event, not news.
+      const prev = t[t.length - 1];
+      if (prev?.kind === "system" && prev.text === e.message) return v;
       return {
         ...v,
         transcript: [
@@ -925,10 +970,11 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
             kind: "system",
             id: nextId(),
             text: e.message,
-            tone: e.level === "error" ? "error" : "warn",
+            tone: e.level === "error" ? "error" : e.level === "warning" ? "warn" : "info",
           },
         ],
       };
+    }
 
     case "session.finished": {
       // A clear end-of-turn marker in the transcript, honest about advisors:
@@ -946,9 +992,13 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
                 : `✓ Done${took}`,
             }
           : null;
+      // Idempotence under hydrate/live races: a marker identical to the one
+      // already at the tail is the same event applied twice, not a new turn.
+      const tail = v.transcript[v.transcript.length - 1];
+      const isDup = marker && tail?.kind === "system" && tail.text === marker.text;
       return {
         ...v,
-        transcript: marker ? [...v.transcript, marker] : v.transcript,
+        transcript: marker && !isDup ? [...v.transcript, marker] : v.transcript,
         summary: {
           ...v.summary,
           runState: e.runState,

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.1
+
+- **OMP 17.3.4** ships inside this update: monorepo edit-rejection fix,
+  subagent completion stall fix, MCP Streamable-HTTP — and mupdf is gone,
+  closing the AGPL exposure.
+- **Permission modes.** Every session's composer has a Manual / Auto edits /
+  Full access switch, enforced worker-side through OMP's tool-tier gate — so
+  Manual now genuinely gates write/eval/browser/computer, not just bash.
+  Modes persist per session, changes are recorded in the transcript, and
+  Full access asks for confirmation.
+- **Security hardening.** Provider sign-in works again (opener permissions
+  were missing); all file reads from the UI are confined to open projects'
+  symlink-resolved roots; the engine rejects unknown request frames;
+  SECURITY.md now tells the truth.
+- **Redaction overhaul** — fails closed on depth, redacts events and
+  lifecycle frames, catches env-style tokens/URL basic-auth/Stripe/npm/
+  OAuth-JSON/PGP, and can no longer be stalled by giant unclosed PEM blocks
+  (or flip boolean flags to truthy strings).
+- **Turn integrity.** Steering or queueing mid-turn no longer fires a false
+  "✓ Done"; double-applied events can't duplicate messages or markers.
+- Composer clears when switching sessions; auto-compaction and provider
+  retries announce themselves; workers tear down MCP/LSP children on
+  shutdown (with SIGKILL escalation); usage history survives transient I/O
+  failures; agents stop emitting LaTeX (and the common forms render anyway).
+- Requires macOS 14.5+ (the native addon always did; the installer now says
+  so). CI: clippy is blocking and releases gate on both typechecks.
+
 ## 0.5.0
 
 - **Advisor failures explain themselves and heal.** The real cause (model,

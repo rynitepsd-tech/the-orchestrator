@@ -7,15 +7,15 @@ It embeds OMP rather than reimplementing it, so it is tightly coupled to a speci
 
 | | |
 |---|---|
-| **OMP version** | `17.3.1` |
+| **OMP version** | `17.3.4` |
 | **Upstream repo** | `can1357/oh-my-pi` |
-| **Tag** | `v17.3.1` |
-| **npm packages** | `@oh-my-pi/pi-coding-agent@17.3.1` and its workspace siblings |
-| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@17.3.1` (and `-darwin-x64` for Intel) |
+| **Tag** | `v17.3.4` |
+| **npm packages** | `@oh-my-pi/pi-coding-agent@17.3.4` and its workspace siblings |
+| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@17.3.4` (and `-darwin-x64` for Intel) |
 | **Required runtime** | Bun `>= 1.3.14` (OMP declares `engines.bun`) |
 | **Upstream licence** | MIT (Mario Zechner; Can Bölük) |
 
-Upstream `HEAD` at the time of writing is `v17.3.1` — this project is caught up to upstream's latest
+Upstream `HEAD` at the time of writing is `v17.3.4` — this project is caught up to upstream's latest
 tag. The pin is still deliberate, not incidental: a future upstream release does not move this
 project's version automatically (see [Updating the bundled OMP](#updating-the-bundled-omp)).
 

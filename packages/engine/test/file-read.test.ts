@@ -1,21 +1,28 @@
 /**
- * file.read — the inspector preview's read-anything endpoint. It must
- * classify text/image/binary correctly, expand ~, and never throw on
- * missing paths (the UI shows a message instead).
+ * file.read — the inspector preview's read endpoint. It must classify
+ * text/image/pdf/binary correctly INSIDE an open project's root, and refuse
+ * everything else: absolute paths outside the roots, ~ paths, and symlink
+ * escapes. The containment boundary is the point of these tests.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleRequest } from "../src/handlers";
 import type { EngineServer } from "../src/server";
 
 const dir = mkdtempSync(join(tmpdir(), "orch-fileread-"));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const outside = mkdtempSync(join(tmpdir(), "orch-fileread-outside-"));
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
+});
 
-// file.read never touches the runtime manager; a hollow server is enough.
-const server = { manager: undefined } as unknown as EngineServer;
+// file.read consults the manager's live sessions for its allowlist.
+const server = {
+  manager: { list: () => [{ projectPath: dir }] },
+} as unknown as EngineServer;
 
 async function read(path: string) {
   return (await handleRequest(server, {
@@ -31,7 +38,7 @@ async function read(path: string) {
   };
 }
 
-describe("file.read", () => {
+describe("file.read inside the project", () => {
   test("reads a text file with content intact", async () => {
     const p = join(dir, "notes.md");
     writeFileSync(p, "# Title\n\nbody\n");
@@ -72,21 +79,68 @@ describe("file.read", () => {
     expect(r.kind).toBe("binary");
   });
 
-  test("reports missing paths instead of throwing", async () => {
+  test("reports in-bounds missing paths as missing (locate-by-name relies on it)", async () => {
     const r = await read(join(dir, "nope.txt"));
     expect(r.kind).toBe("missing");
   });
 
-  test("identifies directories", async () => {
+  test("identifies the project root as a directory", async () => {
     const r = await read(dir);
     expect(r.kind).toBe("directory");
   });
+});
 
-  test("expands a leading ~ to the home directory", async () => {
-    const r = await read("~");
-    expect(r.kind).toBe("directory");
-    // and a ~-prefixed file resolves the same as its absolute twin
-    const abs = await read(homedir());
-    expect(abs.kind).toBe("directory");
+describe("file.read containment", () => {
+  test("denies absolute paths outside every open project", async () => {
+    const p = join(outside, "secret.txt");
+    writeFileSync(p, "nope");
+    expect((await read(p)).kind).toBe("denied");
+    expect((await read("/etc/hosts")).kind).toBe("denied");
+  });
+
+  test("denies ~ paths (home is not a project root)", async () => {
+    expect((await read("~")).kind).toBe("denied");
+    expect((await read(`~/${".ssh/config"}`)).kind).toBe("denied");
+    expect((await read(homedir())).kind).toBe("denied");
+  });
+
+  test("denies missing paths outside the roots without confirming absence", async () => {
+    expect((await read(join(outside, "ghost.txt"))).kind).toBe("denied");
+  });
+
+  test("denies symlink escapes: a link inside the project to outside it", async () => {
+    const escape = join(outside, "escape.txt");
+    writeFileSync(escape, "outside contents");
+    const link = join(dir, "innocent.txt");
+    symlinkSync(escape, link);
+    expect((await read(link)).kind).toBe("denied");
+  });
+
+  test("allows symlinks that stay inside the project", async () => {
+    const realFile = join(dir, "real.txt");
+    writeFileSync(realFile, "inside");
+    const link = join(dir, "alias.txt");
+    symlinkSync(realFile, link);
+    const r = await read(link);
+    expect(r.kind).toBe("text");
+    expect(r.content).toBe("inside");
+  });
+
+  test("with no live sessions, everything is denied", async () => {
+    const empty = { manager: { list: () => [] } } as unknown as EngineServer;
+    const p = join(dir, "notes.md");
+    const r = (await handleRequest(empty, {
+      id: "t",
+      type: "file.read",
+      payload: { path: p },
+    } as never)) as { kind: string };
+    expect(r.kind).toBe("denied");
+  });
+
+  test("root allowlist is symlink-resolved (tmpdir vs /private on macOS)", async () => {
+    // realpath(dir) may differ from dir on macOS; reading via the real path
+    // must still be allowed.
+    const p = join(realpathSync(dir), "notes.md");
+    expect((await read(p)).kind).toBe("text");
   });
 });

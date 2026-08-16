@@ -152,7 +152,17 @@ export function App(): JSX.Element {
       if (e.type === "engine.error") st.setEngineError(e.error);
       if (e.type === "engine.auth") {
         // The engine never opens a browser itself; the OAuth URL arrives here.
-        if (e.status === "browser" && e.url) void openUrl(e.url);
+        // https-only, and a failure to open must be SAID — this is the whole
+        // provider sign-in path.
+        if (e.status === "browser" && e.url && /^https:\/\//i.test(e.url)) {
+          const url = e.url;
+          void openUrl(url).catch(() => {
+            st.setEngineError({
+              kind: "auth",
+              message: `Could not open the sign-in page. Open it manually: ${url}`,
+            });
+          });
+        }
         if (e.status === "failed" && e.message) {
           st.setEngineError({ kind: "auth", message: e.message });
         }
@@ -309,6 +319,13 @@ export function App(): JSX.Element {
         title: d.title,
         advisors: [],
         resumeSessionPath: d.path,
+        // Restore the session's remembered approval mode at boot, so the
+        // tier gate is correct from the first tool call.
+        approvalMode: useStore.getState().prefs.sessionApprovalByPath[d.path] as
+          | "always-ask"
+          | "write"
+          | "yolo"
+          | undefined,
       });
       useStore.getState().addProject(proj.project);
       useStore.getState().addSession(res.session, []);

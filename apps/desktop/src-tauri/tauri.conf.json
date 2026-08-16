@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "The Orchestrator",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "identifier": "dev.orchestrator.desktop",
   "build": {
     "beforeDevCommand": "bun run vite:dev",
@@ -56,7 +56,7 @@
     "shortDescription": "Desktop harness for OhMyPi",
     "longDescription": "An unofficial native macOS desktop interface for the OhMyPi (OMP) coding agent. Run several agent sessions at once, choose models and advisors per session, and see exactly which models consume your usage.",
     "macOS": {
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "14.5",
       "entitlements": null,
       "exceptionDomain": null,
       "frameworks": [],

@@ -85,6 +85,41 @@ function pushPlain(nodes: ReactNode[], text: string, keyBase: string, k: () => n
   if (last < text.length) nodes.push(text.slice(last));
 }
 
+/**
+ * Models raised on math-enabled renderers emit `$\textcolor{red}{\textbf{…}}$`
+ * for status labels. We don't render LaTeX — but showing the raw markup is
+ * worse. Translate the two constructs that actually appear into styled text.
+ */
+const LATEX_COLOR: Record<string, string> = {
+  red: "var(--danger)",
+  orange: "var(--warn)",
+  yellow: "var(--warn)",
+  green: "var(--ok)",
+  teal: "var(--teal)",
+  blue: "var(--link)",
+  gray: "var(--text-faint)",
+  grey: "var(--text-faint)",
+  purple: "var(--accent)",
+};
+
+function latexNode(tok: string, key: string): ReactNode | null {
+  const colored = /^\$?\\textcolor\{([^}]+)\}\{(.+)\}\$?$/.exec(tok);
+  if (colored) {
+    const color = LATEX_COLOR[colored[1].trim().toLowerCase()];
+    let inner = colored[2];
+    const boldInner = /^\\textbf\{(.+)\}$/.exec(inner);
+    if (boldInner) inner = boldInner[1];
+    return (
+      <strong key={key} style={color ? { color } : undefined}>
+        {inner}
+      </strong>
+    );
+  }
+  const bold = /^\\textbf\{(.+)\}$/.exec(tok);
+  if (bold) return <strong key={key}>{bold[1]}</strong>;
+  return null;
+}
+
 /** Inline spans: `code`, **bold**, *italic*, [text](url), bare URLs, file refs. */
 function renderInline(text: string, keyBase: string, projectPath?: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -104,14 +139,18 @@ function renderInline(text: string, keyBase: string, projectPath?: string): Reac
       );
       continue;
     }
-    // bold / italic / links on the remaining text
-    const rx = /(\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+    // bold / italic / links / LaTeX-style labels on the remaining text
+    const rx =
+      /(\$?\\textcolor\{[^}]+\}\{(?:\\textbf\{[^}]*\}|[^{}])*\}\$?|\\textbf\{[^{}]*\}|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
     let last = 0;
     let m: RegExpExecArray | null;
     while ((m = rx.exec(part))) {
       if (m.index > last) pushPlain(nodes, part.slice(last, m.index), keyBase, k);
       const tok = m[0];
-      if (tok.startsWith("**")) {
+      const latex = tok.includes("\\text") ? latexNode(tok, `${keyBase}-x${k()}`) : null;
+      if (latex) {
+        nodes.push(latex);
+      } else if (tok.startsWith("**")) {
         nodes.push(<strong key={`${keyBase}-b${k()}`}>{tok.slice(2, -2)}</strong>);
       } else if (tok.startsWith("*")) {
         nodes.push(<em key={`${keyBase}-i${k()}`}>{tok.slice(1, -1)}</em>);

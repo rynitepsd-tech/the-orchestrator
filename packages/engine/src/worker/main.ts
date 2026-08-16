@@ -218,6 +218,31 @@ const sessionManager = boot.resumeSessionPath
 // makes that harmless, and it is the only initializer exported publicly.
 const settings = await OMP.Settings.init({ cwd: boot.projectPath, agentDir: boot.agentDir });
 
+/**
+ * The ACP bridge only gates {bash, edit, delete, move}; every other tool
+ * (write, eval, browser, computer, MCP…) is gated by OMP's TIER system,
+ * which reads `tools.approvalMode` — a setting that defaults to yolo and
+ * that nothing here set before. Overriding it (runtime-only, never
+ * persisted; one session per process makes the singleton per-session) is
+ * what makes the session's approval mode actually mean something.
+ *
+ * bash/delete/move get per-tool "allow" at the tier so the ACP bridge stays
+ * their single prompter (no double-ask). `edit` is deliberately NOT
+ * excepted: the ACP bridge only prompts for destructive edit ops, so plain
+ * content edits must fall through to the tier gate in always-ask.
+ */
+function applyApprovalSettings(mode: ApprovalMode): void {
+  const st: any = settings;
+  if (typeof st.override !== "function") return;
+  try {
+    st.override("tools.approvalMode", mode);
+    st.override("tools.approval", { bash: "allow", delete: "allow", move: "allow" });
+  } catch (e) {
+    err(`approval settings override failed: ${String(e)}`);
+  }
+}
+applyApprovalSettings(approvalMode);
+
 const created = await OMP.createAgentSession({
   cwd: boot.projectPath, // always explicit; never setProjectDir/process.chdir
   agentDir: boot.agentDir,
@@ -241,7 +266,10 @@ const created = await OMP.createAgentSession({
     "Advisor agents may interject review notes (as <advisory> messages) while you work. " +
     "Weigh them on their merits — but your final message each turn must be a complete, " +
     "standalone answer addressed to the user. Never address the advisor, and never let " +
-    "a revision read as a reply to the review; restate the full outcome for the user.",
+    "a revision read as a reply to the review; restate the full outcome for the user.\n" +
+    "The UI renders GitHub-flavored markdown only — no LaTeX or math delimiters. Write " +
+    "status labels and emphasis as plain markdown (e.g. **P0 — ship-blocking**), never " +
+    "\\textcolor or $…$.",
 } as never);
 const session = created.session;
 const mcpManager: any = (created as any).mcpManager;
@@ -912,7 +940,12 @@ async function handle(req: any): Promise<unknown> {
         }
       }
 
-      setRunState("queued");
+      // Only the prompt that STARTS a turn owns its lifecycle. A steer or
+      // queue into an already-running turn resolves as soon as it is
+      // delivered — emitting `finished` there would declare the turn done
+      // while the owning prompt is still mid-flight.
+      const owning = !busy;
+      if (owning) setRunState("queued");
       const turnStartedAt = Date.now();
       // The turn runs in the background: the host gets an immediate ack so the
       // user can switch sessions while this one keeps working.
@@ -936,13 +969,15 @@ async function handle(req: any): Promise<unknown> {
           }
         } finally {
           flush();
-          setRunState(outcome);
-          emit({
-            type: "session.finished",
-            sessionId: boot.sessionId,
-            runState: outcome,
-            durationMs: Date.now() - turnStartedAt,
-          });
+          if (owning) {
+            setRunState(outcome);
+            emit({
+              type: "session.finished",
+              sessionId: boot.sessionId,
+              runState: outcome,
+              durationMs: Date.now() - turnStartedAt,
+            });
+          }
           checkPersisted();
         }
       })();
@@ -1048,6 +1083,21 @@ async function handle(req: any): Promise<unknown> {
       const mode = String(req.payload.mode) as ApprovalMode;
       if (!["always-ask", "write", "yolo"].includes(mode)) return { ok: false };
       approvalMode = mode;
+      applyApprovalSettings(mode);
+      // A mode change is a real security state change — it goes in the
+      // transcript, loudest for the mode that stops asking.
+      emit({
+        type: "session.notice",
+        sessionId: boot.sessionId,
+        level: mode === "yolo" ? "warning" : "info",
+        message:
+          mode === "yolo"
+            ? "Approval mode set to Full access — tools now run without prompts."
+            : mode === "write"
+              ? "Approval mode set to Auto-accept edits — file edits run without prompts; commands still ask."
+              : "Approval mode set to Manual — every gated tool asks first.",
+        source: "approval",
+      });
       return { ok: true };
     }
 
@@ -1168,6 +1218,21 @@ const reader = Bun.stdin.stream().getReader();
 
 process.on("uncaughtException", (e) => err(`uncaught: ${e?.message}`, { stack: e?.stack }));
 process.on("unhandledRejection", (e) => err(`unhandled rejection: ${String(e)}`));
+
+// A supervisor kill() lands here as SIGTERM. Dispose the session so MCP/LSP
+// child processes are torn down with us instead of being orphaned; the
+// deadline guarantees we exit even if dispose hangs.
+process.on("SIGTERM", () => {
+  setTimeout(() => process.exit(0), 3_000).unref?.();
+  void (async () => {
+    try {
+      await (session as any).dispose?.();
+    } catch {
+      /* exiting anyway */
+    }
+    process.exit(0);
+  })();
+});
 
 while (true) {
   const { done, value } = await reader.read();

@@ -568,11 +568,20 @@ export async function readProjectFile(
   cwd: string,
   file: string,
 ): Promise<{ file: string; content: string; binary: boolean; truncated: boolean }> {
+  const empty = { file, content: "", binary: false, truncated: false };
+  // Containment is checked on REAL paths: lexical prefix checks pass through
+  // symlinks, and the caller-supplied cwd itself must resolve cleanly. The
+  // engine additionally requires cwd to be an open project's root.
   const abs = resolve(cwd, file);
-  // The preview stays inside the project; a crafted "../../" path must not
-  // read arbitrary files through the engine.
-  if (!abs.startsWith(resolve(cwd) + "/") && abs !== resolve(cwd)) {
-    return { file, content: "", binary: false, truncated: false };
+  let rootReal: string;
+  try {
+    const { realpathSync } = await import("node:fs");
+    rootReal = realpathSync(resolve(cwd));
+    if (!existsSync(abs)) return empty;
+    const absReal = realpathSync(abs);
+    if (absReal !== rootReal && !absReal.startsWith(`${rootReal}/`)) return empty;
+  } catch {
+    return empty;
   }
   try {
     const f = Bun.file(abs);

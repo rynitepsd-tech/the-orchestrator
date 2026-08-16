@@ -4,6 +4,7 @@
  * One exhaustive switch over the protocol's request union, so adding a request
  * type without handling it is a type error rather than a runtime surprise.
  */
+import { realpathSync } from "node:fs";
 import {
   discoverSlashCommandsIn,
   gitChanges,
@@ -19,12 +20,44 @@ import type {
 } from "@orchestrator/protocol";
 import type { EngineServer } from "./server";
 
+/** Symlink-resolved project roots of live sessions — the read allowlist. */
+function liveProjectRoots(m: EngineServer["manager"]): string[] {
+  const roots = new Set<string>();
+  for (const s of m.list()) {
+    try {
+      roots.add(realpathSync(s.projectPath));
+    } catch {
+      /* a vanished project dir guards itself */
+    }
+  }
+  return [...roots];
+}
+
+function insideAny(roots: string[], realPath: string): boolean {
+  return roots.some((r) => realPath === r || realPath.startsWith(`${r}/`));
+}
+
 export async function handleRequest(
   server: EngineServer,
   req: EngineRequest,
 ): Promise<ResponsePayloads[RequestType]> {
   const m = server.manager;
   const p = req.payload as any;
+
+  // Project-scoped reads must target an OPEN project. The path arrives from
+  // the webview, which is not trusted to define its own containment root.
+  const requireOpenProject = (path: string): string => {
+    let real: string;
+    try {
+      real = realpathSync(String(path));
+    } catch {
+      real = "";
+    }
+    if (!real || !liveProjectRoots(m).includes(real)) {
+      throw Object.assign(new Error("Not an open project folder."), { kind: "configuration" });
+    }
+    return real;
+  };
 
   switch (req.type as RequestType) {
     // --- engine ------------------------------------------------------------
@@ -93,24 +126,28 @@ export async function handleRequest(
     }
 
     case "project.changes":
-      return gitChanges(String(p.path));
+      return gitChanges(requireOpenProject(p.path));
 
     case "project.diff":
-      return gitDiff(String(p.path), String(p.file));
+      return gitDiff(requireOpenProject(p.path), String(p.file));
 
     case "project.files": {
       const { listProjectFiles } = await import("@orchestrator/omp-adapter");
-      return listProjectFiles(String(p.path), p.query ? String(p.query) : undefined, p.limit);
+      return listProjectFiles(
+        requireOpenProject(p.path),
+        p.query ? String(p.query) : undefined,
+        p.limit,
+      );
     }
 
     case "project.readFile": {
       const { readProjectFile } = await import("@orchestrator/omp-adapter");
-      return readProjectFile(String(p.path), String(p.file));
+      return readProjectFile(requireOpenProject(p.path), String(p.file));
     }
 
     case "project.ship": {
       const { shipChanges } = await import("@orchestrator/omp-adapter");
-      return shipChanges(String(p.path), {
+      return shipChanges(requireOpenProject(p.path), {
         title: String(p.title),
         body: p.body ? String(p.body) : undefined,
       });
@@ -138,13 +175,33 @@ export async function handleRequest(
     }
 
     case "file.read": {
-      // Preview of any user-clicked file link. Read-only and click-gated, the
-      // same trust level as path.open (which launches apps on these paths).
+      // Preview of a clicked file link — confined to the open projects'
+      // real (symlink-resolved) roots. "Click-gated" is a UI property, not a
+      // protocol one; the engine enforces the boundary itself.
       const { existsSync, statSync } = await import("node:fs");
       const { homedir } = await import("node:os");
+      const { resolve, dirname, basename, join } = await import("node:path");
       let target = String(p.path);
       if (target.startsWith("~")) target = target.replace(/^~(?=$|\/)/, homedir());
-      if (!existsSync(target)) return { kind: "missing" };
+      const roots = liveProjectRoots(m);
+      if (!existsSync(target)) {
+        // Missing files report as missing ONLY when they'd be in bounds —
+        // the UI's locate-by-name fallback depends on that signal. The parent
+        // is realpath'd so /var vs /private/var style aliases still match.
+        let probe = resolve(target);
+        try {
+          probe = join(realpathSync(dirname(probe)), basename(probe));
+        } catch {
+          /* parent missing too — the lexical path is all there is */
+        }
+        return insideAny(roots, probe) ? { kind: "missing" } : { kind: "denied" };
+      }
+      try {
+        target = realpathSync(target);
+      } catch {
+        return { kind: "missing" };
+      }
+      if (!insideAny(roots, target)) return { kind: "denied" };
       const stat = statSync(target);
       if (stat.isDirectory()) return { kind: "directory" };
       const ext = target.split(".").pop()?.toLowerCase() ?? "";

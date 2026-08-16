@@ -62,11 +62,16 @@ export class UsageIndex {
 
   /** Load the snapshot. Fast (one JSON.parse per line); malformed lines skip. */
   load(): number {
-    this.#loaded = true;
-    if (!existsSync(this.#path)) return 0;
+    if (!existsSync(this.#path)) {
+      this.#loaded = true;
+      return 0;
+    }
     let loaded = 0;
     try {
       const text = readFileSync(this.#path, "utf8");
+      // Loaded flips only AFTER a successful read: a transient read failure
+      // followed by a flush must not clobber the on-disk lifetime history
+      // with a near-empty accumulator.
       for (const line of text.split("\n")) {
         if (!line.trim()) continue;
         try {
@@ -79,6 +84,7 @@ export class UsageIndex {
           /* torn line from a crashed writer */
         }
       }
+      this.#loaded = true;
     } catch (e) {
       logger.warn("usage-index", `failed to load usage index: ${String(e)}`);
     }
@@ -133,7 +139,12 @@ export class UsageIndex {
   /** Atomic snapshot write; safe against crashes mid-write. */
   flush(): void {
     if (!this.#dirty) return;
-    this.#dirty = false;
+    // A flush that never loaded would rewrite the file with only this
+    // process's records — refuse rather than destroy lifetime history.
+    if (!this.#loaded) {
+      logger.warn("usage-index", "flush skipped: index never loaded cleanly");
+      return;
+    }
     try {
       const dir = join(this.#path, "..");
       mkdirSync(dir, { recursive: true });
@@ -146,6 +157,9 @@ export class UsageIndex {
           .join("\n") + "\n",
       );
       renameSync(tmp, this.#path);
+      // Cleared only after the rename lands — a failed write stays dirty and
+      // is retried by the next scheduled save instead of being lost.
+      this.#dirty = false;
     } catch (e) {
       logger.warn("usage-index", `failed to persist usage index: ${String(e)}`);
     }

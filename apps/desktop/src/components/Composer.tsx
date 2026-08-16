@@ -7,8 +7,8 @@
  * MCP prompts) — never a hardcoded list.
  */
 
-import type { RunState } from "@orchestrator/protocol";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import type { ApprovalMode, RunState } from "@orchestrator/protocol";
+import { ask, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
@@ -131,6 +131,28 @@ export function Composer({
     setPresetDraft(false);
   };
 
+  // Permission mode: how much the agent may do without asking. Server-side
+  // enforcement (worker + OMP tier gate); this is just the switch.
+  const approvalMode =
+    useStore((s) => (sessionId ? s.sessions[sessionId]?.approvalMode : undefined)) ?? "always-ask";
+
+  const setApproval = async (mode: ApprovalMode) => {
+    if (!sessionId || mode === approvalMode) return;
+    if (mode === "yolo") {
+      const yes = await ask(
+        "Full access lets the agent run commands and edit files without asking first. Enable for this session?",
+        { title: "Full access", kind: "warning" },
+      );
+      if (!yes) return;
+    }
+    try {
+      const r = await engine.request("session.setApprovalMode", { sessionId, mode });
+      if (r.ok) useStore.getState().setSessionApproval(sessionId, mode);
+    } catch (e) {
+      useStore.getState().setEngineError(e as never);
+    }
+  };
+
   const toggleFast = () => {
     if (!sessionId) return;
     void engine
@@ -167,6 +189,8 @@ export function Composer({
     commandsCache.current = null;
     setSlash(null);
     setAttachments([]);
+    // A half-typed prompt for one repo must never be sent to another.
+    setText("");
     // Switching sessions should land you ready to type, like every chat app.
     taRef.current?.focus();
   }, [sessionId]);
@@ -399,6 +423,23 @@ export function Composer({
             <option value="__new">＋ New preset…</option>
           </select>
           {fastToggle}
+          <select
+            className="ctl-chip ctl-select"
+            value={approvalMode}
+            title={
+              approvalMode === "yolo"
+                ? "Full access — tools run without prompts. Server-enforced per session."
+                : approvalMode === "write"
+                  ? "Auto-accept edits — file edits run without prompts; commands still ask."
+                  : "Manual — every gated tool asks before running."
+            }
+            disabled={disabled || !sessionId}
+            onChange={(e) => void setApproval(e.target.value as ApprovalMode)}
+          >
+            <option value="always-ask">Manual</option>
+            <option value="write">Auto edits</option>
+            <option value="yolo">Full access</option>
+          </select>
           <span className="spacer" />
           {busy && canSend && (
             <>

@@ -277,7 +277,7 @@ export interface SessionFinished extends EventBase {
  */
 export interface SessionNotice extends EventBase {
   type: "session.notice";
-  level: "warning" | "error";
+  level: "info" | "warning" | "error";
   message: string;
   source?: string;
 }

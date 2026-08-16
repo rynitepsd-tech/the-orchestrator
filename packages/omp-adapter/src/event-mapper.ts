@@ -203,6 +203,66 @@ export class EventMapper {
         return [];
       }
 
+      case "auto_compaction_start":
+        // Compaction can take a while; without a line in the transcript the
+        // app just looks frozen.
+        return [
+          {
+            type: "session.notice",
+            sessionId,
+            level: "info",
+            message: "Context limit reached — compacting the conversation automatically…",
+            source: "compaction",
+          },
+        ];
+
+      case "auto_compaction_end": {
+        const failed = Boolean((ev as any).errorMessage) && !(ev as any).willRetry;
+        return [
+          {
+            type: "session.notice",
+            sessionId,
+            level: failed ? "warning" : "info",
+            message: failed
+              ? `Automatic compaction failed: ${String((ev as any).errorMessage)}`
+              : (ev as any).skipped
+                ? "Automatic compaction skipped."
+                : "Context compacted — continuing.",
+            source: "compaction",
+          },
+        ];
+      }
+
+      case "auto_retry_start": {
+        const attempt = Number((ev as any).attempt ?? 0);
+        const max = Number((ev as any).maxAttempts ?? 0);
+        const why = (ev as any).errorMessage ? ` (${String((ev as any).errorMessage)})` : "";
+        return [
+          {
+            type: "session.notice",
+            sessionId,
+            level: "warning",
+            message: `Provider error — retrying${max ? ` (attempt ${attempt}/${max})` : ""}${why}`,
+            source: "retry",
+          },
+        ];
+      }
+
+      case "auto_retry_end": {
+        if ((ev as any).success) return []; // recovery is visible in the resumed stream
+        return [
+          {
+            type: "session.notice",
+            sessionId,
+            level: "error",
+            message: `Provider retries exhausted${
+              (ev as any).finalError ? `: ${String((ev as any).finalError)}` : "."
+            }`,
+            source: "retry",
+          },
+        ];
+      }
+
       case "notice": {
         // Upstream routes real failure causes here (e.g. `Advisor "X"
         // unavailable for provider/model: 401 …`). Dropping them leaves the UI

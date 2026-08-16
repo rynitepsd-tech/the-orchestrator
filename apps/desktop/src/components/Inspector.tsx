@@ -498,7 +498,7 @@ const NUMBERED_LINES_MAX = 4000;
 const MARKDOWN_EXT_RX = /\.(md|markdown|mdx)$/i;
 
 interface FileReadResult {
-  kind: "text" | "image" | "pdf" | "binary" | "missing" | "directory";
+  kind: "text" | "image" | "pdf" | "binary" | "missing" | "directory" | "denied";
   content?: string;
   base64?: string;
   mime?: string;
@@ -615,6 +615,13 @@ function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
     switch (data.kind) {
       case "missing":
         return <div className="empty">File not found on disk.</div>;
+      case "denied":
+        return (
+          <div className="empty">
+            Outside your open projects — previews stay inside project folders. Use Open to view it
+            in another app.
+          </div>
+        );
       case "directory":
         return (
           <div className="empty">
