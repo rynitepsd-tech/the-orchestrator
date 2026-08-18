@@ -32,6 +32,7 @@ import type {
   SessionSummary,
   UsageBreakdown,
 } from "@orchestrator/protocol";
+import { createLoginController } from "./auth-login";
 import { logger } from "./logging";
 import { UsageIndex } from "./usage-index";
 import { type WorkerSpawnEnv, WorkerSupervisor } from "./worker/supervisor";
@@ -227,37 +228,12 @@ export class RuntimeManager {
       );
     }
     try {
-      const identity = await auth.login(provider, {
-        onAuth: (info: { url?: string; launchUrl?: string; instructions?: string }) => {
-          emitLifecycle({
-            type: "engine.auth",
-            provider,
-            status: "browser",
-            url: String(info?.launchUrl ?? info?.url ?? ""),
-            message: info?.instructions ? String(info.instructions) : undefined,
-          });
-        },
-        onProgress: (message: string) => {
-          emitLifecycle({
-            type: "engine.auth",
-            provider,
-            status: "progress",
-            message: String(message),
-          });
-        },
-        // Manual code entry is not bridged in this build; surface it honestly
-        // instead of hanging on a prompt nobody can see.
-        onPrompt: async () => {
-          emitLifecycle({
-            type: "engine.auth",
-            provider,
-            status: "failed",
-            message:
-              "This provider's flow needs manual code entry, which the GUI does not support yet. Run `omp` in a terminal instead.",
-          });
-          throw new Error("Manual code entry is not supported in the GUI sign-in flow.");
-        },
-      });
+      const { ctrl, failure } = createLoginController(provider, emitLifecycle);
+      const loginPromise: Promise<any> = auth.login(provider, ctrl);
+      // When `failure` wins the race, OMP's own rejection is a wrapped
+      // cancellation — observe it so it never surfaces as unhandled.
+      loginPromise.catch(() => {});
+      const identity = await Promise.race([loginPromise, failure]);
       // Fresh credentials change what the catalogue considers available.
       this.#modelsCache = null;
       try {

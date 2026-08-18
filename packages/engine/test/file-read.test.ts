@@ -109,10 +109,10 @@ describe("file.read containment", () => {
   });
 
   test("denies symlink escapes: a link inside the project to outside it", async () => {
-    const escape = join(outside, "escape.txt");
-    writeFileSync(escape, "outside contents");
+    const escapeTarget = join(outside, "escape.txt");
+    writeFileSync(escapeTarget, "outside contents");
     const link = join(dir, "innocent.txt");
-    symlinkSync(escape, link);
+    symlinkSync(escapeTarget, link);
     expect((await read(link)).kind).toBe("denied");
   });
 

@@ -223,6 +223,8 @@ function Presets(): JSX.Element {
 export function Providers(): JSX.Element {
   const providers = useStore((s) => s.providers);
   const setCatalogue = useStore((s) => s.setCatalogue);
+  const authNotice = useStore((s) => s.authNotice);
+  const setAuthNotice = useStore((s) => s.setAuthNotice);
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -230,6 +232,7 @@ export function Providers(): JSX.Element {
   const connect = async (name: string) => {
     setBusyProvider(name);
     setAuthMsg(null);
+    setAuthNotice(undefined);
     try {
       // OAuth runs 10+ minutes worst case; the engine emits engine.auth events
       // (browser URL etc.) which App handles globally.
@@ -269,6 +272,7 @@ export function Providers(): JSX.Element {
           aria-label="Search providers"
         />
       )}
+      {authNotice && <div className="banner info">{authNotice}</div>}
       {authMsg && <div className="banner info">{authMsg}</div>}
       {matching.length === 0 && <div className="empty">No providers match.</div>}
       {connected.map((p) => (

@@ -152,19 +152,33 @@ export function App(): JSX.Element {
       if (e.type === "engine.error") st.setEngineError(e.error);
       if (e.type === "engine.auth") {
         // The engine never opens a browser itself; the OAuth URL arrives here.
-        // https-only, and a failure to open must be SAID — this is the whole
-        // provider sign-in path.
-        if (e.status === "browser" && e.url && /^https:\/\//i.test(e.url)) {
+        // https (or OMP's localhost launch route) only, and a failure to open
+        // must be SAID — this is the whole provider sign-in path.
+        if (e.status === "browser" && e.url) {
           const url = e.url;
-          void openUrl(url).catch(() => {
+          const openable =
+            /^https:\/\//i.test(url) || /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/i.test(url);
+          if (openable) {
+            void openUrl(url).catch(() => {
+              st.setEngineError({
+                kind: "auth",
+                message: `Could not open the sign-in page. Open it manually: ${url}`,
+              });
+            });
+          } else {
             st.setEngineError({
               kind: "auth",
-              message: `Could not open the sign-in page. Open it manually: ${url}`,
+              message: `Refusing to open a non-https sign-in URL. Open it manually: ${url}`,
             });
-          });
+          }
+          // Device-code flows put the code the user must type here.
+          if (e.message) st.setAuthNotice(e.message);
         }
-        if (e.status === "failed" && e.message) {
-          st.setEngineError({ kind: "auth", message: e.message });
+        if (e.status === "prompt" && e.message) st.setAuthNotice(e.message);
+        if (e.status === "done") st.setAuthNotice(undefined);
+        if (e.status === "failed") {
+          st.setAuthNotice(undefined);
+          if (e.message) st.setEngineError({ kind: "auth", message: e.message });
         }
       }
     };

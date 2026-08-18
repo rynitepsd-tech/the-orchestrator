@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.5
+
+- **Connecting a provider works again for first-time users.** OMP 17.3.4
+  changed its OAuth hand-off in two ways the GUI mishandled: the sign-in event
+  now leads with a localhost "launch" URL, which the https-only browser gate
+  silently refused to open, and the major providers (Anthropic, OpenAI Codex,
+  Google) gained a paste-the-code fallback prompt, which the engine answered by
+  throwing — so every Connect click errored with "manual code entry is not
+  supported" while no browser ever appeared. The engine now opens the real
+  https authorize URL, answers optional prompts with their default (GitHub
+  Copilot's enterprise-domain question), parks the paste-code fallback so the
+  browser callback completes the flow, and fails fast with an actionable
+  message only when a flow truly has no local callback.
+- **Fixed runaway memory during first-run setup.** OMP retries a rejected
+  manual-code prompt in an unthrottled loop; the engine's throwing prompt
+  handler sent that loop spinning, flooding the event pipe with identical
+  frames until the process ballooned (reported at 90 GB). The prompt handler
+  no longer rejects, and the login path now collapses identical consecutive
+  lifecycle frames as defense in depth.
+- **Sign-in guidance is now visible where you clicked.** Device-code
+  instructions ("Enter code: XXXX-XXXX") and browser hand-off notices appear
+  in the Providers panel — including inside first-run setup, where the global
+  error banner used to hide behind the modal. Refusing to open a non-https
+  sign-in URL is now said out loud instead of failing silently.
+
 ## 0.5.4
 
 - **"Advisors reviewing" can no longer get stuck.** OMP reports a healthy
