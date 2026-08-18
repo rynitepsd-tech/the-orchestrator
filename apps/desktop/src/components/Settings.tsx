@@ -283,14 +283,11 @@ export function Providers(): JSX.Element {
   const q = query.trim().toLowerCase();
   const matching = q ? providers.filter((p) => p.name.toLowerCase().includes(q)) : providers;
   const connected = matching.filter((p) => p.authenticated);
-  // Providers with a real sign-in flow first; API-key-only ones after.
-  const disconnected = matching
-    .filter((p) => !p.authenticated)
-    .sort((a, b) => {
-      const ai = a.connect === "api-key" ? 1 : 0;
-      const bi = b.connect === "api-key" ? 1 : 0;
-      return ai !== bi ? ai - bi : a.name.localeCompare(b.name);
-    });
+  const disconnected = matching.filter((p) => !p.authenticated);
+  // The product runs on subscriptions: real sign-ins lead, key-based
+  // (per-token billed) providers are grouped separately below.
+  const subscriptions = disconnected.filter((p) => p.connect === "subscription");
+  const keyProviders = disconnected.filter((p) => p.connect !== "subscription");
 
   return (
     <div>
@@ -315,6 +312,12 @@ export function Providers(): JSX.Element {
           <div style={{ marginBottom: 6 }}>
             <strong>{authPrompt.provider}</strong>: {authPrompt.message}
           </div>
+          {providers.find((p) => p.name === authPrompt.provider)?.connect === "subscription" && (
+            <div className="hint" style={{ marginBottom: 6 }}>
+              Finish signing in from the browser window — this input is only a fallback if the
+              browser can't hand the code back automatically.
+            </div>
+          )}
           <form
             className="row"
             onSubmit={(e) => {
@@ -357,67 +360,99 @@ export function Providers(): JSX.Element {
           <span className="hint">Connected</span>
         </div>
       ))}
-      {disconnected.length > 0 && <div className="section-label">Not connected</div>}
-      {disconnected.map((p) => (
-        <div key={p.name}>
-          <div className="provider-row">
-            <span className="dot idle" />
-            <span className="provider-name">{p.name}</span>
-            <span className="hint">{p.modelCount} models</span>
-            <span className="spacer" />
-            {p.connect === "api-key" ? (
+      {subscriptions.length > 0 && (
+        <>
+          <div className="section-label">Subscriptions</div>
+          <div className="hint" style={{ marginBottom: 4 }}>
+            Sign in with a plan you already pay for — no API billing.
+          </div>
+          {subscriptions.map((p) => (
+            <div key={p.name} className="provider-row">
+              <span className="dot idle" />
+              <span className="provider-name">{p.name}</span>
+              <span className="hint">{p.modelCount} models</span>
+              <span className="spacer" />
               <button
-                className="btn"
-                disabled={busyProvider !== null}
-                onClick={() => {
-                  setKeyEntry(keyEntry === p.name ? null : p.name);
-                  setKeyValue("");
-                }}
-              >
-                {busyProvider === p.name ? "Saving…" : "Add API key…"}
-              </button>
-            ) : (
-              <button
-                className="btn"
+                className="btn btn-primary"
                 disabled={busyProvider !== null}
                 onClick={() => void connect(p.name)}
               >
-                {busyProvider === p.name ? "Signing in…" : "Connect"}
+                {busyProvider === p.name ? "Signing in…" : "Sign in"}
               </button>
-            )}
+            </div>
+          ))}
+        </>
+      )}
+      {keyProviders.length > 0 && (
+        <>
+          <div className="section-label">API-key providers</div>
+          <div className="hint" style={{ marginBottom: 4 }}>
+            Billed per token with an API key from the provider.
           </div>
-          {keyEntry === p.name && (
-            <form
-              className="row"
-              style={{ margin: "4px 0 8px 22px" }}
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (keyValue.trim()) void connect(p.name, keyValue.trim());
-              }}
-            >
-              <input
-                className="input"
-                type="password"
-                autoFocus
-                placeholder={`${p.name} API key`}
-                value={keyValue}
-                onChange={(e) => setKeyValue(e.target.value)}
-                aria-label={`${p.name} API key`}
-              />
-              <button
-                className="btn btn-primary"
-                type="submit"
-                disabled={!keyValue.trim() || busyProvider !== null}
-              >
-                Save
-              </button>
-            </form>
-          )}
-        </div>
-      ))}
+          {keyProviders.map((p) => (
+            <div key={p.name}>
+              <div className="provider-row">
+                <span className="dot idle" />
+                <span className="provider-name">{p.name}</span>
+                <span className="hint">{p.modelCount} models</span>
+                <span className="spacer" />
+                {p.connect === "interactive" ? (
+                  // OMP's key flow: opens the provider's key console in the
+                  // browser, then asks for the key via the prompt banner.
+                  <button
+                    className="btn"
+                    disabled={busyProvider !== null}
+                    onClick={() => void connect(p.name)}
+                  >
+                    {busyProvider === p.name ? "Waiting for key…" : "Get API key…"}
+                  </button>
+                ) : (
+                  <button
+                    className="btn"
+                    disabled={busyProvider !== null}
+                    onClick={() => {
+                      setKeyEntry(keyEntry === p.name ? null : p.name);
+                      setKeyValue("");
+                    }}
+                  >
+                    {busyProvider === p.name ? "Saving…" : "Add API key…"}
+                  </button>
+                )}
+              </div>
+              {keyEntry === p.name && (
+                <form
+                  className="row"
+                  style={{ margin: "4px 0 8px 22px" }}
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (keyValue.trim()) void connect(p.name, keyValue.trim());
+                  }}
+                >
+                  <input
+                    className="input"
+                    type="password"
+                    autoFocus
+                    placeholder={`${p.name} API key`}
+                    value={keyValue}
+                    onChange={(e) => setKeyValue(e.target.value)}
+                    aria-label={`${p.name} API key`}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    type="submit"
+                    disabled={!keyValue.trim() || busyProvider !== null}
+                  >
+                    Save
+                  </button>
+                </form>
+              )}
+            </div>
+          ))}
+        </>
+      )}
       <div className="hint" style={{ marginTop: 10 }}>
-        Connect runs the provider's own sign-in; if it asks for a code or key, an input appears
-        here. Sign-out is managed by OMP (<code>omp logout</code>).
+        Sign-in runs the provider's own flow; if it asks for a code or key, an input appears here.
+        Sign-out is managed by OMP (<code>omp logout</code>).
       </div>
     </div>
   );

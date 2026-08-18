@@ -109,13 +109,24 @@ export function listModels(registry: ModelRegistry, auth: AuthStorage): ModelInf
 }
 
 /**
- * How a provider connects: OMP's interactive login flow (browser OAuth and/or
- * prompts), or a pasted API key when the registry has no login for it.
+ * How a provider connects.
+ *
+ * "subscription": a real OAuth token flow (login + refreshToken in OMP's
+ * registry) — sign in with an existing plan (Claude Pro/Max, ChatGPT,
+ * Copilot, Gemini…), billed to the subscription, no API key involved.
+ * "interactive": has a login flow, but it is key-based — OMP opens the
+ * provider's key console and prompts for a pasted key (per-token billing).
+ * "api-key": no login flow at all; a pasted key is stored directly.
  */
-export function providerConnectKind(name: string): "interactive" | "api-key" {
+export function providerConnectKind(name: string): "subscription" | "interactive" | "api-key" {
   try {
-    const def = (getProviderDefinition as (id: string) => { login?: unknown } | undefined)(name);
-    return typeof def?.login === "function" ? "interactive" : "api-key";
+    const def = (
+      getProviderDefinition as (
+        id: string,
+      ) => { login?: unknown; refreshToken?: unknown } | undefined
+    )(name);
+    if (typeof def?.login !== "function") return "api-key";
+    return typeof def.refreshToken === "function" ? "subscription" : "interactive";
   } catch {
     return "api-key";
   }

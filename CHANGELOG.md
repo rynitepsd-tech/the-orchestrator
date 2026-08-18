@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.7
+
+- **Subscriptions lead the Providers panel.** The Orchestrator runs on plans
+  you already pay for, so real OAuth sign-ins (Claude Pro/Max, ChatGPT/Codex,
+  GitHub Copilot, Gemini, Cursor…) now sit in their own "Subscriptions"
+  section up top with a primary Sign in button — "no API billing" says why.
+  Key-based providers are grouped separately under "API-key providers" and
+  labelled by what actually happens: "Get API key…" for flows that open the
+  provider's key console and ask for a pasted key (which previously read as
+  a confusing surprise), "Add API key…" for direct storage. Classification
+  comes from OMP's own registry (login + refreshToken ⇒ subscription).
+- **The paste-code fallback explains itself.** During a subscription sign-in
+  the input that appears alongside the browser hand-off now says it's only a
+  fallback for when the browser can't hand the code back — not a request for
+  an API key.
+
 ## 0.5.6
 
 - **API-key providers can finally be connected from the GUI.** Most of the

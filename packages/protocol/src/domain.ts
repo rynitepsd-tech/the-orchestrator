@@ -128,11 +128,13 @@ export interface ProviderInfo {
   /** Account labels when the provider has OAuth accounts attached. */
   accounts?: Array<{ id: string; label?: string }>;
   /**
-   * How this provider connects: "interactive" runs OMP's login flow (browser
-   * OAuth and/or GUI-bridged prompts); "api-key" has no login flow at all and
-   * takes a pasted key stored via OMP's credential store.
+   * How this provider connects: "subscription" is a real OAuth sign-in billed
+   * to an existing plan; "interactive" runs OMP's login flow but it is
+   * key-based (opens the key console, prompts for a pasted key); "api-key"
+   * has no login flow at all and takes a pasted key stored via OMP's
+   * credential store.
    */
-  connect?: "interactive" | "api-key";
+  connect?: "subscription" | "interactive" | "api-key";
 }
 
 // ---------------------------------------------------------------------------
