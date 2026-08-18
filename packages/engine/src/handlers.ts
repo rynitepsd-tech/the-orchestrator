@@ -111,13 +111,7 @@ export async function handleRequest(
       };
 
     case "providers.logout":
-      // Sign-out is deliberately not exposed: OMP owns credential lifecycle,
-      // and revoking from a GUI that did not create the credential risks
-      // breaking the user's CLI. Actionable message, not a silent no-op.
-      throw Object.assign(
-        new Error("Sign-out is managed by OMP. Run `omp logout` in a terminal."),
-        { kind: "auth" },
-      );
+      return m.logout(String(p.provider));
 
     // --- projects ----------------------------------------------------------
     case "project.open":

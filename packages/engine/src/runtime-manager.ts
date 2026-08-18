@@ -289,6 +289,36 @@ export class RuntimeManager {
     return controller.answerPrompt(promptId, answer, cancel);
   }
 
+  /**
+   * Remove a provider's stored credentials through OMP's own store.
+   *
+   * The store is shared with the CLI, so this signs out `omp` too — the UI
+   * says so before asking. Credentials supplied by environment variables are
+   * not stored and survive removal; the message reports that honestly instead
+   * of pretending the provider is gone.
+   */
+  async logout(provider: string): Promise<{ ok: boolean; message?: string }> {
+    const auth: any = this.#authStorage;
+    const remove = auth?.logout ?? auth?.remove;
+    if (typeof remove !== "function") {
+      throw Object.assign(
+        new Error(
+          "This OMP build does not expose credential removal. Run `omp logout` in a terminal.",
+        ),
+        { kind: "auth" },
+      );
+    }
+    await remove.call(auth, provider);
+    await this.#afterCredentialChange();
+    const still = (await this.providers()).find((p) => p.name === provider);
+    return {
+      ok: true,
+      message: still?.authenticated
+        ? `Stored credentials removed, but ${provider} is still configured via ${still.credentialSource ?? "the environment"}.`
+        : `Disconnected ${provider}.`,
+    };
+  }
+
   /** Fresh credentials change what the catalogue considers available. */
   async #afterCredentialChange(): Promise<void> {
     this.#modelsCache = null;

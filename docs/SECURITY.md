@@ -38,23 +38,28 @@ control, with a clean working tree you can diff against.
 OMP owns credentials. This project adds no credential store of its own.
 
 - Provider credentials live in OMP's own storage under its agent directory
-  (`~/.omp/agent` unless overridden). The engine opens that store read-only
-  through the SDK (`discoverAuthStorage`) and passes the resulting `authStorage`
-  handle into `createAgentSession`.
+  (`~/.omp/agent` unless overridden). The engine opens that store through the
+  SDK (`discoverAuthStorage`) and passes the resulting `authStorage` handle
+  into `createAgentSession`. Writes go exclusively through OMP's own APIs
+  (`login`, `logout`, `set`) — the app never touches the store's files or
+  schema itself.
 - The app never copies, re-encrypts, mirrors, or exports API keys. There is no
   keychain entry, no config file, and no database owned by The Orchestrator that
   contains a secret.
-- Settings → Providers can trigger sign-in from the GUI, but the app still never
-  asks you to type an API key into a window it controls. `providers.login` runs
-  OMP's own OAuth flow (`AuthStorage.login`); the engine emits `engine.auth`
-  lifecycle events carrying the browser URL, the host opens that URL in the
-  system browser, and OMP's own flow writes the resulting credential straight
-  into its own store. The engine process never receives or handles the secret
-  itself. Manual-code OAuth flows are refused with an actionable message rather
-  than prompting for a code the app would have to relay.
-- Disconnecting a provider is intentionally *not* exposed in the GUI —
-  `providers.logout` still refuses and points at running `omp logout` in a
-  terminal.
+- Settings → Providers runs OMP's own login flows (`AuthStorage.login`). For
+  OAuth subscription sign-ins the engine emits `engine.auth` lifecycle events
+  carrying the browser URL, the host opens it in the system browser, and OMP's
+  loopback callback writes the credential straight into its own store — the
+  secret never transits the app. When a flow asks a question (an API key, a
+  paste-code fallback), the question is bridged to the UI and the typed answer
+  is relayed through one request back into OMP's flow, which validates and
+  stores it. Answers ride requests, which are never logged; every logged or
+  event-emitted string still passes the redaction layer, and the app persists
+  no secret of its own.
+- Disconnecting a provider calls OMP's own credential removal
+  (`AuthStorage.logout`). The store is shared with the CLI, so the GUI warns
+  that signing out here signs out `omp` too; env-var-supplied credentials are
+  not stored and are reported as still configured rather than removed.
 - The frontend receives only sanitised provider metadata — provider name,
   whether it is authenticated, and a credential *origin* label such as which
   mechanism supplied it. Never the value.

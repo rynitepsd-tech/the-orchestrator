@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.8
+
+- **Disconnect from the GUI.** Connected providers now have a Disconnect
+  button that removes the stored credential through OMP's own
+  `AuthStorage.logout` — with a confirmation first, because the credential
+  store is shared with the `omp` CLI and signing out here signs the CLI out
+  too. Credentials supplied by environment variables are not stored, so
+  disconnecting reports them as still configured instead of pretending they
+  are gone. docs/SECURITY.md updated to describe the current credential
+  posture (prompt bridging, GUI disconnect) instead of the pre-0.5.6 one.
+
 ## 0.5.7
 
 - **Subscriptions lead the Providers panel.** The Orchestrator runs on plans

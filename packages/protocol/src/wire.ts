@@ -250,7 +250,7 @@ export interface ResponsePayloads {
   "providers.quota": { quotas: ProviderQuota[] };
   "providers.login": { ok: boolean; message?: string; requiresBrowser?: string };
   "providers.loginAnswer": { ok: boolean };
-  "providers.logout": { ok: boolean };
+  "providers.logout": { ok: boolean; message?: string };
 
   "project.open": { project: import("./domain").ProjectInfo };
   "project.environment": ProjectEnvironment;

@@ -264,6 +264,20 @@ export function Providers(): JSX.Element {
     }
   };
 
+  const disconnect = async (name: string) => {
+    setBusyProvider(name);
+    setAuthMsg(null);
+    try {
+      const res = await engine.request("providers.logout", { provider: name });
+      setAuthMsg(res.message ?? `Disconnected ${name}.`);
+      await refreshCatalogue();
+    } catch (e) {
+      setAuthMsg(String((e as { message?: string })?.message ?? e));
+    } finally {
+      setBusyProvider(null);
+    }
+  };
+
   const answerPrompt = async (cancel: boolean) => {
     if (!authPrompt) return;
     const { promptId } = authPrompt;
@@ -357,7 +371,20 @@ export function Providers(): JSX.Element {
             {p.modelCount} models{p.credentialSource ? ` · ${p.credentialSource}` : ""}
           </span>
           <span className="spacer" />
-          <span className="hint">Connected</span>
+          <button
+            className="btn btn-ghost"
+            disabled={busyProvider !== null}
+            onClick={() => {
+              void ask(
+                `Disconnect ${p.name}? Credentials are shared with the omp CLI, so this signs the CLI out of ${p.name} too.`,
+                { title: "Disconnect provider", kind: "warning" },
+              ).then((yes) => {
+                if (yes) void disconnect(p.name);
+              });
+            }}
+          >
+            {busyProvider === p.name ? "Disconnecting…" : "Disconnect"}
+          </button>
         </div>
       ))}
       {subscriptions.length > 0 && (
@@ -452,7 +479,8 @@ export function Providers(): JSX.Element {
       )}
       <div className="hint" style={{ marginTop: 10 }}>
         Sign-in runs the provider's own flow; if it asks for a code or key, an input appears here.
-        Sign-out is managed by OMP (<code>omp logout</code>).
+        Credentials are shared with the <code>omp</code> CLI — connecting or disconnecting here
+        applies there too.
       </div>
     </div>
   );
