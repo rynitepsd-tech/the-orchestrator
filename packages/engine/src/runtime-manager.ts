@@ -32,7 +32,7 @@ import type {
   SessionSummary,
   UsageBreakdown,
 } from "@orchestrator/protocol";
-import { createLoginController } from "./auth-login";
+import { type AuthLifecycleEvent, createLoginController, type LoginController } from "./auth-login";
 import { logger } from "./logging";
 import { UsageIndex } from "./usage-index";
 import { type WorkerSpawnEnv, WorkerSupervisor } from "./worker/supervisor";
@@ -199,61 +199,103 @@ export class RuntimeManager {
   // Provider onboarding
   // -------------------------------------------------------------------------
 
+  /** Login controllers with outstanding UI prompts, keyed by promptId. */
+  readonly #loginControllers = new Map<string, LoginController>();
+
   /**
-   * OAuth sign-in through OMP's own flow (AuthStorage.login, pi-ai).
+   * Sign-in through OMP's own flow (AuthStorage.login, pi-ai).
    *
    * The engine never opens a browser: `onAuth` surfaces the authorization URL
-   * as a lifecycle event and the host opens it. Secrets never transit the
-   * protocol — the loopback callback completes inside OMP's storage.
+   * as a lifecycle event and the host opens it. Questions from the flow (API
+   * keys, paste-code fallback) are bridged to the UI as "prompt" lifecycle
+   * events and answered via {@link answerLoginPrompt}. Secrets never transit
+   * logs — prompt answers ride requests, which are not logged.
    *
-   * Providers without a programmatic flow reject with an actionable message.
+   * `apiKey` short-circuits the flow for providers with no login at all:
+   * the key is stored directly through OMP's credential store, the same shape
+   * `AuthStorage.login` itself stores for key-returning flows.
    */
   async login(
     provider: string,
-    emitLifecycle: (e: {
-      type: "engine.auth";
-      provider: string;
-      status: "browser" | "progress" | "prompt" | "done" | "failed";
-      url?: string;
-      message?: string;
-    }) => void,
+    emitLifecycle: (e: AuthLifecycleEvent) => void,
+    apiKey?: string,
   ): Promise<{ ok: boolean; message?: string; requiresBrowser?: string }> {
     const auth: any = this.#authStorage;
-    if (typeof auth?.login !== "function") {
-      throw Object.assign(
-        new Error(
-          "This OMP build does not expose a programmatic sign-in flow. Run `omp` once in a terminal; The Orchestrator reuses those credentials.",
-        ),
-        { kind: "auth" },
-      );
-    }
     try {
-      const { ctrl, failure } = createLoginController(provider, emitLifecycle);
-      const loginPromise: Promise<any> = auth.login(provider, ctrl);
-      // When `failure` wins the race, OMP's own rejection is a wrapped
-      // cancellation — observe it so it never surfaces as unhandled.
-      loginPromise.catch(() => {});
-      const identity = await Promise.race([loginPromise, failure]);
-      // Fresh credentials change what the catalogue considers available.
-      this.#modelsCache = null;
-      try {
-        await (this.#modelRegistry as any)?.refresh?.();
-      } catch {
-        /* catalogue refresh is best-effort */
+      if (apiKey !== undefined) {
+        const key = apiKey.trim();
+        if (!key) {
+          throw Object.assign(new Error("The API key is empty."), { kind: "auth" });
+        }
+        if (typeof auth?.set !== "function") {
+          throw Object.assign(new Error("This OMP build does not expose credential storage."), {
+            kind: "auth",
+          });
+        }
+        await auth.set(provider, { type: "api_key", key, source: "login" });
+        await this.#afterCredentialChange();
+        emitLifecycle({ type: "engine.auth", provider, status: "done" });
+        return { ok: true, message: "API key saved." };
       }
-      emitLifecycle({ type: "engine.auth", provider, status: "done" });
-      return {
-        ok: true,
-        message: identity
-          ? `Connected as ${String(identity?.label ?? identity?.email ?? provider)}`
-          : "Connected.",
-      };
+
+      if (typeof auth?.login !== "function") {
+        throw Object.assign(
+          new Error(
+            "This OMP build does not expose a programmatic sign-in flow. Run `omp` once in a terminal; The Orchestrator reuses those credentials.",
+          ),
+          { kind: "auth" },
+        );
+      }
+
+      const controller = createLoginController(provider, (e) => {
+        if (e.status === "prompt" && e.promptId) {
+          this.#loginControllers.set(e.promptId, controller);
+        }
+        emitLifecycle(e);
+      });
+      try {
+        const loginPromise: Promise<any> = auth.login(provider, controller.ctrl);
+        // When `failure` wins the race, OMP's own rejection is a wrapped
+        // cancellation — observe it so it never surfaces as unhandled.
+        loginPromise.catch(() => {});
+        const identity = await Promise.race([loginPromise, controller.failure]);
+        await this.#afterCredentialChange();
+        emitLifecycle({ type: "engine.auth", provider, status: "done" });
+        return {
+          ok: true,
+          message: identity
+            ? `Connected as ${String(identity?.label ?? identity?.email ?? provider)}`
+            : "Connected.",
+        };
+      } finally {
+        for (const [id, c] of this.#loginControllers) {
+          if (c === controller) this.#loginControllers.delete(id);
+        }
+      }
     } catch (e) {
       const message = String((e as Error)?.message ?? e);
       emitLifecycle({ type: "engine.auth", provider, status: "failed", message });
       throw Object.assign(new Error(`Sign-in with ${provider} failed: ${message}`), {
         kind: "auth",
       });
+    }
+  }
+
+  /** Deliver a UI answer to a login prompt. False when the prompt is stale. */
+  answerLoginPrompt(promptId: string, answer: string | undefined, cancel: boolean): boolean {
+    const controller = this.#loginControllers.get(promptId);
+    if (!controller) return false;
+    this.#loginControllers.delete(promptId);
+    return controller.answerPrompt(promptId, answer, cancel);
+  }
+
+  /** Fresh credentials change what the catalogue considers available. */
+  async #afterCredentialChange(): Promise<void> {
+    this.#modelsCache = null;
+    try {
+      await (this.#modelRegistry as any)?.refresh?.();
+    } catch {
+      /* catalogue refresh is best-effort */
     }
   }
 

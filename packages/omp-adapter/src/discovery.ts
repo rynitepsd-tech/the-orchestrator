@@ -9,6 +9,9 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
+// Same exact version as pi-coding-agent's own pi-ai dependency (both pinned),
+// so this resolves to the one shared registry instance.
+import { getProviderDefinition } from "@oh-my-pi/pi-ai";
 import * as OMP from "@oh-my-pi/pi-coding-agent";
 import {
   type AuthStorage,
@@ -105,6 +108,19 @@ export function listModels(registry: ModelRegistry, auth: AuthStorage): ModelInf
   }));
 }
 
+/**
+ * How a provider connects: OMP's interactive login flow (browser OAuth and/or
+ * prompts), or a pasted API key when the registry has no login for it.
+ */
+export function providerConnectKind(name: string): "interactive" | "api-key" {
+  try {
+    const def = (getProviderDefinition as (id: string) => { login?: unknown } | undefined)(name);
+    return typeof def?.login === "function" ? "interactive" : "api-key";
+  } catch {
+    return "api-key";
+  }
+}
+
 /** Group the catalogue into providers, reporting real authentication state. */
 export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderInfo[] {
   const byProvider = new Map<string, ModelInfo[]>();
@@ -141,6 +157,7 @@ export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderI
       authenticated: list[0]?.authenticated ?? configured.includes(name),
       credentialSource: credentialSource || undefined,
       modelCount: list.length,
+      connect: providerConnectKind(name),
     });
   }
   out.sort((a, b) => {

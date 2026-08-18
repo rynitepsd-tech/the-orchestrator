@@ -163,6 +163,14 @@ interface AppState {
   engineError?: EngineErrorPayload;
   /** Live sign-in guidance from the engine (device codes, browser hand-off). */
   authNotice?: string;
+  /** A question from the engine's login flow awaiting a typed answer. */
+  authPrompt?: {
+    promptId: string;
+    provider: string;
+    message: string;
+    placeholder?: string;
+    allowEmpty?: boolean;
+  };
   engineInfo?: {
     ompVersion: string;
     engineVersion: string;
@@ -216,6 +224,7 @@ interface AppState {
   setEngineStage(stage: EngineStage | "offline", message?: string): void;
   setEngineError(e?: EngineErrorPayload): void;
   setAuthNotice(notice?: string): void;
+  setAuthPrompt(prompt?: AppState["authPrompt"]): void;
   setEngineInfo(i: AppState["engineInfo"]): void;
   setCatalogue(models: ModelInfo[], providers: ProviderInfo[]): void;
   setQuotas(q: ProviderQuota[]): void;
@@ -296,6 +305,7 @@ export const useStore = create<AppState>((set, get) => ({
   setEngineStage: (engineStage, engineMessage) => set({ engineStage, engineMessage }),
   setEngineError: (engineError) => set({ engineError }),
   setAuthNotice: (authNotice) => set({ authNotice }),
+  setAuthPrompt: (authPrompt) => set({ authPrompt }),
   setEngineInfo: (engineInfo) => set({ engineInfo }),
   setCatalogue: (models, providers) => set({ models, providers }),
   setQuotas: (quotas) => set({ quotas }),

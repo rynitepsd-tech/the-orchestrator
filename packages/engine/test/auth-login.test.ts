@@ -2,9 +2,11 @@
  * The GUI login controller against OMP's real login contract.
  *
  * These encode the new-user regressions from OMP 17.3.4: the localhost launch
- * URL must not be what the host opens, and the paste-code fallback prompt must
- * neither fail a live browser flow nor send OMP's manual-input retry loop into
- * an unthrottled spin (the "90 GB during setup" failure).
+ * URL must not be what the host opens; questions from the flow (API keys,
+ * paste-code fallback, enterprise domain) are bridged to the UI as prompt
+ * events and answered via providers.loginAnswer; and `onPrompt` must never
+ * reject, because OMP's manual-input race retries a rejection in an
+ * unthrottled loop (the "90 GB during setup" failure).
  */
 import { describe, expect, test } from "bun:test";
 import { type AuthLifecycleEvent, createLoginController } from "../src/auth-login";
@@ -44,59 +46,70 @@ describe("createLoginController", () => {
     expect(events[0].url).toBe("http://localhost:54545/launch");
   });
 
-  test("answers optional prompts (allowEmpty) with the default", async () => {
-    const { emit } = collector();
-    const { ctrl } = createLoginController("github-copilot", emit);
-    // GitHub Copilot asks for an enterprise domain before anything else;
-    // blank means github.com.
-    await expect(
-      ctrl.onPrompt({ message: "GitHub Enterprise URL/domain", allowEmpty: true }),
-    ).resolves.toBe("");
+  test("bridges a prompt to the UI and resolves it with the typed answer", async () => {
+    const { events, emit } = collector();
+    const { ctrl, answerPrompt } = createLoginController("aiand", emit);
+    // API-key providers ask for the key through onPrompt (like the CLI).
+    const pending = ctrl.onPrompt({ message: "Enter your aiand API key", allowEmpty: false });
+
+    const prompt = events.find((e) => e.status === "prompt");
+    expect(prompt?.promptId).toBeTruthy();
+    expect(prompt?.message).toBe("Enter your aiand API key");
+    expect(prompt?.allowEmpty).toBe(false);
+
+    expect(answerPrompt(prompt!.promptId!, "sk-test-123", false)).toBe(true);
+    await expect(pending).resolves.toBe("sk-test-123");
   });
 
-  test("parks the paste-code prompt while a browser flow is live", async () => {
+  test("carries allowEmpty through so optional questions can take the default", async () => {
     const { events, emit } = collector();
-    const { ctrl, failure } = createLoginController("anthropic", emit);
-    ctrl.onAuth({
-      url: "https://claude.ai/oauth/authorize",
-      launchUrl: "http://localhost:1/launch",
+    const { ctrl, answerPrompt } = createLoginController("github-copilot", emit);
+    const pending = ctrl.onPrompt({
+      message: "GitHub Enterprise URL/domain (blank for github.com)",
+      allowEmpty: true,
     });
-
-    const prompt = ctrl.onPrompt({
-      message: "Paste the authorization code (or full redirect URL):",
-    });
-    // Never settles (a rejection would spin OMP's manual-input retry loop),
-    // and the login as a whole must not be failed.
-    expect(await settled(prompt)).toBe(false);
-    expect(await settled(failure)).toBe(false);
-    expect(events.filter((e) => e.status === "failed")).toHaveLength(0);
-    expect(events.filter((e) => e.status === "prompt")).toHaveLength(1);
+    const prompt = events.find((e) => e.status === "prompt");
+    expect(prompt?.allowEmpty).toBe(true);
+    expect(answerPrompt(prompt!.promptId!, "", false)).toBe(true);
+    await expect(pending).resolves.toBe("");
   });
 
-  test("fails fast — once — for paste-code-only flows with no callback server", async () => {
+  test("cancel aborts the flow without ever rejecting the prompt promise", async () => {
     const { events, emit } = collector();
-    const { ctrl, failure } = createLoginController("gitlab-duo", emit);
-    ctrl.onAuth({ url: "https://gitlab.com/oauth/authorize" }); // no launchUrl
+    const { ctrl, failure, answerPrompt } = createLoginController("anthropic", emit);
+    const pending = ctrl.onPrompt({ message: "Paste the authorization code:" });
+    const prompt = events.find((e) => e.status === "prompt");
 
-    const prompt = ctrl.onPrompt({ message: "Paste the authorization code:" });
-    expect(await settled(prompt)).toBe(false); // still never rejects the prompt itself
-    await expect(failure).rejects.toThrow(/does not support .* Run `omp` in a terminal/);
+    expect(answerPrompt(prompt!.promptId!, undefined, true)).toBe(true);
+    await expect(failure).rejects.toThrow(/cancelled/);
     expect(ctrl.signal.aborted).toBe(true);
-    expect(events.filter((e) => e.status === "failed")).toHaveLength(1);
+    // A rejection here would spin OMP's manual-input retry loop.
+    expect(await settled(pending)).toBe(false);
+  });
+
+  test("returns false for a stale or already-answered promptId", () => {
+    const { events, emit } = collector();
+    const { ctrl, answerPrompt } = createLoginController("aiand", emit);
+    void ctrl.onPrompt({ message: "Enter key" });
+    const id = events.find((e) => e.status === "prompt")!.promptId!;
+    expect(answerPrompt(id, "value", false)).toBe(true);
+    expect(answerPrompt(id, "value", false)).toBe(false);
+    expect(answerPrompt("nonsense", "value", false)).toBe(false);
   });
 
   test("collapses identical consecutive frames so upstream loops cannot flood the pipe", () => {
     const { events, emit } = collector();
     const { ctrl } = createLoginController("anthropic", emit);
     for (let i = 0; i < 10_000; i++) ctrl.onProgress("Waiting for browser authentication...");
-    ctrl.onAuth({
-      url: "https://claude.ai/oauth/authorize",
-      launchUrl: "http://localhost:1/launch",
-    });
+    expect(events.filter((e) => e.status === "progress")).toHaveLength(1);
+  });
+
+  test("caps stacked unanswered prompts instead of flooding the UI", () => {
+    const { events, emit } = collector();
+    const { ctrl } = createLoginController("anthropic", emit);
     for (let i = 0; i < 10_000; i++) {
       void ctrl.onPrompt({ message: "Paste the authorization code:" });
     }
-    expect(events.filter((e) => e.status === "progress")).toHaveLength(1);
-    expect(events.filter((e) => e.status === "prompt")).toHaveLength(1);
+    expect(events.filter((e) => e.status === "prompt").length).toBeLessThanOrEqual(4);
   });
 });

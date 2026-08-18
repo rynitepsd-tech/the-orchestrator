@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.6
+
+- **API-key providers can finally be connected from the GUI.** Most of the
+  catalogue (and the entire top of the alphabetical list — aiand, aimlapi,
+  alibaba-\*) authenticates with an API key, not OAuth, and every Connect
+  click on those failed with a misleading "manual code entry" error. The
+  engine now bridges OMP's login questions to the app: when a flow asks for
+  an API key, a paste-code fallback, or GitHub Copilot's enterprise domain,
+  an input appears right in the Providers panel and the answer flows back
+  into OMP's own login (validation included). Providers with no login flow
+  at all get an "Add API key…" button that stores the key through OMP's
+  credential store.
+- **Honest Connect buttons.** Providers are labelled by how they actually
+  connect — sign-in flow vs. pasted API key — and sign-in-capable providers
+  sort first in the "Not connected" list.
+
 ## 0.5.5
 
 - **Connecting a provider works again for first-time users.** OMP 17.3.4

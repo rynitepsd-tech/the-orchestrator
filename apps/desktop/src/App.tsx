@@ -174,10 +174,26 @@ export function App(): JSX.Element {
           // Device-code flows put the code the user must type here.
           if (e.message) st.setAuthNotice(e.message);
         }
-        if (e.status === "prompt" && e.message) st.setAuthNotice(e.message);
-        if (e.status === "done") st.setAuthNotice(undefined);
+        if (e.status === "prompt") {
+          if (e.promptId && e.message) {
+            st.setAuthPrompt({
+              promptId: e.promptId,
+              provider: e.provider,
+              message: e.message,
+              placeholder: e.placeholder,
+              allowEmpty: e.allowEmpty,
+            });
+          } else if (e.message) {
+            st.setAuthNotice(e.message);
+          }
+        }
+        if (e.status === "done") {
+          st.setAuthNotice(undefined);
+          st.setAuthPrompt(undefined);
+        }
         if (e.status === "failed") {
           st.setAuthNotice(undefined);
+          st.setAuthPrompt(undefined);
           if (e.message) st.setEngineError({ kind: "auth", message: e.message });
         }
       }

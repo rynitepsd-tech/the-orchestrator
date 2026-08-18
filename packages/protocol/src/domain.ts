@@ -127,6 +127,12 @@ export interface ProviderInfo {
   modelCount: number;
   /** Account labels when the provider has OAuth accounts attached. */
   accounts?: Array<{ id: string; label?: string }>;
+  /**
+   * How this provider connects: "interactive" runs OMP's login flow (browser
+   * OAuth and/or GUI-bridged prompts); "api-key" has no login flow at all and
+   * takes a pasted key stored via OMP's credential store.
+   */
+  connect?: "interactive" | "api-key";
 }
 
 // ---------------------------------------------------------------------------

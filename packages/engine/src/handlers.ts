@@ -95,7 +95,20 @@ export async function handleRequest(
       return { quotas: await m.quotas() };
 
     case "providers.login":
-      return m.login(String(p.provider), (e) => server.emitLifecycle(e));
+      return m.login(
+        String(p.provider),
+        (e) => server.emitLifecycle(e),
+        p.apiKey !== undefined ? String(p.apiKey) : undefined,
+      );
+
+    case "providers.loginAnswer":
+      return {
+        ok: m.answerLoginPrompt(
+          String(p.promptId),
+          p.answer !== undefined ? String(p.answer) : undefined,
+          p.cancel === true,
+        ),
+      };
 
     case "providers.logout":
       // Sign-out is deliberately not exposed: OMP owns credential lifecycle,

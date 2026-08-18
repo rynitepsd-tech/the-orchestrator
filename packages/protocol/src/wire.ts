@@ -73,6 +73,10 @@ export type EngineLifecycleEvent =
   /**
    * Provider OAuth flow progress. `url` must be opened in the user's browser
    * by the host; the engine never opens anything itself.
+   *
+   * `status: "prompt"` with a `promptId` is a question from OMP's login flow
+   * (API key, paste-code fallback, enterprise domain). The host renders an
+   * input and answers via a `providers.loginAnswer` request.
    */
   | {
       type: "engine.auth";
@@ -80,6 +84,9 @@ export type EngineLifecycleEvent =
       status: "browser" | "progress" | "prompt" | "done" | "failed";
       url?: string;
       message?: string;
+      promptId?: string;
+      placeholder?: string;
+      allowEmpty?: boolean;
     };
 
 export const ENGINE_STAGES = [
@@ -119,6 +126,7 @@ export interface RequestPayloads {
   "providers.list": Record<string, never>;
   "providers.quota": { refresh?: boolean };
   "providers.login": { provider: string; method?: string; apiKey?: string };
+  "providers.loginAnswer": { promptId: string; answer?: string; cancel?: boolean };
   "providers.logout": { provider: string; accountId?: string };
 
   "project.open": { path: string };
@@ -241,6 +249,7 @@ export interface ResponsePayloads {
   "providers.list": { providers: ProviderInfo[] };
   "providers.quota": { quotas: ProviderQuota[] };
   "providers.login": { ok: boolean; message?: string; requiresBrowser?: string };
+  "providers.loginAnswer": { ok: boolean };
   "providers.logout": { ok: boolean };
 
   "project.open": { project: import("./domain").ProjectInfo };
@@ -377,6 +386,7 @@ export const REQUEST_TYPES = [
   "providers.list",
   "providers.quota",
   "providers.login",
+  "providers.loginAnswer",
   "providers.logout",
   "project.open",
   "project.environment",

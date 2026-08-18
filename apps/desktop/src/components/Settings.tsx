@@ -225,24 +225,38 @@ export function Providers(): JSX.Element {
   const setCatalogue = useStore((s) => s.setCatalogue);
   const authNotice = useStore((s) => s.authNotice);
   const setAuthNotice = useStore((s) => s.setAuthNotice);
+  const authPrompt = useStore((s) => s.authPrompt);
+  const setAuthPrompt = useStore((s) => s.setAuthPrompt);
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  /** Provider whose inline API-key input is open (api-key-only providers). */
+  const [keyEntry, setKeyEntry] = useState<string | null>(null);
+  const [keyValue, setKeyValue] = useState("");
+  const [promptValue, setPromptValue] = useState("");
 
-  const connect = async (name: string) => {
+  const refreshCatalogue = async () => {
+    const [m, p] = await Promise.all([
+      engine.request("models.list", { refresh: true }),
+      engine.request("providers.list", {}),
+    ]);
+    setCatalogue(m.models, p.providers);
+  };
+
+  const connect = async (name: string, apiKey?: string) => {
     setBusyProvider(name);
     setAuthMsg(null);
     setAuthNotice(undefined);
+    setAuthPrompt(undefined);
+    setPromptValue("");
     try {
-      // OAuth runs 10+ minutes worst case; the engine emits engine.auth events
-      // (browser URL etc.) which App handles globally.
-      const res = await engine.request("providers.login", { provider: name }, 600_000);
+      // Interactive login runs 10+ minutes worst case; the engine emits
+      // engine.auth events (browser URL, prompts) which App handles globally.
+      const res = await engine.request("providers.login", { provider: name, apiKey }, 600_000);
       setAuthMsg(res.message ?? "Connected.");
-      const [m, p] = await Promise.all([
-        engine.request("models.list", { refresh: true }),
-        engine.request("providers.list", {}),
-      ]);
-      setCatalogue(m.models, p.providers);
+      setKeyEntry(null);
+      setKeyValue("");
+      await refreshCatalogue();
     } catch (e) {
       setAuthMsg(String((e as { message?: string })?.message ?? e));
     } finally {
@@ -250,10 +264,33 @@ export function Providers(): JSX.Element {
     }
   };
 
+  const answerPrompt = async (cancel: boolean) => {
+    if (!authPrompt) return;
+    const { promptId } = authPrompt;
+    setAuthPrompt(undefined);
+    setPromptValue("");
+    try {
+      await engine.request("providers.loginAnswer", {
+        promptId,
+        answer: cancel ? undefined : promptValue,
+        cancel: cancel || undefined,
+      });
+    } catch {
+      /* a stale prompt means the flow already ended; the login result says so */
+    }
+  };
+
   const q = query.trim().toLowerCase();
   const matching = q ? providers.filter((p) => p.name.toLowerCase().includes(q)) : providers;
   const connected = matching.filter((p) => p.authenticated);
-  const disconnected = matching.filter((p) => !p.authenticated);
+  // Providers with a real sign-in flow first; API-key-only ones after.
+  const disconnected = matching
+    .filter((p) => !p.authenticated)
+    .sort((a, b) => {
+      const ai = a.connect === "api-key" ? 1 : 0;
+      const bi = b.connect === "api-key" ? 1 : 0;
+      return ai !== bi ? ai - bi : a.name.localeCompare(b.name);
+    });
 
   return (
     <div>
@@ -273,6 +310,40 @@ export function Providers(): JSX.Element {
         />
       )}
       {authNotice && <div className="banner info">{authNotice}</div>}
+      {authPrompt && (
+        <div className="banner info">
+          <div style={{ marginBottom: 6 }}>
+            <strong>{authPrompt.provider}</strong>: {authPrompt.message}
+          </div>
+          <form
+            className="row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (promptValue.trim() || authPrompt.allowEmpty) void answerPrompt(false);
+            }}
+          >
+            <input
+              className="input"
+              type="password"
+              autoFocus
+              placeholder={authPrompt.placeholder ?? "Paste value…"}
+              value={promptValue}
+              onChange={(e) => setPromptValue(e.target.value)}
+              aria-label={authPrompt.message}
+            />
+            <button
+              className="btn btn-primary"
+              type="submit"
+              disabled={!promptValue.trim() && !authPrompt.allowEmpty}
+            >
+              {authPrompt.allowEmpty && !promptValue.trim() ? "Use default" : "Submit"}
+            </button>
+            <button className="btn btn-ghost" type="button" onClick={() => void answerPrompt(true)}>
+              Cancel
+            </button>
+          </form>
+        </div>
+      )}
       {authMsg && <div className="banner info">{authMsg}</div>}
       {matching.length === 0 && <div className="empty">No providers match.</div>}
       {connected.map((p) => (
@@ -288,23 +359,65 @@ export function Providers(): JSX.Element {
       ))}
       {disconnected.length > 0 && <div className="section-label">Not connected</div>}
       {disconnected.map((p) => (
-        <div key={p.name} className="provider-row">
-          <span className="dot idle" />
-          <span className="provider-name">{p.name}</span>
-          <span className="hint">{p.modelCount} models</span>
-          <span className="spacer" />
-          <button
-            className="btn"
-            disabled={busyProvider !== null}
-            onClick={() => void connect(p.name)}
-          >
-            {busyProvider === p.name ? "Waiting for browser…" : "Connect"}
-          </button>
+        <div key={p.name}>
+          <div className="provider-row">
+            <span className="dot idle" />
+            <span className="provider-name">{p.name}</span>
+            <span className="hint">{p.modelCount} models</span>
+            <span className="spacer" />
+            {p.connect === "api-key" ? (
+              <button
+                className="btn"
+                disabled={busyProvider !== null}
+                onClick={() => {
+                  setKeyEntry(keyEntry === p.name ? null : p.name);
+                  setKeyValue("");
+                }}
+              >
+                {busyProvider === p.name ? "Saving…" : "Add API key…"}
+              </button>
+            ) : (
+              <button
+                className="btn"
+                disabled={busyProvider !== null}
+                onClick={() => void connect(p.name)}
+              >
+                {busyProvider === p.name ? "Signing in…" : "Connect"}
+              </button>
+            )}
+          </div>
+          {keyEntry === p.name && (
+            <form
+              className="row"
+              style={{ margin: "4px 0 8px 22px" }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (keyValue.trim()) void connect(p.name, keyValue.trim());
+              }}
+            >
+              <input
+                className="input"
+                type="password"
+                autoFocus
+                placeholder={`${p.name} API key`}
+                value={keyValue}
+                onChange={(e) => setKeyValue(e.target.value)}
+                aria-label={`${p.name} API key`}
+              />
+              <button
+                className="btn btn-primary"
+                type="submit"
+                disabled={!keyValue.trim() || busyProvider !== null}
+              >
+                Save
+              </button>
+            </form>
+          )}
         </div>
       ))}
       <div className="hint" style={{ marginTop: 10 }}>
-        Providers without a supported GUI flow will say so — run <code>omp</code> in a terminal for
-        those. Sign-out is managed by OMP (<code>omp logout</code>).
+        Connect runs the provider's own sign-in; if it asks for a code or key, an input appears
+        here. Sign-out is managed by OMP (<code>omp logout</code>).
       </div>
     </div>
   );
