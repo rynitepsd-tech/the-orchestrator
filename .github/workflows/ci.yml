@@ -76,15 +76,6 @@ jobs:
         # OpenAI SSE wire format. No network calls, no provider credits spent.
         run: bun test
 
-      - name: cargo fmt --check
-        # Formatting is deterministic, so this is a hard failure.
-        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all --check
-
-      - name: cargo clippy
-        # Blocking: this is also the only step that COMPILES the Rust shell,
-        # so letting it fail softly meant a broken build could ship.
-        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
-
       - name: Build frontend
         working-directory: apps/desktop
         run: bunx vite build
@@ -93,6 +84,10 @@ jobs:
         # Host arch only (arm64 on macos-14). --target=x64 exists in
         # scripts/build-engine.ts but that path is unbuilt and untested, and it
         # needs @oh-my-pi/pi-natives-darwin-x64 installed.
+        #
+        # Must run BEFORE the Rust checks: tauri-build's build script resolves
+        # the resources declared in tauri.conf.json (../../../resources/engine),
+        # so cargo clippy fails on a checkout where the engine was never built.
         run: bun run build:engine
 
       - name: Verify engine layout
@@ -105,3 +100,12 @@ jobs:
           test -f "resources/engine/pi_natives.darwin-arm64.node"
           file -b "resources/engine/orchestrator-engine"
           codesign --verify --verbose "resources/engine/orchestrator-engine"
+
+      - name: cargo fmt --check
+        # Formatting is deterministic, so this is a hard failure.
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all --check
+
+      - name: cargo clippy
+        # Blocking: this is also the only step that COMPILES the Rust shell,
+        # so letting it fail softly meant a broken build could ship.
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
