@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.5.9
+
+- **Resumed sessions keep their advisors.** Resuming a session relaunched it
+  with a hardcoded empty advisor list — only the remembered preset's model and
+  fast mode were re-applied — so every resume silently ran with zero
+  reviewers. The remembered preset's advisors now ride along in the boot
+  config, so reviewers come back with the session.
+- **Switching presets mid-session applies its advisors.** The composer's
+  preset picker only changed the model and fast mode; the preset's reviewer
+  roster is now pushed to the running worker too (session.advisors.set), so
+  reviewers start/stop to match the chosen preset — an advisor-less preset
+  stops them.
+- **Preset advisors survive the New Session sheet.** WATCHDOG discovery
+  resolves asynchronously and could overwrite advisors the user had just
+  applied from a preset (or edited by hand) with the project's list — usually
+  empty. A session-level advisor choice now wins over late discovery results.
+- **New sessions appear at the top of their project.** A brand-new session
+  persists its OMP path before the create response returns, so the sidebar
+  mistook it for a resume and appended it to the bottom of the project group.
+  New (and forked) sessions now claim the top slot; resumed sessions keep
+  their place as before.
+- **Engine respawn loop fixed.** OMP's daemon broker (and its other hidden
+  worker re-entries: LSP mux, tiny title model, …) re-execs
+  `process.execPath` — which in a packaged build is the orchestrator engine
+  binary. The engine didn't recognize those selectors, booted a supervisor in
+  the broker's place, died on its closed stdin, and OMP respawned it every
+  ~10 seconds per live session, forever ("stdin closed; shutting down" flood
+  in engine.log). `__omp_worker_*` argv now routes to OMP's own CLI dispatch.
+  The same fix covers `browser-relay`, the one plain CLI command OMP
+  daemonizes under that broker — this is what "shared browser daemon and
+  browser-relay broker are unavailable" errors from browser-using tasks were
+  about. (Authenticated captures additionally need OMP's browser extension
+  connected to the relay.)
+
 ## 0.5.8
 
 - **Disconnect from the GUI.** Connected providers now have a Disconnect

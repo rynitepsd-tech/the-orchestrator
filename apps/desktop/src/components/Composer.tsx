@@ -105,6 +105,13 @@ export function Composer({
         .request("session.setFastMode", { sessionId, enabled: Boolean(p.fastMode) })
         .catch(() => {});
     }
+    // The preset is the whole launch contract, so its advisor roster applies
+    // too — reviewers start/stop to match (an advisor-less preset stops them).
+    // The store updates only after the worker confirms, from its echo.
+    void engine
+      .request("session.advisors.set", { sessionId, advisors: p.advisors.map((a) => ({ ...a })) })
+      .then((r) => useStore.getState().setSessionAdvisors(sessionId, r.advisors))
+      .catch((e) => useStore.getState().setEngineError(e));
   };
 
   const onPresetChange = (value: string) => {

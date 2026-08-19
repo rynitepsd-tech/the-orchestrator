@@ -348,27 +348,30 @@ export function App(): JSX.Element {
     resuming.current = d.path;
     setCreating(true);
     try {
+      // Re-apply the session's remembered preset so a restart doesn't silently
+      // fall back to OMP defaults until the user reselects it. Advisors must
+      // ride along in the boot config: a resume that launches with [] runs the
+      // whole session with zero reviewers no matter what the preset says.
+      const prefs = useStore.getState().prefs;
+      const remembered = prefs.sessionPresetByPath[d.path];
+      const preset = remembered ? prefs.presets.find((p) => p.name === remembered) : undefined;
+      const advisors = preset?.advisors.map((a) => ({ ...a })) ?? [];
       const proj = await engine.request("project.open", { path: d.cwd });
       const res = await engine.request("sessions.create", {
         projectPath: d.cwd,
         title: d.title,
-        advisors: [],
+        advisors,
         resumeSessionPath: d.path,
         // Restore the session's remembered approval mode at boot, so the
         // tier gate is correct from the first tool call.
-        approvalMode: useStore.getState().prefs.sessionApprovalByPath[d.path] as
+        approvalMode: prefs.sessionApprovalByPath[d.path] as
           | "always-ask"
           | "write"
           | "yolo"
           | undefined,
       });
       useStore.getState().addProject(proj.project);
-      useStore.getState().addSession(res.session, []);
-      // Re-apply the session's remembered preset so a restart doesn't silently
-      // fall back to OMP defaults until the user reselects it.
-      const st = useStore.getState();
-      const remembered = st.sessions[res.session.sessionId]?.presetName;
-      const preset = remembered ? st.prefs.presets.find((p) => p.name === remembered) : undefined;
+      useStore.getState().addSession(res.session, advisors, { resumed: true });
       if (preset?.model) {
         void engine
           .request("session.setModel", {

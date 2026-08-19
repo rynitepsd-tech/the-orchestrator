@@ -10,7 +10,7 @@
 import type { AdvisorConfig, ModelInfo, SessionLaunchConfig } from "@orchestrator/protocol";
 import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
 import { useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
@@ -47,6 +47,11 @@ export function NewSession({
   // WKWebView has no window.prompt(); names are collected with inline inputs.
   const [advisorDraft, setAdvisorDraft] = useState<string | null>(null);
   const [presetDraft, setPresetDraft] = useState<string | null>(null);
+  // WATCHDOG discovery resolves asynchronously; once the user has chosen
+  // advisors (preset or manual edit), a late discovery result must not
+  // silently replace them. A ref, because the promise callback would
+  // otherwise close over a stale advisorsSource.
+  const advisorOverride = useRef(false);
 
   const selectedModel = modelKey ? models.find((m) => m.key === modelKey) : undefined;
   const efforts = selectedModel?.thinking?.efforts ?? [];
@@ -56,6 +61,7 @@ export function NewSession({
   }, [modelKey]);
 
   useEffect(() => {
+    if (advisorOverride.current) return;
     if (!projectPath.trim()) {
       setAdvisors([]);
       return;
@@ -63,11 +69,11 @@ export function NewSession({
     let cancelled = false;
     setAdvisorsLoading(true);
     void discoverAdvisors(projectPath.trim()).then((list) => {
-      if (!cancelled) {
+      if (!cancelled && !advisorOverride.current) {
         setAdvisors(list);
         setAdvisorsSource("project");
-        setAdvisorsLoading(false);
       }
+      if (!cancelled) setAdvisorsLoading(false);
     });
     return () => {
       cancelled = true;
@@ -98,8 +104,10 @@ export function NewSession({
     setEffort(p.thinkingLevel ?? "");
     setFastMode(Boolean(p.fastMode));
     if (p.advisors.length) {
+      advisorOverride.current = true;
       setAdvisors(p.advisors.map((a) => ({ ...a })));
       setAdvisorsSource("session");
+      setAdvisorsLoading(false);
     }
   };
 
@@ -117,6 +125,7 @@ export function NewSession({
   };
 
   const patchAdvisor = (id: string, patch: Partial<AdvisorConfig>) => {
+    advisorOverride.current = true;
     setAdvisors((list) =>
       list.map((a) => (a.id === id ? { ...a, ...patch, origin: "session" } : a)),
     );
@@ -128,6 +137,7 @@ export function NewSession({
     if (!name) return;
     const id = `advisor:${name}`;
     if (advisors.some((a) => a.id === id)) return;
+    advisorOverride.current = true;
     setAdvisors((list) => [...list, { id, name, enabled: true, origin: "session" }]);
     setAdvisorsSource("session");
     setEditingAdvisor(id);

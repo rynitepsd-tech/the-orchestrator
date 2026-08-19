@@ -21,9 +21,27 @@ protectStdout();
 
 // --- worker role -----------------------------------------------------------
 // Checked first, and before any supervisor state is constructed.
+// OMP re-enters `process.execPath` for its subprocess helpers: hidden
+// `__omp_worker_*` selectors (daemon broker, LSP mux, tiny title model, …)
+// and the one plain CLI command it daemonizes, `browser-relay` (the broker
+// spawns `resolveWorkerSpawnCmd("browser-relay")` for authenticated browser
+// tooling). In a compiled build execPath is THIS binary, so route those to
+// OMP's CLI — otherwise a supervisor boots in their place, dies on its closed
+// stdin, and OMP respawns it every ~10s forever.
+const cliArgs = process.argv.slice(2);
+const ompReentry =
+  cliArgs.some((a) => a.startsWith("__omp_worker_")) || cliArgs[0] === "browser-relay";
 if (process.argv.includes("--orchestrator-worker")) {
   // The worker module takes over the process and exits on its own.
   await import("./worker/main");
+} else if (ompReentry) {
+  // The compiled build defines PI_COMPILED, so the import itself
+  // self-dispatches `runCli(process.argv.slice(2))`; dev builds need the
+  // explicit call (the define also compiles this branch away there).
+  const cli = await import("@oh-my-pi/pi-coding-agent/cli");
+  if (process.env.PI_COMPILED !== "true") {
+    await cli.runCli(cliArgs);
+  }
 } else {
   await runSupervisor();
 }

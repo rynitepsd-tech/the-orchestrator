@@ -232,7 +232,7 @@ interface AppState {
   setDiscovered(d: DiscoveredSession[]): void;
   setChanges(projectId: string, c: GitChanges): void;
   setGlobalUsage(u: GlobalUsageState): void;
-  addSession(s: SessionSummary, advisors: AdvisorConfig[]): void;
+  addSession(s: SessionSummary, advisors: AdvisorConfig[], opts?: { resumed?: boolean }): void;
   removeSession(id: string): void;
   /** Drag reorder: move one session next to another in the sidebar. */
   moveSession(dragId: string, targetId: string): void;
@@ -261,6 +261,8 @@ interface AppState {
   goHome(): void;
   /** Record which preset a session runs with (persisted by session path). */
   setSessionPreset(id: string, presetName?: string): void;
+  /** Replace a session's advisor roster after the worker confirmed it. */
+  setSessionAdvisors(id: string, advisors: AdvisorConfig[]): void;
   /** Record a session's approval mode (persisted by session path). */
   setSessionApproval(id: string, mode: ApprovalMode): void;
   /** Seed a session's usage breakdown fetched from the engine index. */
@@ -329,14 +331,21 @@ export const useStore = create<AppState>((set, get) => ({
   setChanges: (projectId, c) => set((s) => ({ changes: { ...s.changes, [projectId]: c } })),
   setGlobalUsage: (globalUsage) => set({ globalUsage }),
 
-  addSession: (summary, advisors) => {
+  addSession: (summary, advisors, opts) => {
     set((s) => {
-      // A resumed session arrives with its path; give it a persisted slot at
-      // the end so it doesn't leapfrog rows the user has placed deliberately.
+      // Brand-new sessions persist before the create response returns, so they
+      // arrive here with a path too — they claim the TOP slot of their project
+      // group. Only an explicit resume of a never-ordered session goes to the
+      // end, so it doesn't leapfrog rows the user has placed deliberately.
       const path = summary.ompSessionPath;
       const prefs =
         path && !s.prefs.sessionOrder.includes(path)
-          ? { ...s.prefs, sessionOrder: [...s.prefs.sessionOrder, path].slice(-400) }
+          ? {
+              ...s.prefs,
+              sessionOrder: opts?.resumed
+                ? [...s.prefs.sessionOrder, path].slice(-400)
+                : [path, ...s.prefs.sessionOrder].slice(0, 400),
+            }
           : s.prefs;
       if (prefs !== s.prefs) savePrefs(prefs);
       return {
@@ -455,6 +464,20 @@ export const useStore = create<AppState>((set, get) => ({
         savePrefs(prefs);
       }
       return { sessions: { ...s.sessions, [id]: { ...v, presetName } }, prefs };
+    }),
+
+  setSessionAdvisors: (id, advisors) =>
+    set((s) => {
+      const v = s.sessions[id];
+      if (!v) return {};
+      // Drop states for advisors no longer in the roster: a removed advisor
+      // stuck at "reviewing" would keep the whole session looking busy
+      // (advisorsReviewing scans values, not the current roster).
+      const ids = new Set(advisors.map((a) => a.id));
+      const advisorStates = Object.fromEntries(
+        Object.entries(v.advisorStates).filter(([advisorId]) => ids.has(advisorId)),
+      );
+      return { sessions: { ...s.sessions, [id]: { ...v, advisors, advisorStates } } };
     }),
 
   setSessionApproval: (id, mode) =>
