@@ -15,7 +15,7 @@
       "!resources",
       "!apps/desktop/src-tauri/gen",
       "!apps/desktop/src-tauri/icons",
-      "!apps/desktop/src/vendor/tool-views.generated.js",
+      "!apps/desktop/src/vendor/tool-views.generated*.js",
       "!bun.lock"
     ]
   },

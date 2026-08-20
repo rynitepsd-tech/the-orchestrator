@@ -325,7 +325,7 @@ export function UsageCenter(): JSX.Element {
               <div className="section-label">By project</div>
               <table className="usage-table">
                 <tbody>
-                  {agg.byProject.map((p) => (
+                  {agg.byProject.slice(0, 20).map((p) => (
                     <tr key={p.key}>
                       <td title={p.key}>{p.key.split("/").pop() || p.key}</td>
                       <td className="num">{fmtTokens(p.total)}</td>
@@ -334,6 +334,11 @@ export function UsageCenter(): JSX.Element {
                   ))}
                 </tbody>
               </table>
+              {agg.byProject.length > 20 && (
+                <div className="hint">
+                  Top 20 of {fmtCount(agg.byProject.length)} projects shown.
+                </div>
+              )}
             </section>
 
             {agg.advisors.length > 0 && (

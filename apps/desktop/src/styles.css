@@ -889,6 +889,17 @@ button {
   padding-left: 14px;
 }
 
+/* The inspector stacks several .usage-table sections (Session usage, By
+ * model, …); each table auto-sizes its own columns, so without shared widths
+ * the numeric columns land at different x positions per section. Fixed
+ * minimum widths keep tokens-over-tokens and cost-over-cost aligned. */
+.inspector .usage-table td.num {
+  width: 72px;
+}
+.inspector .usage-table td.num:last-child {
+  width: 84px;
+}
+
 .usage-table tr.total td {
   border-top: 1px solid var(--border);
   padding-top: 6px;
@@ -1325,6 +1336,10 @@ button {
   content: "";
   flex: 1;
   border-top: 1px solid var(--border);
+}
+/* How long ago the turn landed — fainter than the marker itself. */
+.turn-done-when {
+  color: var(--text-faint);
 }
 /* Turn ended but advisors still reading: not finished yet, keep it live. */
 .turn-done.pending {
@@ -2690,6 +2705,15 @@ button {
   flex-direction: column;
   gap: 14px;
   margin-top: 20px;
+}
+/* The usage hero reuses the .provider-row class name, but here each row is a
+ * stacked name/bar/hint block — NOT the Settings panel's bordered flex row.
+ * Without this override the Settings rule lays the three parts out side by
+ * side, the head never stretches, and every cost lands at a different x. */
+.provider-list .provider-row {
+  display: block;
+  padding: 0;
+  border-bottom: none;
 }
 .provider-row-head {
   display: flex;

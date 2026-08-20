@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.12
+
+- **Sessions name themselves.** A new session launched without an explicit
+  title now gets one generated from its first prompt (the way Codex and
+  Claude apps do), replacing "New session" in the sidebar a moment after the
+  first message. Naming runs through OMP's own title pipeline — greetings and
+  low-signal prompts stay unnamed until a real prompt arrives, an explicit
+  title typed in the New Session sheet is always respected, and renaming at
+  any time still works (renames now also propagate to the supervisor's
+  session list instead of going stale).
+- **1-hour prompt-cache retention.** The engine now asks OMP for long cache
+  retention (`PI_CACHE_RETENTION=long` unless the user already set it), so
+  Anthropic requests use the 1-hour cache TTL instead of the default 5
+  minutes — interactive sessions with pauses between messages stop re-reading
+  the whole conversation at full price after a short idle. OMP gates it per
+  provider/model; providers without long retention are unaffected.
+- **Turn timestamps.** Each "✓ Turn finished" marker now says how long ago
+  the turn landed ("· 12 min ago", hover for the absolute time), ticking
+  every minute — handy for judging whether the prompt cache is still warm.
+  Live turns only; replayed history has no markers to mis-stamp.
+- **Session usage columns line up.** The inspector's usage sections (Session
+  usage, Breakdown, By model) are separate tables that each auto-sized their
+  own columns; shared fixed widths now keep tokens-over-tokens and
+  cost-over-cost aligned across sections.
+- **Usage page provider rows line up.** The hero's per-provider list reused
+  the Settings panel's `.provider-row` class, whose flex-row rule crushed the
+  name/bar/hint stack onto one line with costs at ragged positions. Scoped
+  override restores the intended block layout with costs on a common right
+  edge.
+- **By project caps at 20.** The usage page's "By project" list now shows the
+  top 20 with a "Top 20 of N projects shown" note, matching "By session"
+  instead of growing unboundedly next to it.
+
 ## 0.5.11
 
 - **Mid-turn messages say whether the agent has seen them.** A prompt sent

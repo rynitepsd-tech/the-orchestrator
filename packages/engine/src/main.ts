@@ -19,6 +19,16 @@ import { EngineServer } from "./server";
 // Must happen before anything else can log, in either role.
 protectStdout();
 
+// Long prompt-cache retention: providers that support it (Anthropic's 1-hour
+// TTL) keep the conversation-prefix cache warm across the pauses typical of
+// interactive desktop use, where the default 5-minute window routinely
+// expires between messages and the next prompt re-reads the whole history at
+// full price. OMP gates this per provider/model and adds any required beta
+// header itself; providers without long retention are unaffected. `??=` so an
+// explicit user override (including "short"/"none") always wins. Workers
+// inherit it via spawn env and also run this line themselves.
+process.env.PI_CACHE_RETENTION ??= "long";
+
 // --- worker role -----------------------------------------------------------
 // Checked first, and before any supervisor state is constructed.
 // OMP re-enters `process.execPath` for its subprocess helpers: hidden

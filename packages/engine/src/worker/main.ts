@@ -59,6 +59,8 @@ interface WorkerBoot {
   projectPath: string;
   agentDir: string;
   title: string;
+  /** True when the launch config carried an explicit user-chosen title. */
+  userTitled?: boolean;
   model?: string;
   thinkingLevel?: string;
   advisors: AdvisorConfig[];
@@ -893,6 +895,14 @@ async function applyAdvisors(list: AdvisorConfig[]): Promise<AdvisorConfig[]> {
 
 if (advisors.size) await applyAdvisors([...advisors.values()]);
 
+// OMP names sessions asynchronously — auto-title from the first prompt,
+// /rename, extension renames. Forward every change as a session.title event
+// so the sidebar updates live and the supervisor's summary stays current.
+(sessionManager as any).onSessionNameChanged?.(() => {
+  const name = (sessionManager as any).getSessionName?.();
+  if (name) emit({ type: "session.title", sessionId: boot.sessionId, title: String(name) });
+});
+
 // Fast mode (provider priority tier): apply the launch preference, then report
 // the actual state — resumed sessions restore their persisted tier, so the UI
 // chip must reflect the session, not assume "off".
@@ -981,6 +991,19 @@ async function handle(req: any): Promise<unknown> {
           }
         } catch {
           /* advisor revival must never block the prompt */
+        }
+      }
+
+      // Auto-title: name the session from its first real prompt (the way
+      // Codex and Claude do). OMP gates this itself — already-named sessions,
+      // greetings/low-signal input, and PI_NO_TITLE all skip — and applies
+      // the result via setSessionName("auto"), which a later user rename
+      // overrides. An explicit title from the launch sheet is respected.
+      if (!boot.userTitled) {
+        try {
+          (session as any).maybeStartTitleGeneration?.(String(req.payload.text));
+        } catch {
+          /* titling must never block or break the prompt */
         }
       }
 

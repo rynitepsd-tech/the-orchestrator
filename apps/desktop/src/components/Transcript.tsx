@@ -722,12 +722,43 @@ const Item = memo(function Item({
         <div className="turn-done">
           ✓ Turn finished
           {item.durationMs && item.durationMs >= 1000 ? ` in ${fmtDuration(item.durationMs)}` : ""}
+          {item.at && <TimeAgo iso={item.at} />}
         </div>
       );
     default:
       return null;
   }
 });
+
+/** "just now" → "3 min ago" → "2 hours ago" → "3 days ago". */
+function fmtAgo(iso: string, now: number): string {
+  const s = Math.max(0, Math.floor((now - Date.parse(iso)) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+/**
+ * Live relative timestamp. Ticks once a minute so "3 min ago" stays honest —
+ * useful for judging whether the provider prompt cache is still warm.
+ */
+function TimeAgo({ iso }: { iso: string }): JSX.Element {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <span className="turn-done-when" title={new Date(iso).toLocaleString()}>
+      {" "}
+      · {fmtAgo(iso, now)}
+    </span>
+  );
+}
 
 /** First meaningful line of a thought, clipped for use as a summary label. */
 function thinkingPreview(thinking: string): string {

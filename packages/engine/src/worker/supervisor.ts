@@ -277,6 +277,10 @@ export class WorkerSupervisor {
       projectPath,
       agentDir: this.#agentDir,
       title: summary.title,
+      // Only a launch config that actually carried a title counts as
+      // user-titled — the "New session" placeholder must not suppress
+      // auto-titling from the first prompt.
+      userTitled: Boolean(config.title?.trim()),
       model: config.model,
       thinkingLevel: config.thinkingLevel,
       advisors: config.advisors ?? [],
@@ -320,7 +324,13 @@ export class WorkerSupervisor {
       sessionId,
       summary,
       proc,
-      (e) => this.#emit(e),
+      (e) => {
+        // Worker-side renames (auto-title from the first prompt, /rename,
+        // extensions) must reach the summary too, or sessions.list would
+        // keep resurrecting the stale launch title.
+        if (e.type === "session.title") summary.title = e.title;
+        this.#emit(e);
+      },
       (code) => this.#onWorkerExit(sessionId, code),
     );
     this.#workers.set(sessionId, worker);

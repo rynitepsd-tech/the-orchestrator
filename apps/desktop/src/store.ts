@@ -122,6 +122,12 @@ export type TranscriptItem =
       id: string;
       durationMs?: number;
       pending: boolean;
+      /**
+       * When the turn finished (ISO). Stamped at event receipt — live events
+       * only; replayed history builds no turn-end markers, so a stale stamp
+       * can't masquerade as recent.
+       */
+      at?: string;
     };
 
 export interface SessionView {
@@ -1097,7 +1103,13 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
       const reviewing = Object.values(v.advisorStates).some((st) => st === "reviewing");
       const marker: TranscriptItem | null =
         e.runState === "completed"
-          ? { kind: "turn-end", id: nextId(), durationMs: e.durationMs, pending: reviewing }
+          ? {
+              kind: "turn-end",
+              id: nextId(),
+              durationMs: e.durationMs,
+              pending: reviewing,
+              at: new Date().toISOString(),
+            }
           : null;
       // Idempotence under hydrate/live races: a turn-end already at the tail
       // is the same event applied twice, not a new turn.
