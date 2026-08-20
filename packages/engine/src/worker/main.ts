@@ -999,7 +999,10 @@ async function handle(req: any): Promise<unknown> {
       // greetings/low-signal input, and PI_NO_TITLE all skip — and applies
       // the result via setSessionName("auto"), which a later user rename
       // overrides. An explicit title from the launch sheet is respected.
-      if (!boot.userTitled) {
+      // Never in test mode: the online title model resolves to a REAL
+      // provider, and its in-flight request racing shutdown flaked the
+      // packaged smoke test's 15s exit window.
+      if (!boot.userTitled && process.env.ORCHESTRATOR_TEST_MODE !== "1") {
         try {
           (session as any).maybeStartTitleGeneration?.(String(req.payload.text));
         } catch {

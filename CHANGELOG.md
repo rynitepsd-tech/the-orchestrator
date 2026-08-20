@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Auto session titling is suppressed under ORCHESTRATOR_TEST_MODE: the online
+  title model resolves to a real provider, and its in-flight request racing
+  shutdown flaked the packaged smoke test's exit check (23/24 on one 0.5.12
+  DMG run, clean on rerun).
+
 ## 0.5.12
 
 - **Sessions name themselves.** A new session launched without an explicit
