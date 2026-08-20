@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.10
+
+- **Dropping a file can no longer take over the app.** Tauri's native
+  drag-drop interception is off (so composers get real HTML5 drop events),
+  which left WKWebView's default in charge everywhere else: dropping e.g. a
+  JPEG anywhere outside a composer navigated the entire window to the image,
+  with no way back short of quitting. A window-level guard now neutralises
+  the default; component drop targets still receive their files.
+- **The home screen takes attachments.** The launch composer now has the same
+  attach button, drag-and-drop, and paste-an-image support as the in-session
+  composer, and dropped files ride along with the first message. Attachments
+  alone are a valid first message.
+- The in-session preset picker's tooltip no longer claims advisors don't
+  change on preset switch (they do, since 0.5.9).
+
 ## 0.5.9
 
 - **Resumed sessions keep their advisors.** Resuming a session relaunched it

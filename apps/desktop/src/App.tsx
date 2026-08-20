@@ -322,6 +322,7 @@ export function App(): JSX.Element {
     config: SessionLaunchConfig,
     firstMessage: string,
     presetName?: string,
+    attachments: Array<{ kind: "image" | "file"; name: string; path: string }> = [],
   ) => {
     const id = await createSession(config);
     if (!id) return;
@@ -331,9 +332,17 @@ export function App(): JSX.Element {
       sessionId: id,
       messageId: `u${Date.now()}`,
       text: firstMessage,
+      attachments: attachments.map((a) => ({ kind: a.kind, name: a.name, path: a.path })),
     });
     void engine
-      .request("session.prompt", { sessionId: id, text: firstMessage, whenBusy: "steer" })
+      .request("session.prompt", {
+        sessionId: id,
+        text: firstMessage,
+        whenBusy: "steer",
+        attachments: attachments.length
+          ? attachments.map((a) => ({ kind: a.kind, path: a.path }))
+          : undefined,
+      })
       .catch((e) => {
         useStore.getState().setEngineError(e);
       });
@@ -817,7 +826,9 @@ export function App(): JSX.Element {
               <Home
                 busy={creating}
                 disabled={s.engineStage === "offline"}
-                onLaunch={(config, msg, preset) => void launchWithPrompt(config, msg, preset)}
+                onLaunch={(config, msg, preset, attachments) =>
+                  void launchWithPrompt(config, msg, preset, attachments)
+                }
               />
             )}
           </>

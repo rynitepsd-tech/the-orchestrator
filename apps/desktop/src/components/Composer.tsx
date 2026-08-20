@@ -12,45 +12,18 @@ import { ask, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
+import { type Attachment, attachmentKind, storeBlob } from "../lib/attachments";
 import type { SessionPreset } from "../lib/prefs";
 import { isActive, modelBasename, useStore } from "../store";
 import { BoltIcon } from "./icons";
 import { PromptDialog } from "./PromptDialog";
 
+export type { Attachment } from "../lib/attachments";
+
 interface SlashCommand {
   name: string;
   description?: string;
   source: string;
-}
-
-export interface Attachment {
-  kind: "image" | "file";
-  name: string;
-  path: string;
-}
-
-const IMAGE_EXT_RX = /\.(png|jpe?g|gif|webp)$/i;
-
-function attachmentKind(name: string): "image" | "file" {
-  return IMAGE_EXT_RX.test(name) ? "image" : "file";
-}
-
-/** Persist a pasted/dropped blob through the engine; returns an attachment. */
-async function storeBlob(file: File): Promise<Attachment> {
-  const buf = await file.arrayBuffer();
-  let bin = "";
-  const bytes = new Uint8Array(buf);
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  const name = file.name || (file.type.startsWith("image/") ? "pasted-image.png" : "attachment");
-  const res = await engine.request("attachments.store", { name, base64: btoa(bin) });
-  return {
-    kind: file.type.startsWith("image/") ? "image" : attachmentKind(name),
-    name,
-    path: res.path,
-  };
 }
 
 export function Composer({
@@ -412,7 +385,7 @@ export function Composer({
           <select
             className="ctl-chip ctl-select"
             value={presetName ?? ""}
-            title="Preset for this session — picking one applies its model, effort, and fast mode. Advisors are set at session start and don't change here."
+            title="Preset for this session — picking one applies its model, effort, fast mode, and advisors."
             disabled={disabled || !sessionId}
             onChange={(e) => onPresetChange(e.target.value)}
           >

@@ -10,8 +10,9 @@
 
 import type { ApprovalMode, SessionLaunchConfig } from "@orchestrator/protocol";
 import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { JSX } from "react";
+import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useMemo, useRef, useState } from "react";
+import { type Attachment, attachmentKind, storeBlob } from "../lib/attachments";
 import type { SessionPreset } from "../lib/prefs";
 import { modelBasename, useStore } from "../store";
 import { FolderIcon } from "./icons";
@@ -24,7 +25,12 @@ export function Home({
 }: {
   busy: boolean;
   disabled?: boolean;
-  onLaunch: (config: SessionLaunchConfig, firstMessage: string, presetName?: string) => void;
+  onLaunch: (
+    config: SessionLaunchConfig,
+    firstMessage: string,
+    presetName?: string,
+    attachments?: Attachment[],
+  ) => void;
 }): JSX.Element {
   const prefs = useStore((s) => s.prefs);
   const updatePrefs = useStore((s) => s.updatePrefs);
@@ -42,7 +48,50 @@ export function Home({
   const [projectMenu, setProjectMenu] = useState(false);
   const [text, setText] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("always-ask");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [dragOver, setDragOver] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const pickFiles = async () => {
+    const picked = await openDialog({ multiple: true, title: "Attach files" }).catch(() => null);
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    setAttachments((prev) => [
+      ...prev,
+      ...paths.map((p) => {
+        const name = p.split("/").pop() ?? p;
+        return { kind: attachmentKind(name), name, path: p };
+      }),
+    ]);
+  };
+
+  const addBlobs = async (files: File[]) => {
+    for (const f of files) {
+      try {
+        const att = await storeBlob(f);
+        setAttachments((prev) => [...prev, att]);
+      } catch (e) {
+        useStore.getState().setEngineError(e as never);
+      }
+    }
+  };
+
+  const onPaste = (e: ClipboardEvent) => {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.size > 0);
+    if (files.length) {
+      e.preventDefault();
+      void addBlobs(files);
+    }
+  };
+
+  const onDrop = (e: DragEvent) => {
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.size > 0);
+    if (files.length) {
+      e.preventDefault();
+      void addBlobs(files);
+    }
+  };
 
   const pickApproval = async (mode: ApprovalMode) => {
     if (mode === "yolo") {
@@ -60,7 +109,10 @@ export function Home({
 
   const alias = (p: string) => prefs.projectAliases[p] ?? (p.split("/").pop() || p);
   const folder = projectPath ? alias(projectPath) : undefined;
-  const canLaunch = Boolean(text.trim() && projectPath && !busy && !disabled);
+  // Attachments alone are a valid first message (a screenshot IS the prompt).
+  const canLaunch = Boolean(
+    (text.trim() || attachments.length) && projectPath && !busy && !disabled,
+  );
 
   const launch = () => {
     if (!canLaunch) return;
@@ -75,8 +127,10 @@ export function Home({
       },
       text.trim(),
       preset?.name,
+      attachments,
     );
     setText("");
+    setAttachments([]);
   };
 
   const pickFolder = () => {
@@ -99,16 +153,29 @@ export function Home({
         )}
       </h1>
 
-      <div className="home-composer">
+      <div
+        className={`home-composer${dragOver ? " drag-over" : ""}`}
+        onDragOver={(e) => {
+          if (e.dataTransfer?.types.includes("Files")) {
+            e.preventDefault();
+            setDragOver(true);
+          }
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget === e.target) setDragOver(false);
+        }}
+        onDrop={onDrop}
+      >
         <textarea
           ref={taRef}
           className="home-input"
-          placeholder="Describe a task to start a session…"
+          placeholder="Describe a task to start a session — paste or drop files…"
           value={text}
           rows={Math.min(8, Math.max(2, text.split("\n").length))}
           autoFocus
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
+          onPaste={onPaste}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -116,7 +183,31 @@ export function Home({
             }
           }}
         />
+        {attachments.length > 0 && (
+          <div className="attachment-row">
+            {attachments.map((a, i) => (
+              <span key={`${a.path}-${i}`} className="chip attachment-chip" title={a.path}>
+                {a.kind === "image" ? "🖼" : "📄"} {a.name}
+                <button
+                  className="attachment-remove"
+                  aria-label={`Remove ${a.name}`}
+                  onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="home-controls">
+          <button
+            className="ctl-chip attach-chip"
+            title="Attach images or files (or paste/drop them)"
+            onClick={() => void pickFiles()}
+            disabled={disabled}
+          >
+            +
+          </button>
           {/* Preset: the launch contract, changeable and sticky. */}
           <select
             className="input home-select"

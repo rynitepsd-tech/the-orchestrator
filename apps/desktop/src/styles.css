@@ -1635,6 +1635,10 @@ button {
   flex-direction: column;
   gap: 10px;
 }
+.home-composer.drag-over {
+  border-color: var(--accent);
+  border-style: dashed;
+}
 .home-input {
   border: none;
   background: none;
