@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.11
+
+- **Mid-turn messages say whether the agent has seen them.** A prompt sent
+  while a turn is running (steer or ⌘Enter follow-up) now shows a small
+  "Unread" label right under the bubble, flipping to "✓ Read" the moment OMP
+  actually injects the message into the conversation — the signal is the
+  worker's echo of the message, not a timer, so the label is truthful.
+  Ordinary turn-starting messages and replayed history are unaffected.
+
 ## 0.5.10
 
 - **Dropping a file can no longer take over the app.** Tauri's native

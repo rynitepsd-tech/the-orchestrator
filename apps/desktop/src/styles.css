@@ -606,6 +606,19 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* Mid-turn sends: truthful pickup status right under the bubble. The stream
+ * column's 16px gap is pulled back so the label hugs its message. */
+.msg-pickup {
+  align-self: flex-end;
+  font-size: 11.5px;
+  margin-top: -12px;
+  padding-right: 6px;
+  color: var(--text-faint);
+}
+.msg-pickup.read {
+  color: var(--ok);
+}
+
 /* Rewind: appears on hover at the bubble's left shoulder. */
 .rewind-btn {
   position: absolute;

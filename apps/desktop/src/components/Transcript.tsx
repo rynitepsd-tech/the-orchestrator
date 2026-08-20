@@ -622,28 +622,42 @@ const Item = memo(function Item({
   switch (item.kind) {
     case "user":
       return (
-        <div className="msg-user">
-          {onRewind && (
-            <button
-              type="button"
-              className="rewind-btn"
-              title="Rewind the conversation to before this message (files are not changed)"
-              onClick={onRewind}
+        <>
+          <div className="msg-user">
+            {onRewind && (
+              <button
+                type="button"
+                className="rewind-btn"
+                title="Rewind the conversation to before this message (files are not changed)"
+                onClick={onRewind}
+              >
+                ↺
+              </button>
+            )}
+            {item.attachments && item.attachments.length > 0 && (
+              <div className="attachment-row">
+                {item.attachments.map((a, i) => (
+                  <span key={i} className="chip attachment-chip" title={a.path}>
+                    {a.kind === "image" ? "🖼" : "📄"} {a.name}
+                  </span>
+                ))}
+              </div>
+            )}
+            {item.text}
+          </div>
+          {item.pickup && (
+            <div
+              className={`msg-pickup ${item.pickup}`}
+              title={
+                item.pickup === "read"
+                  ? "The agent has picked this message up."
+                  : "Sent mid-turn — the agent will pick this up at its next stopping point."
+              }
             >
-              ↺
-            </button>
-          )}
-          {item.attachments && item.attachments.length > 0 && (
-            <div className="attachment-row">
-              {item.attachments.map((a, i) => (
-                <span key={i} className="chip attachment-chip" title={a.path}>
-                  {a.kind === "image" ? "🖼" : "📄"} {a.name}
-                </span>
-              ))}
+              {item.pickup === "read" ? "✓ Read" : "Unread"}
             </div>
           )}
-          {item.text}
-        </div>
+        </>
       );
     case "assistant": {
       // Thinking is visible live while the model reasons, then tucks behind a

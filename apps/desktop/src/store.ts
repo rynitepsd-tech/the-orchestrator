@@ -43,6 +43,13 @@ export type TranscriptItem =
       id: string;
       text: string;
       attachments?: Array<{ kind: "image" | "file"; name: string; path?: string }>;
+      /**
+       * Pickup status for messages sent into a RUNNING turn (steer/queue):
+       * "unread" until OMP actually injects the message into the conversation
+       * (the worker echo), then "read". Absent on ordinary turn-starting
+       * messages and on replayed history.
+       */
+      pickup?: "unread" | "read";
     }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean }
   | {
@@ -680,7 +687,10 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
       );
       if (echoOf >= 0) {
         const copy = [...t];
-        copy[echoOf] = { ...copy[echoOf], id: e.messageId } as TranscriptItem;
+        const cur = copy[echoOf] as Extract<TranscriptItem, { kind: "user" }>;
+        // The echo IS the pickup: OMP injected the message into the
+        // conversation, so an "unread" mid-turn send flips to "read".
+        copy[echoOf] = { ...cur, id: e.messageId, pickup: cur.pickup ? "read" : undefined };
         return { ...v, transcript: copy };
       }
       return {
@@ -688,7 +698,22 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         summary: { ...v.summary, messageCount: v.summary.messageCount + 1 },
         transcript: [
           ...t,
-          { kind: "user", id: e.messageId, text: e.text, attachments: e.attachments },
+          {
+            kind: "user",
+            id: e.messageId,
+            text: e.text,
+            attachments: e.attachments,
+            // An optimistic bubble (id `u<timestamp>`) sent while a turn is
+            // running has no guaranteed pickup moment — show "unread" until
+            // the worker echo proves the agent saw it. "starting" is excluded:
+            // that's a fresh session's first message, not a mid-turn send.
+            pickup:
+              /^u\d+$/.test(e.messageId) &&
+              isActive(v.summary.runState) &&
+              v.summary.runState !== "starting"
+                ? "unread"
+                : undefined,
+          },
         ],
       };
     }
