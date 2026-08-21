@@ -361,7 +361,12 @@ export class RuntimeManager {
   }
 
   async shutdown(): Promise<void> {
+    // Flush BEFORE worker teardown: if the host loses patience and kills the
+    // process mid-shutdown, the debounced usage records must already be on
+    // disk — they are the one thing here that cannot be rebuilt.
+    this.#usageIndex.flush();
     await this.#supervisor?.shutdown();
+    // Workers may have shared final records while they drained.
     this.#usageIndex.flush();
   }
 
@@ -384,6 +389,24 @@ export class RuntimeManager {
     }
     if (e.type === "session.finished") {
       this.#supervisor.noteRunState(e.sessionId, e.runState);
+      // Reconcile this one session against its persisted file: upgrades the
+      // live counters to omp-session authority without waiting for a manual
+      // reindex. Single-file streaming read; failures never affect the turn.
+      const s = this.list().find((x) => x.sessionId === e.sessionId);
+      if (s?.ompSessionPath) {
+        const path = s.ompSessionPath;
+        const title = s.title;
+        void readSessionFileUsage(path)
+          .then((usage) => {
+            if (!usage) return;
+            const records = usage.records.map((r) => ({
+              ...r,
+              sessionTitle: usage.title ?? title,
+            }));
+            this.#usageIndex.ingest(records);
+          })
+          .catch(() => {});
+      }
     }
     if (e.type === "usage.records") {
       // Mirror worker records into the persistent engine-wide index.
@@ -441,7 +464,11 @@ export class RuntimeManager {
     for (const s of sessions) {
       const usage = await readSessionFileUsage(s.path);
       if (!usage) continue;
-      indexed += this.#usageIndex.ingest(usage.records);
+      // Carry the parsed title so "By session" can show a name, not an id.
+      const records = usage.title
+        ? usage.records.map((r) => ({ ...r, sessionTitle: usage.title }))
+        : usage.records;
+      indexed += this.#usageIndex.ingest(records);
     }
     const durationMs = Date.now() - startedAt;
     logger.info("usage-index", `reindexed ${sessions.length} sessions`, { indexed, durationMs });
@@ -473,7 +500,11 @@ function numOrUndef(v: unknown): number | undefined {
  *
  * Lets the PACKAGED smoke test drive a real session against a local mock
  * provider, so packaging can be verified end to end without spending API
- * credit. Ignored unless the variable is present, so it is inert in normal use.
+ * credit. An env var that registers an arbitrary provider endpoint is an
+ * exfiltration channel if anything persistent (e.g. a prompt-injected agent
+ * running launchctl setenv) can set it — so the Tauri shell scrubs it from
+ * the engine's environment at spawn. Only direct spawns (tests, the packaged
+ * smoke script) can reach this hook.
  */
 function envTestProviders(): { testProviders?: WorkerSpawnEnv["testProviders"] } | undefined {
   const raw = process.env.ORCHESTRATOR_TEST_PROVIDERS;

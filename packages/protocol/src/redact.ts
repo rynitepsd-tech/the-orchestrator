@@ -15,7 +15,9 @@ const SENSITIVE_KEY_RE =
   // camel arm requires the singular capitalised suffix so usage-counter keys
   // like `inputTokens`/`totalTokens` are never scrubbed. The compound prefix
   // accepts both separators (x-api-key as well as my_api_key).
-  /^(?:(?:.*[-_])?(?:api[-_]?key|apikey|secret|password|passwd|token|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer|authorization|auth|cookie|session[-_]?key|private[-_]?key|client[-_]?secret|credential[s]?)|[a-z][A-Za-z0-9]*(?:Token|Secret|Password|ApiKey))$/i;
+  // `answer` is the literal field carrying a pasted API key through the
+  // providers.loginAnswer flow — sensitive by construction, not by name.
+  /^(?:(?:.*[-_])?(?:api[-_]?key|apikey|secret|password|passwd|token|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer|authorization|auth|cookie|session[-_]?key|private[-_]?key|client[-_]?secret|credential[s]?)|answer|[a-z][A-Za-z0-9]*(?:Token|Secret|Password|ApiKey))$/i;
 
 /**
  * Value patterns that look like credentials even under an innocuous key.
@@ -24,12 +26,19 @@ const SENSITIVE_KEY_RE =
 const VALUE_PATTERNS: Array<{ re: RegExp; replace: string }> = [
   // Authorization headers
   { re: /\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{8,}/gi, replace: `$1 ${REDACTED}` },
-  // Common vendor key shapes
-  { re: /\bsk-[A-Za-z0-9_-]{16,}/g, replace: REDACTED },
+  // Common vendor key shapes. sk-ant- before the generic sk- rule — ordered
+  // most-specific first for real this time (the generic rule shadowed it).
   { re: /\bsk-ant-[A-Za-z0-9_-]{16,}/g, replace: REDACTED },
-  { re: /\bghp_[A-Za-z0-9]{20,}/g, replace: REDACTED },
-  { re: /\bgho_[A-Za-z0-9]{20,}/g, replace: REDACTED },
+  { re: /\bsk-[A-Za-z0-9_-]{16,}/g, replace: REDACTED },
+  { re: /\bxai-[A-Za-z0-9_-]{16,}/g, replace: REDACTED },
+  { re: /\bgsk_[A-Za-z0-9_-]{16,}/g, replace: REDACTED },
+  // GitHub: personal, OAuth, AND the app/installation/refresh shapes the
+  // github-copilot OAuth flow actually produces.
+  { re: /\bgh[posur]_[A-Za-z0-9]{20,}/g, replace: REDACTED },
   { re: /\bgithub_pat_[A-Za-z0-9_]{20,}/g, replace: REDACTED },
+  // Google OAuth access/refresh tokens (what google-gemini-cli yields).
+  { re: /\bya29\.[A-Za-z0-9._-]{20,}/g, replace: REDACTED },
+  { re: /\b1\/\/0[A-Za-z0-9._-]{20,}/g, replace: REDACTED },
   { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}/g, replace: REDACTED },
   { re: /\bAKIA[0-9A-Z]{16}\b/g, replace: REDACTED },
   { re: /\bAIza[0-9A-Za-z_-]{35}\b/g, replace: REDACTED },
@@ -38,8 +47,9 @@ const VALUE_PATTERNS: Array<{ re: RegExp; replace: string }> = [
   // Stripe / npm tokens
   { re: /\b[sr]k_live_[A-Za-z0-9]{16,}/g, replace: REDACTED },
   { re: /\bnpm_[A-Za-z0-9]{30,}/g, replace: REDACTED },
-  // URL basic auth: scheme://user:password@host
-  { re: /\b(https?:\/\/[^/\s:@]+:)[^/\s:@]+@/gi, replace: `$1${REDACTED}@` },
+  // URL basic auth: scheme://user:password@host. Any scheme — DATABASE_URL
+  // style postgres:// / mysql:// / redis:// credentials leak the same way.
+  { re: /\b([a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^/\s:@]+@/gi, replace: `$1${REDACTED}@` },
   // OAuth-style JSON bodies
   {
     re: /("(?:access|refresh|id)_token"\s*:\s*")[^"]{6,}(")/gi,
@@ -53,8 +63,10 @@ const VALUE_PATTERNS: Array<{ re: RegExp; replace: string }> = [
   },
   // key=value / key: value in free text. The prefix arm covers env-style
   // names (GITHUB_TOKEN=, MY_API_KEY:) where \b cannot sit after "_".
+  // The sensitive word may sit anywhere in the name, not only at its end —
+  // AWS_SECRET_ACCESS_KEY= and PRIVATE_KEY_PATH-style names leak otherwise.
   {
-    re: /\b([\w-]*(?:api[-_]?key|token|secret|password|authorization)\s*[=:]\s*)(["']?)[^\s"',;]{6,}\2/gi,
+    re: /\b([\w-]*(?:api[-_]?key|token|secret|password|authorization|private[-_]key)[\w-]*\s*[=:]\s*)(["']?)[^\s"',;]{6,}\2/gi,
     replace: `$1${REDACTED}`,
   },
 ];

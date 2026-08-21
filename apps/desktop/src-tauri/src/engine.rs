@@ -94,14 +94,20 @@ fn resolve_engine(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
 
 /// A Finder-launched .app inherits launchd's minimal PATH
 /// (/usr/bin:/bin:/usr/sbin:/sbin), so agent tools can't find Homebrew or
-/// user-installed CLIs (gh, node, chrome wrappers, …). Append the standard
-/// install locations that exist on disk so the engine — and every worker and
-/// tool under it — sees the same commands a terminal would.
+/// user-installed CLIs (gh, node, chrome wrappers, …). Prepend the standard
+/// install locations that exist on disk — ahead of the system dirs, like a
+/// login shell would — so the engine, and every worker and tool under it,
+/// resolves the same git/python/node a terminal does rather than the stale
+/// system copies. Version-manager shims come first for the same reason: they
+/// must shadow homebrew installs to honor per-project tool versions.
 fn enriched_path() -> String {
     let base = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into());
-    let mut parts: Vec<String> = base.split(':').map(String::from).collect();
     let home = std::env::var("HOME").unwrap_or_default();
     let candidates = [
+        format!("{home}/.local/share/mise/shims"),
+        format!("{home}/.asdf/shims"),
+        format!("{home}/.pyenv/shims"),
+        format!("{home}/.rbenv/shims"),
         "/opt/homebrew/bin".to_string(),
         "/opt/homebrew/sbin".to_string(),
         "/usr/local/bin".to_string(),
@@ -110,10 +116,16 @@ fn enriched_path() -> String {
         format!("{home}/.cargo/bin"),
         format!("{home}/.volta/bin"),
     ];
+    let mut parts: Vec<String> = Vec::new();
     for dir in candidates {
         // An empty $HOME yields paths like "/.bun/bin", which simply won't exist.
         if !parts.iter().any(|p| p == &dir) && PathBuf::from(&dir).is_dir() {
             parts.push(dir);
+        }
+    }
+    for dir in base.split(':') {
+        if !dir.is_empty() && !parts.iter().any(|p| p == dir) {
+            parts.push(dir.to_string());
         }
     }
     parts.join(":")
@@ -190,7 +202,13 @@ impl EngineSupervisor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("ORCHESTRATOR_VERSION", env!("CARGO_PKG_VERSION"))
-            .env("PATH", enriched_path());
+            .env("PATH", enriched_path())
+            // Test hooks disable approval gates / register arbitrary providers.
+            // They are for direct spawns (bun test, the packaged smoke script)
+            // only — scrub them so nothing persistent in the GUI launch
+            // environment (launchctl setenv) can arm them in the packaged app.
+            .env_remove("ORCHESTRATOR_TEST_MODE")
+            .env_remove("ORCHESTRATOR_TEST_PROVIDERS");
 
         let mut child = cmd.spawn().map_err(|e| {
             let message = "The bundled OMP engine could not start.".to_string();
@@ -209,29 +227,48 @@ impl EngineSupervisor {
         let stderr = child.stderr.take().ok_or("engine stderr unavailable")?;
         let stdin = child.stdin.take().ok_or("engine stdin unavailable")?;
 
-        // stdout: protocol frames only, one JSON object per line.
+        // stdout: protocol frames only, one JSON object per line. Read raw
+        // bytes and decode lossily: `lines()` errors out on invalid UTF-8,
+        // which would silently end the pump while the engine lives on.
         {
             let app = self.app.clone();
             std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    match line {
-                        Ok(l) if !l.trim().is_empty() => {
-                            let _ = app.emit(EVENT_FRAME, l);
+                let mut reader = BufReader::new(stdout);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let line = String::from_utf8_lossy(&buf);
+                            let line = line.trim_end_matches(['\r', '\n']);
+                            if !line.trim().is_empty() {
+                                let _ = app.emit(EVENT_FRAME, line);
+                            }
                         }
-                        Ok(_) => {}
-                        Err(_) => break,
                     }
                 }
             });
         }
 
-        // stderr: diagnostics. Never parsed as protocol.
+        // stderr: diagnostics. Never parsed as protocol, but decoded lossily
+        // for the same reason as stdout — tool output isn't guaranteed UTF-8.
         {
             std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    log::debug!("engine: {line}");
+                let mut reader = BufReader::new(stderr);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let line = String::from_utf8_lossy(&buf);
+                            let line = line.trim_end_matches(['\r', '\n']);
+                            if !line.trim().is_empty() {
+                                log::debug!("engine: {line}");
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -306,7 +343,10 @@ impl EngineSupervisor {
     /// Terminate the engine. Used on quit so no agent process is orphaned.
     ///
     /// Closing stdin is the graceful path: the engine's read loop ends and it
-    /// disposes its sessions. The signal is a backstop for a wedged process.
+    /// disposes its sessions. Escalation is gradual — SIGTERM gives a busy
+    /// engine a chance to run its exit handlers (flush session state, reap
+    /// workers) before SIGKILL, which is only a last resort against a truly
+    /// wedged process.
     pub fn shutdown(&self) {
         // Closing the write half ends the engine's read loop, which disposes
         // its sessions and exits cleanly.
@@ -315,19 +355,22 @@ impl EngineSupervisor {
             guard.stdin = None;
         }
 
-        // Give it a moment to leave on its own terms.
-        for _ in 0..15 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut guard = self.inner.lock();
-            match guard.child.as_mut() {
-                None => return,
-                Some(c) => {
-                    if matches!(c.try_wait(), Ok(Some(_))) {
-                        guard.child = None;
-                        return;
-                    }
-                }
+        // Disposing sessions can take a while when agents are mid-request, so
+        // the grace period is generous before any signal is sent.
+        if self.wait_exited(60) {
+            return;
+        }
+
+        // SIGTERM still lets the engine's exit handlers run; std's kill() is
+        // SIGKILL, which would not.
+        let pid = self.inner.lock().child.as_ref().map(|c| c.id());
+        if let Some(pid) = pid {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
             }
+        }
+        if self.wait_exited(60) {
+            return;
         }
 
         // Backstop for a wedged process, so quitting never orphans an engine.
@@ -337,5 +380,24 @@ impl EngineSupervisor {
             let _ = c.wait();
         }
         guard.child = None;
+    }
+
+    /// Poll for exit up to `ticks` × 100ms, re-locking per iteration so the
+    /// reaper and send() are never starved while we sleep.
+    fn wait_exited(&self, ticks: u32) -> bool {
+        for _ in 0..ticks {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut guard = self.inner.lock();
+            match guard.child.as_mut() {
+                None => return true,
+                Some(c) => {
+                    if matches!(c.try_wait(), Ok(Some(_))) {
+                        guard.child = None;
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 }

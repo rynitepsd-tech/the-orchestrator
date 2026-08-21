@@ -57,10 +57,6 @@ export function NewSession({
   const efforts = selectedModel?.thinking?.efforts ?? [];
 
   useEffect(() => {
-    setEffort("");
-  }, [modelKey]);
-
-  useEffect(() => {
     if (advisorOverride.current) return;
     if (!projectPath.trim()) {
       setAdvisors([]);
@@ -161,7 +157,7 @@ export function NewSession({
         aria-label="New session"
         onKeyDown={(e) => {
           if (e.key === "Escape") onCancel();
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) start();
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) start();
         }}
       >
         <h2>New Session</h2>
@@ -246,7 +242,17 @@ export function NewSession({
 
         <div className="field">
           <span>Primary model</span>
-          <ModelPicker models={models} value={modelKey} onChange={(k) => setModelKey(k)} />
+          <ModelPicker
+            models={models}
+            value={modelKey}
+            onChange={(k) => {
+              // Clear effort HERE, on a manual pick — not in a [modelKey]
+              // effect, which also fired when a preset set model+effort
+              // together and silently wiped the preset's effort level.
+              setModelKey(k);
+              setEffort("");
+            }}
+          />
         </div>
 
         {efforts.length > 0 && (
@@ -292,7 +298,7 @@ export function NewSession({
                 autoFocus
                 onChange={(e) => setAdvisorDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") addCustomAdvisor();
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) addCustomAdvisor();
                   if (e.key === "Escape") {
                     e.stopPropagation();
                     setAdvisorDraft(null);
@@ -376,7 +382,7 @@ export function NewSession({
                 autoFocus
                 onChange={(e) => setPresetDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") saveAsPreset();
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) saveAsPreset();
                   if (e.key === "Escape") {
                     e.stopPropagation();
                     setPresetDraft(null);

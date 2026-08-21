@@ -25,6 +25,11 @@ export function ResizeHandle({
   const [dragging, setDragging] = useState(false);
   const start = useRef({ x: 0, width });
 
+  // Static maxima can exceed the window (sidebar 440 + inspector 600 > the
+  // 900px minimum), letting the transcript be dragged to 0px with no way
+  // back. Clamp against the live window so the centre always keeps room.
+  const effMax = Math.min(max, Math.max(min, window.innerWidth - 420));
+
   return (
     // biome-ignore lint/a11y/useSemanticElements: a focusable window-splitter is a widget (WAI-ARIA separator), not an <hr>
     <div
@@ -33,7 +38,7 @@ export function ResizeHandle({
       aria-orientation="vertical"
       aria-valuenow={width}
       aria-valuemin={min}
-      aria-valuemax={max}
+      aria-valuemax={effMax}
       tabIndex={0}
       onKeyDown={(e) => {
         const step = e.shiftKey ? 48 : 16;
@@ -41,7 +46,7 @@ export function ResizeHandle({
         if (!dir) return;
         e.preventDefault();
         const next = width + dir * (side === "right" ? step : -step);
-        onResize(Math.min(max, Math.max(min, next)));
+        onResize(Math.min(effMax, Math.max(min, next)));
       }}
       onPointerDown={(e) => {
         e.preventDefault();
@@ -55,7 +60,7 @@ export function ResizeHandle({
         // A right-edge handle grows its panel when dragged right; a left-edge
         // handle grows its panel when dragged left.
         const next = start.current.width + (side === "right" ? dx : -dx);
-        onResize(Math.round(Math.min(max, Math.max(min, next))));
+        onResize(Math.round(Math.min(effMax, Math.max(min, next))));
       }}
       onPointerUp={(e) => {
         (e.target as HTMLElement).releasePointerCapture(e.pointerId);

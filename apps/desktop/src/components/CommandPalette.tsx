@@ -4,6 +4,7 @@
  * One component, two modes. Commands are registered centrally here; every
  * entry performs a real action — no dead rows.
  */
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { engine } from "../engine-client";
@@ -74,7 +75,15 @@ export function CommandPalette(): JSX.Element {
         id: "restart-engine",
         label: "Restart Engine",
         hint: "stops all sessions",
-        run: () => void engine.restart(),
+        // The most destructive action in the app must not fire off three
+        // typed characters and a Return.
+        run: () =>
+          void ask(
+            "Restarting the engine stops every running session mid-turn. Transcripts are preserved. Restart now?",
+            { title: "Restart Engine", kind: "warning" },
+          ).then((yes) => {
+            if (yes) void engine.restart();
+          }),
       },
     ];
     if (view) {
@@ -97,6 +106,18 @@ export function CommandPalette(): JSX.Element {
           id: "rename",
           label: "Rename Session…",
           run: () => store.setRenameTarget(id),
+        },
+        {
+          id: "change-model",
+          label: "Change Model…",
+          hint: "⌘⇧M",
+          run: () => window.dispatchEvent(new CustomEvent("orchestrator:change-model")),
+        },
+        {
+          id: "configure-advisors",
+          label: "Configure Advisors…",
+          hint: "⌘⇧A",
+          run: () => window.dispatchEvent(new CustomEvent("orchestrator:configure-advisors")),
         },
       );
       if (view.summary.ompSessionPath) {

@@ -28,8 +28,9 @@ Notes:
 
 - `apps/desktop/package.json` also carries a `version`, but it is a private workspace member and
   does not reach any artifact. Keeping it in step is optional and harmless.
-- `tauri.conf.json` `"version"` is what names the DMG. At `0.2.0` the bundler produces
-  `The Orchestrator_0.2.0_aarch64.dmg`.
+- `tauri.conf.json` `"version"` is what names the DMG: the bundler produces
+  `The Orchestrator_<version>_aarch64.dmg`. (GitHub replaces the spaces with dots when the file is
+  uploaded as a release asset, so users download `The.Orchestrator_<version>_aarch64.dmg`.)
 - After editing `Cargo.toml`, run one Rust build (step 5 below) so `Cargo.lock` records the new
   version; commit the lockfile change with the bump.
 - Confirm the bump landed everywhere:
@@ -49,8 +50,9 @@ builds and then fails at runtime inside the packaged bundle.
 
 Check, in order:
 
-1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`17.3.1` at
-   time of writing).
+1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`17.3.4` at
+   time of writing — the exact string is in `packages/engine/package.json` and
+   `packages/omp-adapter/package.json`, which must agree).
 2. `OMP_VERSION` in `scripts/build-engine.ts` matches that version exactly. The constant is what the
    build prints and what the smoke test asserts against.
 3. `scripts/smoke-packaged.ts` asserts the same version in its `reports the pinned OMP version`
@@ -84,7 +86,7 @@ What each step is for:
 |---|---|---|
 | `bun install` | Restore the workspace from `bun.lock`, including the native addon package. | Clean install, no lockfile churn. |
 | `bun run typecheck` | `tsc --build --force` across the workspace. | No errors. |
-| `bun test` | Usage de-duplication, concurrency, adapter, and protocol suites across 8 test files. The concurrency suite drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | 67 passing. |
+| `bun test` | Usage de-duplication, concurrency, adapter, and protocol suites. The concurrency suite drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | All passing, zero failures. |
 | `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~89 MB) and `pi_natives.darwin-arm64.node` (~143 MB) in `resources/engine/`. |
 | `bunx tauri build` | Builds the Vite frontend, compiles the Rust binary, and bundles `resources/engine` into the app as `Contents/Resources/engine`. | `The Orchestrator.app` and `The Orchestrator_<version>_aarch64.dmg` under `apps/desktop/src-tauri/target/release/bundle/`. |
 | `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 24/24 checks passed. |
@@ -143,9 +145,13 @@ bun run build:engine -- --target=both
 | `arm64` | `bun-darwin-arm64` | `pi_natives.darwin-arm64.node` |
 | `x64` | `bun-darwin-x64` | `pi_natives.darwin-x64-baseline.node` |
 
-Cross-target builds need the matching addon package installed, for example
-`bun add -d @oh-my-pi/pi-natives-darwin-x64@17.3.1`. The script fails loudly with that exact hint
-when the addon is missing.
+Cross-target builds need the matching addon package installed at **the pinned OMP version**, for
+example `bun add -d @oh-my-pi/pi-natives-darwin-x64@17.3.4`. The script fails loudly with that
+exact hint when the addon is missing. The version in that command must match the pin everywhere it
+appears in the repo — `@oh-my-pi/pi-coding-agent` in `packages/engine/package.json` and
+`packages/omp-adapter/package.json`, the `OMP_VERSION` constant in `scripts/build-engine.ts`, and
+the version assertion in `scripts/smoke-packaged.ts` — an addon installed at any other version is
+exactly the runtime mismatch section 2 exists to prevent.
 
 **Apple Silicon is the only architecture that has been built and tested.** The x64 path exists in the
 build script and has never been exercised end to end. Do not describe an x64 artifact as supported
@@ -253,8 +259,14 @@ Compute SHA-256 over every artifact you publish, from the exact files you are ab
 
 ```sh
 cd apps/desktop/src-tauri/target/release/bundle/dmg
-shasum -a 256 "The Orchestrator_0.2.0_aarch64.dmg" | tee SHA256SUMS.txt
+shasum -a 256 "The Orchestrator_<version>_aarch64.dmg" | tee SHA256SUMS.txt
 ```
+
+**Record checksums against the filenames GitHub will actually serve.** GitHub replaces spaces with
+dots in uploaded asset names (`The Orchestrator_…` becomes `The.Orchestrator_…`), so a
+`SHA256SUMS.txt` written with the local spaced names fails `shasum -c` for every downloaded file.
+The CI workflow renames the artifacts to their dotted, as-served names before checksumming; do the
+same if publishing by hand.
 
 Attach to the GitHub Release:
 
@@ -265,12 +277,12 @@ Put the checksum in the release body as well as in the file, so a reader can ver
 downloading a second artifact. Tell users how to check it:
 
 ```sh
-shasum -a 256 ~/Downloads/"The Orchestrator_0.2.0_aarch64.dmg"
+shasum -a 256 ~/Downloads/"The.Orchestrator_<version>_aarch64.dmg"
 ```
 
 Release body should state, at minimum:
 
-- Version, and the pinned OMP version (`17.3.1`) this build embeds.
+- Version, and the pinned OMP version this build embeds (the section 2 pin).
 - Architecture: Apple Silicon (`aarch64`). Say plainly that Intel is not built or tested, and that
   Windows and Linux are not supported.
 - Signing status: ad-hoc signed, not notarized — with the first-launch instructions from section 6.
@@ -451,7 +463,7 @@ Constraints that must hold:
 - [ ] Version identical in `package.json`, `tauri.conf.json`, `Cargo.toml`; `Cargo.lock` updated.
 - [ ] OMP pin coherent across the engine dependency, `scripts/build-engine.ts`, and the smoke test.
 - [ ] `bun run typecheck` clean.
-- [ ] `bun test` — 67 passing across 8 files.
+- [ ] `bun test` — all passing, zero failures.
 - [ ] `bun run build:engine` — engine plus matching `.node` present in `resources/engine/`.
 - [ ] `bunx tauri build` — `.app` and `.dmg` produced.
 - [ ] `file -b` agrees on architecture for the Rust binary and the engine sidecar.

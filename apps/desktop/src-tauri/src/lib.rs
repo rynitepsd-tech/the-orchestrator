@@ -67,6 +67,16 @@ pub fn run() {
         .try_init();
 
     tauri::Builder::default()
+        // Must be the first plugin registered (its own requirement). A second
+        // launch would otherwise clobber the first instance's usage index;
+        // instead it just fronts the existing window and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -117,11 +127,24 @@ pub fn run() {
                 // Intercept quit until the UI confirms: only it knows whether
                 // sessions are still running. It answers via `app_quit`.
                 if !QUIT_CONFIRMED.load(Ordering::SeqCst) {
+                    // The window may be hidden (Cmd+W hides, not closes); the
+                    // confirmation dialog would otherwise be invisible and the
+                    // app would look unquittable.
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                     api.prevent_exit();
                     let _ = app.emit("app://exit-requested", ());
                 }
             }
             RunEvent::Exit => {
+                // The plugin's own save hook fires on window close, but close
+                // is intercepted into a hide here, so save explicitly on exit.
+                {
+                    use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+                    let _ = app.save_window_state(StateFlags::all());
+                }
                 if let Some(s) = app.try_state::<EngineSupervisor>() {
                     s.shutdown();
                 }

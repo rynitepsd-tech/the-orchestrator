@@ -110,14 +110,16 @@ See [docs/USAGE_MODEL.md](docs/USAGE_MODEL.md) for the attribution and de-duplic
 
 Provider sign-in runs from the app: Settings → Providers triggers OMP's own OAuth flow and opens the
 browser URL the engine reports. The engine never sees the resulting secret; it is written straight
-into OMP's own credential store, which the app then reuses. (Disconnecting a provider still requires
-running `omp logout` in a terminal — sign-out is intentionally not exposed in the GUI.)
+into OMP's own credential store, which the app then reuses. Disconnecting a provider is also done
+from Settings → Providers; because credentials are shared with the `omp` CLI, disconnecting signs
+the CLI out of that provider too.
 
 Windows and Linux are not supported.
 
 ## Installation
 
-1. Download `The Orchestrator_0.2.0_aarch64.dmg` from the GitHub Releases page.
+1. Download the current release DMG (`The.Orchestrator_<version>_aarch64.dmg`) from the GitHub
+   Releases page.
 2. Open the disk image and drag **The Orchestrator.app** to `/Applications`.
 3. Builds are ad-hoc signed (the maintainer has no paid Apple Developer account) and are therefore
    not notarised. On first launch macOS will refuse to open the app. Open
@@ -139,7 +141,7 @@ Prerequisites:
 bun install            # install workspace dependencies
 bun run build:engine   # compile the single-file engine + place the OMP native addon beside it
 bun run dev            # run the desktop app against the local engine (sets ORCHESTRATOR_ENGINE_ENTRY itself)
-bun test               # 67 tests across 8 files: usage de-duplication, concurrency, adapter, protocol
+bun test               # unit + integration suites: usage de-duplication, concurrency, adapter, protocol
 bun run check          # quality gate: biome check + typecheck + bun test
 ```
 
@@ -198,9 +200,9 @@ way. Full reasoning, the protocol frames, the persistence model, and the securit
 
 ## Relationship to OhMyPi
 
-- Pinned to OMP `17.3.1` (`@oh-my-pi/pi-coding-agent@17.3.1` and its workspace siblings), consumed
-  through the **published npm SDK** — not by shelling out to the `omp` CLI and not by vendoring
-  upstream source.
+- Pinned to one exact OMP version — the `@oh-my-pi/pi-coding-agent` version declared in
+  `packages/engine/package.json` (and its workspace siblings) — consumed through the
+  **published npm SDK**, not by shelling out to the `omp` CLI and not by vendoring upstream source.
 - Upstream is `can1357/oh-my-pi`, MIT licensed, by Mario Zechner and Can Bölük.
 - Version bumps are deliberate, never floating. The upgrade procedure and the exact upstream symbols,
   event shapes, and enumerations this project depends on are documented in
@@ -225,7 +227,7 @@ session format. Orchestrator-only UI metadata lives in
 
 ## Current limitations
 
-This is version 0.2.0. The following are not implemented in this build:
+The following are not implemented in the current build:
 
 - **Intel (x64) is untested.** The build script supports it; no Intel build has been produced or run.
 - Windows and Linux are not supported and are not planned.
@@ -241,9 +243,10 @@ This is version 0.2.0. The following are not implemented in this build:
 Each unimplemented protocol request returns an explicit error or an empty result rather than a silent
 no-op.
 
-Accepted costs of process-per-session: roughly 320 MB RSS per live session packaged (see
-[docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the full measured breakdown), and MCP servers and
-LSP pools are per-session rather than shared — which is why both are opt-in per session.
+Accepted costs of process-per-session: roughly 300–470 MB RSS per live session packaged, depending
+on load (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the full measured breakdown), and MCP
+servers and LSP pools are per-session rather than shared — each worker starts its own, enabled in
+normal operation and disabled only in test mode; there is no per-session UI toggle for them.
 
 ## Contributing
 

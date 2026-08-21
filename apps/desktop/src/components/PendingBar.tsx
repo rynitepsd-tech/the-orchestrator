@@ -15,7 +15,9 @@ import type { SessionView, TranscriptItem } from "../store";
 type Pending = Extract<TranscriptItem, { kind: "approval" | "interaction" }>;
 
 function scrollToCard(id: string): void {
-  document.getElementById(`titem-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  // The transcript owns the reveal: it must first raise its render window if
+  // the card scrolled past it (a plain DOM lookup silently no-ops there).
+  window.dispatchEvent(new CustomEvent("orchestrator:reveal", { detail: { itemId: id } }));
 }
 
 export function PendingBar({ view }: { view: SessionView }): JSX.Element | null {

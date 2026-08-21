@@ -58,6 +58,19 @@ function fmtDay(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/**
+ * LOCAL calendar day of a timestamp. Day buckets used to slice the UTC ISO
+ * string, so west of UTC every evening's work filed under tomorrow while the
+ * range filter used local midnight.
+ */
+function localDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
 export function UsageCenter(): JSX.Element {
   const prefs = useStore((s) => s.prefs);
   const updatePrefs = useStore((s) => s.updatePrefs);
@@ -69,11 +82,22 @@ export function UsageCenter(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [chartMode, setChartMode] = useState<"cost" | "tokens">("cost");
   const [breakdown, setBreakdown] = useState<"model" | "day">("model");
+  // Engine-side filters (implemented there all along; never sent before).
+  const [actorFilter, setActorFilter] = useState<"" | "primary" | "advisor" | "subagent">("");
+  const [providerFilter, setProviderFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const projects = useStore((s) => s.projects);
+  const providers = useStore((s) => s.providers);
 
   const refresh = async (r: Range) => {
     try {
       setError(null);
-      const res = await engine.request("usage.query", { since: sinceFor(r) });
+      const res = await engine.request("usage.query", {
+        since: sinceFor(r),
+        actorType: actorFilter || undefined,
+        provider: providerFilter || undefined,
+        projectPath: projectFilter || undefined,
+      });
       setGlobalUsage({ records: res.records, breakdown: res.breakdown, fetchedAt: Date.now() });
     } catch (e) {
       setError(String((e as { message?: string })?.message ?? e));
@@ -82,7 +106,7 @@ export function UsageCenter(): JSX.Element {
 
   useEffect(() => {
     void refresh(range);
-  }, [range]);
+  }, [range, actorFilter, providerFilter, projectFilter]);
 
   const setRangeAndSave = (r: Range) => {
     setRange(r);
@@ -128,13 +152,52 @@ export function UsageCenter(): JSX.Element {
             </button>
           ))}
         </div>
+        <select
+          className="ctl-chip ctl-select"
+          value={actorFilter}
+          title="Filter by actor type"
+          onChange={(e) => setActorFilter(e.target.value as typeof actorFilter)}
+        >
+          <option value="">All actors</option>
+          <option value="primary">Primary</option>
+          <option value="advisor">Advisors</option>
+          <option value="subagent">Subagents</option>
+        </select>
+        <select
+          className="ctl-chip ctl-select"
+          value={providerFilter}
+          title="Filter by provider"
+          onChange={(e) => setProviderFilter(e.target.value)}
+        >
+          <option value="">All providers</option>
+          {providers.map((p) => (
+            <option key={p.name} value={p.name}>
+              {providerLabel(p.name)}
+            </option>
+          ))}
+        </select>
+        {projects.length > 0 && (
+          <select
+            className="ctl-chip ctl-select"
+            value={projectFilter}
+            title="Filter by project (open projects)"
+            onChange={(e) => setProjectFilter(e.target.value)}
+          >
+            <option value="">All projects</option>
+            {projects.map((p) => (
+              <option key={p.projectId} value={p.path}>
+                {p.path.split("/").pop() || p.path}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           className="btn"
           disabled={reindexing}
           onClick={() => void reindex()}
           title="Rebuild the usage index from persisted OMP session files"
         >
-          {reindexing ? "Reindexing…" : "⟳"}
+          {reindexing ? "Reindexing…" : "⟳ Reindex"}
         </button>
       </div>
 
@@ -304,8 +367,8 @@ export function UsageCenter(): JSX.Element {
                 <tbody>
                   {agg.bySession.slice(0, 20).map((s) => (
                     <tr key={s.key}>
-                      <td className="mono" title={s.key}>
-                        {s.key.slice(0, 8)}
+                      <td className={s.title ? undefined : "mono"} title={s.key}>
+                        {s.title ?? s.key.slice(0, 8)}
                       </td>
                       <td title={s.project}>{s.project.split("/").pop() || "—"}</td>
                       <td className="num">{fmtTokens(s.total)}</td>
@@ -490,7 +553,7 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
   const dailyByProvider = new Map<string, Map<string, { cost: number; tokens: number }>>();
   const sessionsAgg = new Map<
     string,
-    { total: number; cost: number; hasCost: boolean; project: string }
+    { total: number; cost: number; hasCost: boolean; project: string; title?: string }
   >();
   const projects = new Map<string, { total: number; cost: number; hasCost: boolean }>();
   const advisorsAgg = new Map<string, { total: number; cost: number; hasCost: boolean }>();
@@ -542,7 +605,7 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
     }
     modelAgg.set(mk, mv);
 
-    const day = (r.completedAt ?? r.startedAt ?? "").slice(0, 10);
+    const day = localDay(r.completedAt ?? r.startedAt ?? "");
     if (day) {
       const dv = dayAgg.get(day) ?? { tokens: 0, cost: 0, hasCost: false };
       dv.tokens += t;
@@ -564,12 +627,19 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
     }
 
     const sk = r.ompSessionId || r.sessionId;
-    const s = sessionsAgg.get(sk) ?? { total: 0, cost: 0, hasCost: false, project: r.projectId };
+    const s = sessionsAgg.get(sk) ?? {
+      total: 0,
+      cost: 0,
+      hasCost: false,
+      project: r.projectId,
+      title: undefined as string | undefined,
+    };
     s.total += t;
     if (typeof r.cost === "number") {
       s.cost += r.cost;
       s.hasCost = true;
     }
+    if (r.sessionTitle) s.title = r.sessionTitle;
     sessionsAgg.set(sk, s);
 
     const p = projects.get(r.projectId) ?? { total: 0, cost: 0, hasCost: false };
@@ -613,7 +683,7 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
     const first = new Date(`${sortedDays[0]}T12:00:00`);
     const last = new Date(`${sortedDays[sortedDays.length - 1]}T12:00:00`);
     for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
-      days.push(d.toISOString().slice(0, 10));
+      days.push(localDay(d.toISOString()));
     }
   }
 
@@ -666,6 +736,7 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
     bySession: [...sessionsAgg.entries()]
       .map(([key, v]) => ({
         key,
+        title: v.title,
         total: v.total,
         cost: v.hasCost ? v.cost : undefined,
         project: v.project,

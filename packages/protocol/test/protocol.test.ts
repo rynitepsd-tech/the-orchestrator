@@ -102,6 +102,41 @@ describe("redaction", () => {
     expect(red).not.toContain("AKIAIOSFODNN7EXAMPLE");
   });
 
+  test("the token shapes our own connect flows produce are covered", () => {
+    // Each of these leaked before the audit: xai keys, GitHub app/installation
+    // tokens (the copilot OAuth output), Google OAuth, groq, database URLs,
+    // env-style names with the sensitive word mid-name.
+    const text = [
+      "xai-abcdefghijklmnop1234567890",
+      "ghu_0123456789abcdef0123456789abcdef1234",
+      "ghs_0123456789abcdef0123456789abcdef1234",
+      "ghr_0123456789abcdef0123456789abcdef1234",
+      "ya29.a0AfH6SMBexample-token-value-1234567890",
+      "gsk_abcdefghijklmnop1234567890",
+      "postgres://admin:hunter2pass@db.internal:5432/app",
+      "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY",
+    ].join("\n");
+    const red = redactText(text);
+    expect(red).not.toContain("abcdefghijklmnop");
+    expect(red).not.toContain("0123456789abcdef");
+    expect(red).not.toContain("a0AfH6SMB");
+    expect(red).not.toContain("hunter2pass");
+    expect(red).not.toContain("wJalrXUtnFEMIK7MDENG");
+    // Host and scheme stay readable for debugging.
+    expect(red).toContain("db.internal");
+  });
+
+  test("sk-ant keys redact under the specific rule, not shadowed by sk-", () => {
+    const red = redactText("sk-ant-api03-veryspecificsecret123456");
+    expect(red).not.toContain("veryspecificsecret");
+  });
+
+  test("the loginAnswer `answer` field is sensitive by construction", () => {
+    const v: any = redactValue({ promptId: "p1", answer: "pasted-api-key-value" });
+    expect(v.answer).not.toBe("pasted-api-key-value");
+    expect(v.promptId).toBe("p1");
+  });
+
   test("redactValue scrubs sensitive keys deeply but keeps env names", () => {
     const v: any = redactValue({
       apiKey: "secret",

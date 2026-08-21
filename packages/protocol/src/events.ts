@@ -21,6 +21,13 @@ import type {
 
 export interface EventBase {
   sessionId: SessionId;
+  /**
+   * Stable turn identity, stamped by the worker (which sees the real turn
+   * boundaries). The client segments and keys the transcript by this instead
+   * of re-deriving turn structure heuristically. Absent on events replayed
+   * from files written before this field existed.
+   */
+  turnId?: string;
 }
 
 // --- lifecycle -------------------------------------------------------------
@@ -301,6 +308,15 @@ export interface SessionPersisted extends EventBase {
   ompSessionId: string;
 }
 
+/**
+ * The worker parked itself after a long idle to reclaim its memory. The UI
+ * keeps the transcript and resumes from `ompSessionPath` on the next prompt.
+ */
+export interface SessionHibernated extends EventBase {
+  type: "session.hibernated";
+  ompSessionPath: string;
+}
+
 // --- extension UI bridge ---------------------------------------------------
 
 export interface ExtensionUIRequested extends EventBase {
@@ -351,12 +367,8 @@ export type ProductEvent =
   | SessionFinished
   | SessionNotice
   | SessionPersisted
+  | SessionHibernated
   | ExtensionUIRequested
   | TodoUpdated;
 
 export type ProductEventType = ProductEvent["type"];
-
-/** Compile-time exhaustiveness helper for event switches. */
-export function assertNeverEvent(e: never): never {
-  throw new Error(`Unhandled product event: ${JSON.stringify(e)}`);
-}

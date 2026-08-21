@@ -45,7 +45,7 @@ export function PromptDialog({
           onFocus={(e) => e.target.select()}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
             if (e.key === "Escape") onCancel();
           }}
         />

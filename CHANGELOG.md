@@ -1,6 +1,128 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+The self-audit release: a multi-agent audit of the whole codebase (2026-08-20)
+produced a fix list, and this release lands it.
+
+### Safety and data integrity
+
+- **Test hooks can no longer reach the packaged app.** The Tauri shell scrubs
+  `ORCHESTRATOR_TEST_MODE` and `ORCHESTRATOR_TEST_PROVIDERS` from the engine's
+  environment at spawn, so a persistent `launchctl setenv` (the SECURITY.md
+  prompt-injection threat) cannot disable approvals or register an
+  exfiltrating provider. Direct spawns (tests, packaged smoke) keep working,
+  and active test mode now surfaces in engine diagnostics instead of `[]`.
+- **Quit is graceful for real.** The `engine.shutdown` ack now resolves only
+  after every worker is disposed and the usage index is flushed; the shell
+  escalates stdin-close → SIGTERM → SIGKILL over ~12s instead of SIGKILL at
+  1.5s. No more usage records lost on every quit, no more orphaned workers
+  wedged on a hung MCP server (the stdin-EOF path got the same 3s escape
+  hatch as SIGTERM).
+- **Single-writer guard actually holds.** Closing workers stay registered
+  until their process exits (close-then-reopen no longer puts two writers on
+  one session file), and session-file identity is realpath-and-case-folded
+  for APFS.
+- **Single instance.** `tauri-plugin-single-instance` focuses the existing
+  window; the usage index also merges the on-disk file before every flush, so
+  a dev build running beside the packaged app can no longer erase the other's
+  records.
+- **"Auto edits" narrowed.** In write mode only content edits (`edit`/`write`)
+  auto-allow; delete and move now prompt like `bash rm` always did. And in
+  every mode — including Full access — a mutating tool whose target resolves
+  outside the project folder always asks, with the escaping path shown in the
+  approval card (`~/.ssh` is not what "yolo" means).
+- **Prefs are durable.** Presets, aliases, ordering and archive flags mirror
+  to a validated file under Application Support (`prefs.json`); a WKWebView
+  storage wipe restores from it, and a corrupted field falls back per-field
+  instead of white-screening the app.
+- **Redaction covers the tokens our own connect flows produce**: xai-, gsk_,
+  GitHub app/installation/refresh tokens, Google OAuth, any-scheme database
+  URLs, mid-name env secrets, and the pasted-key `answer` field. The sk-ant-
+  rule is no longer shadowed by the generic sk- rule.
+
+### Correctness
+
+- Model fallbacks are visible: `retry_fallback_applied`/`model_changed` map to
+  an automatic model change (header chip + warning) instead of being dropped;
+  mid-stream provider errors and `todo_auto_clear` surface too, and unmapped
+  upstream event kinds log once instead of vanishing.
+- Resume restores structured tool cards (diffs, exit codes, match counts) and
+  subagent cards from the persisted file instead of generic "other" rows.
+- Sequence-gap recovery refetches every live session (the counter is
+  engine-global and cannot attribute the loss), engine death fails in-flight
+  requests immediately instead of after 120s, failed sends roll their bubble
+  back and return the text to the composer, and an interrupt settles running
+  tool/subagent cards instead of leaving them spinning forever.
+- Usage: subagent responses are no longer double-counted (or mis-attributed)
+  by a reindex, fork history without responseIds dedups on a timestamp
+  fingerprint, re-observed advisor snapshots keep their original date instead
+  of refiling under "today", and day buckets use the local calendar.
+- Worker requests run concurrently (Stop and approvals no longer queue behind
+  a stalled MCP reconnect), crashes settle the session loudly instead of
+  spinning forever, optional upstream calls (compact/setModel/abort/rewind)
+  probe capabilities at boot and fail honestly instead of reporting success
+  for methods that don't exist, and `project.diff` is path-contained like
+  every other read.
+- PATH is built terminal-order (shims and Homebrew ahead of system dirs), and
+  a non-UTF-8 line can no longer silently kill the engine frame pump.
+
+### Structural
+
+- **Turn identity in the protocol.** The worker stamps a stable `turnId` on
+  every event; the transcript keys its work groups by it, so expanded cards
+  stop snapping shut when the render window slides — retiring the bug class
+  behind six releases of condensing rewrites.
+
+### Features
+
+- **Per-session composer drafts.** Switching sessions parks your half-typed
+  prompt (attachments included) and restores it when you come back, instead
+  of destroying it — the app's most frequent action no longer costs work.
+  Drafts live in memory: they survive switches, not relaunches, and a draft
+  typed for one repo can still never be sent to another.
+- **Idle hibernation.** A session idle for 30 minutes parks its worker
+  (~350MB reclaimed), keeps its transcript, and wakes transparently on the
+  next message. `ORCHESTRATOR_IDLE_HIBERNATE_MS=0` disables.
+- **Find in transcript (⌘F)** across the full history, revealing hits beyond
+  the render window — the same reveal now powers the pending bar's "Show in
+  transcript", which used to silently no-op.
+- **Live model/effort switching** from the composer chip, ⌘⇧M, or the
+  palette; ⌘⇧A configures advisors live. Both former menu dead ends now work.
+- **Syntax highlighting everywhere** (tool cards and markdown code blocks),
+  plus copy buttons on code blocks and a "Copy answer" affordance on
+  assistant messages.
+- Progressive markdown while streaming: settled paragraphs render styled;
+  only the in-flight tail is plain text. No more raw `##` and pipe tables
+  mid-turn, no more full-height snap at the end.
+- Notifications rebuilt: exactly one kind — "agent finished" — and it now
+  fires when the window is unfocused (the ⌘-Tab-away flow was inverted
+  before), with a single on/off switch in Settings.
+- Archiving is reachable (session menu + hover button on closed rows), the
+  closed list has a real "Show more" instead of a silent 20-row cap, and
+  project groups finally show their collapse chevron.
+- Window position/size persist across launches; the quit dialog can no longer
+  render into a hidden window; "Restart Engine" asks before killing every
+  session; Enter during IME composition no longer fires prompts.
+- Usage Center: actor/provider/project filters (engine-side all along, never
+  sent), session titles in "By session" instead of id prefixes, and
+  per-session usage reconciles automatically when a turn finishes.
+- Composer: ↑ recalls sent prompts; ⌥⌘↑/↓ cycles sessions; panel resizes are
+  debounced and clamped so the transcript can't be dragged to 0px; the
+  titlebar sheds chips before it sheds the session title.
+- Superseded drafts collapse: an answer that an advisor reviewed and a later
+  answer replaced folds to one line instead of stacking two near-identical
+  reports (plus calmer inline-code styling and answer-style prompt guidance,
+  from the readability pass).
+
+### Removed
+
+- `keepRunningOnClose` (a checkbox no code ever read — closing the window has
+  always kept sessions running; ⌘Q quits), the empty `packages/ui` and
+  `packages/shared`, `loadWatchdogConfig`, `assertNeverEvent`,
+  `closedSummaries()` (and `#closed` is now bounded), the duplicate
+  `.session-row` block, and the vacuous fork double-count check in
+  live-validation (replaced with one that can actually fail).
 
 - Auto session titling is suppressed under ORCHESTRATOR_TEST_MODE: the online
   title model resolves to a real provider, and its in-flight request racing

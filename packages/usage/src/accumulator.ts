@@ -106,6 +106,11 @@ export class UsageAccumulator {
     }
   }
 
+  /** The stored record for a key, if any — for callers that merge attribution. */
+  get(key: string): UsageRecord | undefined {
+    return this.#records.get(key);
+  }
+
   records(): UsageRecord[] {
     return [...this.#records.values()];
   }

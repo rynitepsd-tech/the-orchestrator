@@ -209,6 +209,14 @@ export interface RequestPayloads {
   "usage.session": { sessionId: SessionId };
   "usage.query": UsageQuery;
   "usage.reindex": { full?: boolean };
+
+  /**
+   * UI preference storage, engine-side. Prefs hold presets, aliases and
+   * ordering — real data — so they live in a file under Application Support
+   * instead of only WKWebView localStorage, which the OS can wipe.
+   */
+  "prefs.load": Record<string, never>;
+  "prefs.save": { prefs: unknown };
 }
 
 export interface UsageQuery {
@@ -316,6 +324,9 @@ export interface ResponsePayloads {
   "usage.session": { breakdown: UsageBreakdown };
   "usage.query": { records: UsageRecord[]; breakdown: UsageBreakdown };
   "usage.reindex": { indexed: number; durationMs: number };
+
+  "prefs.load": { prefs?: unknown };
+  "prefs.save": { ok: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +434,8 @@ export const REQUEST_TYPES = [
   "usage.session",
   "usage.query",
   "usage.reindex",
+  "prefs.load",
+  "prefs.save",
 ] as const satisfies readonly RequestType[];
 
 type MissingRequestTypes = Exclude<RequestType, (typeof REQUEST_TYPES)[number]>;

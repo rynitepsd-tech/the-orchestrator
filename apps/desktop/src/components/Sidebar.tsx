@@ -143,8 +143,11 @@ export function Sidebar({
     });
   }, [filteredLive, openRemembered, prefs.pinnedProjects, prefs.projectOrder]);
 
-  // Persisted sessions not currently open and not remembered-open, newest first.
-  const resumable = useMemo(() => {
+  // Persisted sessions not currently open and not remembered-open, newest
+  // first. Windowed with a real load-more — a hard cap with no signal made
+  // everything past the newest 20 unreachable forever.
+  const [closedLimit, setClosedLimit] = useState(20);
+  const allResumable = useMemo(() => {
     const archived = new Set(prefs.archivedSessions);
     const remembered = new Set(prefs.openSessionPaths);
     return discovered
@@ -154,9 +157,10 @@ export function Sidebar({
       )
       .filter((d) => showArchived || !archived.has(d.path))
       .filter((d) => !q || d.title.toLowerCase().includes(q) || d.cwd.toLowerCase().includes(q))
-      .sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""))
-      .slice(0, q ? 50 : 20);
+      .sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""));
   }, [discovered, openPaths, q, prefs.archivedSessions, prefs.openSessionPaths, showArchived]);
+  const resumable = allResumable.slice(0, q ? 50 : closedLimit);
+  const resumableHidden = allResumable.length - resumable.length;
 
   const archivedCount = discovered.filter((d) => prefs.archivedSessions.includes(d.path)).length;
 
@@ -304,6 +308,11 @@ export function Sidebar({
                 }}
                 aria-expanded={!collapsed}
               >
+                {/* The affordance that groups collapse at all — the CSS for
+                    this chevron existed for months with nothing rendering it. */}
+                <span className="group-chevron" aria-hidden>
+                  {collapsed ? "▸" : "▾"}
+                </span>
                 <span className="group-folder">
                   <FolderIcon />
                 </span>
@@ -384,6 +393,9 @@ export function Sidebar({
                 onClick={() => toggleCollapsed("__previous__")}
                 aria-expanded={!isCollapsed("__previous__")}
               >
+                <span className="group-chevron" aria-hidden>
+                  {isCollapsed("__previous__") ? "▸" : "▾"}
+                </span>
                 <span className="group-folder">
                   <FolderIcon />
                 </span>
@@ -406,13 +418,30 @@ export function Sidebar({
                   key={d.path}
                   d={d}
                   armed={armedClosed === d.path}
+                  archived={prefs.archivedSessions.includes(d.path)}
                   onArm={() => setArmedClosed(d.path)}
                   onReopen={() => {
                     setArmedClosed(null);
                     onResume(d);
                   }}
+                  onToggleArchive={() => {
+                    const has = prefs.archivedSessions.includes(d.path);
+                    updatePrefs({
+                      archivedSessions: has
+                        ? prefs.archivedSessions.filter((p) => p !== d.path)
+                        : [...prefs.archivedSessions, d.path],
+                    });
+                  }}
                 />
               ))}
+            {!isCollapsed("__previous__") && resumableHidden > 0 && (
+              <button
+                className="btn btn-ghost closed-more"
+                onClick={() => setClosedLimit((n) => n + 50)}
+              >
+                Show {Math.min(50, resumableHidden)} more ({resumableHidden} hidden)
+              </button>
+            )}
           </div>
         )}
 
@@ -524,6 +553,7 @@ function StatusIndicator({ view, active }: { view: SessionView; active: boolean 
   }
   if (s.runState === "error") return <span className="dot error" aria-hidden />;
   if (s.runState === "interrupted") return <span className="dot interrupted" aria-hidden />;
+  if (s.runState === "hibernated") return <span className="dot hibernated" aria-hidden />;
   if (s.runState === "completed" && s.unread) return <span className="dot finished" aria-hidden />;
   return <span className="dot idle" aria-hidden />;
 }
@@ -651,13 +681,17 @@ function DiscoveredRow({
 function ClosedRow({
   d,
   armed,
+  archived,
   onArm,
   onReopen,
+  onToggleArchive,
 }: {
   d: DiscoveredSession;
   armed: boolean;
+  archived: boolean;
   onArm: () => void;
   onReopen: () => void;
+  onToggleArchive: () => void;
 }): JSX.Element {
   const when = d.modified ? new Date(d.modified).toLocaleDateString() : "";
   return (
@@ -673,6 +707,20 @@ function ClosedRow({
           {d.cwd.split("/").pop()} · {d.messageCount} messages{when && ` · ${when}`}
         </span>
       </span>
+      <button
+        className="btn btn-ghost archive-btn"
+        title={
+          archived
+            ? "Unarchive — show this session normally again"
+            : "Archive — hide from this list. The transcript is never deleted."
+        }
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleArchive();
+        }}
+      >
+        {archived ? "Unarchive" : "Archive"}
+      </button>
       {armed && (
         <button className="btn btn-primary reopen-btn" onClick={onReopen}>
           Reopen
@@ -783,6 +831,25 @@ function SessionMenu({
       >
         {running ? "Stop and close" : "Close session"}
       </button>
+      {s.ompSessionPath && (
+        <button
+          className="menu-item"
+          onClick={act(() => {
+            // Close AND hide from the closed-sessions list. Local-only: the
+            // OMP transcript on disk is never touched.
+            void engine.request("sessions.close", { sessionId, dispose: true }).catch(() => {});
+            updatePrefs({
+              openSessionPaths: prefs.openSessionPaths.filter((p) => p !== s.ompSessionPath),
+              archivedSessions: prefs.archivedSessions.includes(s.ompSessionPath!)
+                ? prefs.archivedSessions
+                : [...prefs.archivedSessions, s.ompSessionPath!],
+            });
+            removeSession(sessionId);
+          })}
+        >
+          {running ? "Stop, close and archive" : "Close and archive"}
+        </button>
+      )}
     </div>
   );
 }

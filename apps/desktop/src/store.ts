@@ -37,7 +37,16 @@ import { loadPrefs, type Prefs, type SessionPreset, savePrefs } from "./lib/pref
 // Transcript items — the renderable form of the event stream
 // ---------------------------------------------------------------------------
 
-export type TranscriptItem =
+export type TranscriptItem = TranscriptItemBase & {
+  /**
+   * Stable turn identity stamped by the worker (see protocol EventBase).
+   * The transcript keys its work groups by this, so a group's identity no
+   * longer shifts when the render window slides. Absent on old replays.
+   */
+  turnId?: string;
+};
+
+type TranscriptItemBase =
   | {
       kind: "user";
       id: string;
@@ -150,6 +159,17 @@ export interface SessionView {
   interrupted?: boolean;
 }
 
+/**
+ * A half-typed prompt (and its attachments) parked while the user works in
+ * another session. Keyed by session id, in-memory only — surviving a switch
+ * is the point; surviving a relaunch is not (stale drafts resurrecting days
+ * later would be worse than the blank composer).
+ */
+export interface ComposerDraft {
+  text: string;
+  attachments: Array<{ kind: "image" | "file"; name: string; path: string }>;
+}
+
 export type InspectorTab = "changes" | "files" | "usage" | "preview";
 
 /** A file opened for preview in the inspector, from a clicked file link. */
@@ -204,6 +224,8 @@ interface AppState {
   order: string[];
   visibleSessionId?: string;
   changes: Record<string, GitChanges>; // keyed by projectId
+  /** Parked composer drafts, keyed by session id (see ComposerDraft). */
+  drafts: Record<string, ComposerDraft>;
 
   // global usage centre
   globalUsage?: GlobalUsageState;
@@ -283,6 +305,11 @@ interface AppState {
   setUpdateAvailable(u?: { version: string; notes?: string }): void;
   setUpdateBusy(busy: boolean): void;
   markAllInterrupted(reason: string): void;
+  /** Roll back an optimistic transcript item (e.g. a send that failed). */
+  removeTranscriptItem(sessionId: string, itemId: string): void;
+  /** Park or update a session's composer draft; empty drafts are dropped. */
+  setDraft(sessionId: string, draft: ComposerDraft): void;
+  clearDraft(sessionId: string): void;
 }
 
 let itemSeq = 0;
@@ -306,6 +333,7 @@ export const useStore = create<AppState>((set, get) => ({
   sessions: {},
   order: [],
   changes: {},
+  drafts: {},
   prefs: loadPrefs(),
   mainView: "sessions",
   inspectorTab: "usage",
@@ -398,9 +426,12 @@ export const useStore = create<AppState>((set, get) => ({
       const sessions = { ...s.sessions };
       delete sessions[id];
       const order = s.order.filter((x) => x !== id);
+      const drafts = { ...s.drafts };
+      delete drafts[id];
       return {
         sessions,
         order,
+        drafts,
         // Order is newest-first, so the top row is the natural fallback.
         visibleSessionId: s.visibleSessionId === id ? order[0] : s.visibleSessionId,
       };
@@ -528,10 +559,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   addPreset: (p) =>
     set((s) => {
-      const prefs = {
-        ...s.prefs,
-        presets: [...s.prefs.presets.filter((x) => x.name !== p.name), p],
-      };
+      // Same-name saves replace IN PLACE: the default preset falls back to
+      // presets[0], so filter-then-append silently changed which preset every
+      // future launch used.
+      const at = s.prefs.presets.findIndex((x) => x.name === p.name);
+      const presets =
+        at >= 0 ? s.prefs.presets.map((x, i) => (i === at ? p : x)) : [...s.prefs.presets, p];
+      const prefs = { ...s.prefs, presets };
       savePrefs(prefs);
       return { prefs };
     }),
@@ -543,17 +577,59 @@ export const useStore = create<AppState>((set, get) => ({
       return { prefs };
     }),
 
+  setDraft: (sessionId, draft) =>
+    set((s) => {
+      if (!draft.text && draft.attachments.length === 0) {
+        if (!s.drafts[sessionId]) return {};
+        const drafts = { ...s.drafts };
+        delete drafts[sessionId];
+        return { drafts };
+      }
+      return { drafts: { ...s.drafts, [sessionId]: draft } };
+    }),
+
+  clearDraft: (sessionId) =>
+    set((s) => {
+      if (!s.drafts[sessionId]) return {};
+      const drafts = { ...s.drafts };
+      delete drafts[sessionId];
+      return { drafts };
+    }),
+
+  removeTranscriptItem: (sessionId, itemId) =>
+    set((s) => {
+      const v = s.sessions[sessionId];
+      if (!v) return {};
+      const transcript = v.transcript.filter((i) => i.id !== itemId);
+      if (transcript.length === v.transcript.length) return {};
+      return { sessions: { ...s.sessions, [sessionId]: { ...v, transcript } } };
+    }),
+
   markAllInterrupted: (reason) =>
     set((s) => {
       const sessions: Record<string, SessionView> = {};
       for (const [id, v] of Object.entries(s.sessions)) {
-        const active = !["idle", "completed", "interrupted", "error"].includes(v.summary.runState);
-        // A dead worker sends no more advisor.state events — settle any marker
-        // still waiting on review so it can't spin forever.
-        const settled = v.transcript.some((i) => i.kind === "turn-end" && i.pending)
-          ? v.transcript.map((i) =>
-              i.kind === "turn-end" && i.pending ? { ...i, pending: false } : i,
-            )
+        const active = isActive(v.summary.runState);
+        // A dead worker sends no more events — settle EVERYTHING still
+        // spinning: pending turn-end markers, running tool cards, running
+        // subagents. No tool.end will ever arrive for them.
+        const needsSettle = v.transcript.some(
+          (i) =>
+            (i.kind === "turn-end" && i.pending) ||
+            (i.kind === "tool" && i.state === "running") ||
+            (i.kind === "subagent" && i.state === "running"),
+        );
+        const settled = needsSettle
+          ? v.transcript.map((i) => {
+              if (i.kind === "turn-end" && i.pending) return { ...i, pending: false };
+              if (i.kind === "tool" && i.state === "running") {
+                return { ...i, state: "error" as const, error: "Interrupted." };
+              }
+              if (i.kind === "subagent" && i.state === "running") {
+                return { ...i, state: "error" as const, error: "Interrupted." };
+              }
+              return i;
+            })
           : v.transcript;
         sessions[id] = active
           ? {
@@ -602,7 +678,10 @@ export const useStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const next = reduce(view, e, state.visibleSessionId === e.sessionId);
+    // "Visible" for unread purposes means actually watched: the right session
+    // AND a focused window — a finish while the app is ⌘-Tabbed away must
+    // still mark unread (and notify).
+    const next = reduce(view, e, state.visibleSessionId === e.sessionId && document.hasFocus());
 
     // A session persisting for the first time is a fresh creation: claim the
     // top slot in the persisted per-project ordering (resumes already have
@@ -659,7 +738,27 @@ function lastIndex(t: TranscriptItem[], pred: (i: TranscriptItem) => boolean): n
   return -1;
 }
 
+/**
+ * Stamp the event's turnId onto items the reduction appended. Items are only
+ * ever appended at the tail or updated in place (which preserves fields), so
+ * "new" = "index at or past the previous length".
+ */
+function stampTurn(prev: SessionView, next: SessionView, e: ProductEvent): SessionView {
+  const turnId = (e as { turnId?: string }).turnId;
+  if (!turnId || next === prev || next.transcript === prev.transcript) return next;
+  const base = prev.transcript.length;
+  if (next.transcript.length <= base) return next;
+  const transcript = next.transcript.map((it, i) =>
+    i >= base && !it.turnId ? { ...it, turnId } : it,
+  );
+  return { ...next, transcript };
+}
+
 function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView {
+  return stampTurn(v, reduceInner(v, e, visible), e);
+}
+
+function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): SessionView {
   const t = v.transcript;
 
   switch (e.type) {
@@ -1067,6 +1166,28 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
         },
       };
 
+    case "session.hibernated":
+      // The worker parked itself to reclaim memory. Transcript stays; the
+      // next prompt resumes from the persisted file transparently (App).
+      return {
+        ...v,
+        summary: {
+          ...v.summary,
+          runState: "hibernated",
+          activity: undefined,
+          ompSessionPath: e.ompSessionPath || v.summary.ompSessionPath,
+        },
+        transcript: [
+          ...t,
+          {
+            kind: "system",
+            id: nextId(),
+            text: "Session hibernated to free memory — it wakes on your next message.",
+            tone: "info",
+          },
+        ],
+      };
+
     case "session.failed":
       return {
         ...v,
@@ -1188,11 +1309,13 @@ export function runStateLabel(s: RunState, activity?: string): string {
       return "Interrupted";
     case "error":
       return "Failed";
+    case "hibernated":
+      return "Hibernated";
   }
 }
 
 export function isActive(s: RunState): boolean {
-  return !["idle", "completed", "interrupted", "error"].includes(s);
+  return !["idle", "completed", "interrupted", "error", "hibernated"].includes(s);
 }
 
 /** True while any advisor is still reviewing — the turn isn't finished yet. */

@@ -516,10 +516,23 @@ await run("fork", async () => {
   );
 
   // Global usage: fork history must not double-count the source's tokens.
+  // The fork's file CONTAINS the source's history verbatim; the invariant is
+  // that every source record and the fork's copy of it collapse onto the SAME
+  // global key (replacement), never onto two keys (double count).
   await manager.reindexUsage();
-  const index = manager.usageIndex();
-  const rows = index.records().filter((r) => r.ompSessionId && [s, fork].some((x) => true)).length;
-  check("usage index reindexed without error", rows >= 0);
+  const { readSessionFileUsage } = await import("../packages/omp-adapter/src");
+  const { globalUsageKey } = await import("../packages/engine/src/usage-index");
+  const forkPath = manager.list().find((x) => x.sessionId === fork.sessionId)?.ompSessionPath;
+  const sourceUsage = sourcePath ? await readSessionFileUsage(sourcePath) : null;
+  const forkUsage = forkPath ? await readSessionFileUsage(forkPath) : null;
+  const sourceKeys = new Set((sourceUsage?.records ?? []).map(globalUsageKey));
+  const forkKeys = (forkUsage?.records ?? []).map(globalUsageKey);
+  const collapsed = forkKeys.filter((k) => sourceKeys.has(k)).length;
+  check(
+    "fork history dedups against source",
+    sourceKeys.size > 0 && collapsed >= sourceKeys.size,
+    `${collapsed}/${sourceKeys.size} source responses collapse`,
+  );
 });
 
 // ---------------------------------------------------------------------------

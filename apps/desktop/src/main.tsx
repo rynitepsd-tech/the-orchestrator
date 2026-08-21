@@ -1,7 +1,15 @@
+import hljs from "highlight.js/lib/common";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import "./styles.css";
+
+// The vendored OMP tool renderers look for exactly `globalThis.hljs` and fall
+// back to monochrome when absent — one assignment lights up syntax colors in
+// every tool card and markdown code block. Pinned hljs: its highlighted path
+// flows through innerHTML, safe only because hljs.highlight escapes input.
+(globalThis as { hljs?: typeof hljs }).hljs = hljs;
+
 // Registers the <omp-tool-view> custom element (OMP's own tool renderers).
 import "./vendor/tool-views.generated.js";
 

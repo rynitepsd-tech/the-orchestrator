@@ -31,8 +31,9 @@ Process-per-session is a deliberate correctness trade (see
 
 Worker RSS is flat as sessions are added — 8 concurrent workers measured
 351–360 MB each (dev), with no per-worker growth from neighbours. The
-older docs' 150–250 MB estimate was optimistic; treat **~320 MB per live
-session** (packaged) as the planning number.
+older docs' 150–250 MB estimate was optimistic; treat **roughly 300–470 MB
+per live session**, depending on load, as the planning envelope rather than
+a single number.
 
 Practical envelope: a 16 GB machine runs 6–10 live sessions comfortably
 alongside a browser and editor; a 32 GB machine does not need to think about

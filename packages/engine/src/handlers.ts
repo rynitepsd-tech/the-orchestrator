@@ -65,19 +65,28 @@ export async function handleRequest(
       return server.info();
 
     case "engine.shutdown": {
-      // Respond before tearing down so the host sees a clean acknowledgement.
-      queueMicrotask(() => void server.shutdown());
+      // The ack must be honest: the host quits the moment this resolves, so
+      // responding before teardown made its 20s budget illusory — the OS then
+      // SIGKILLed workers mid-dispose. Teardown completes first; the response
+      // is written after, and the read loop ends via onStopped.
+      await server.shutdown();
       return { stopping: true };
     }
 
     case "engine.diagnostics": {
       const { engineLogPath } = await import("./logging");
+      const warnings: string[] = [];
+      if (server.testMode) {
+        warnings.push(
+          "TEST MODE is active: tool approvals are disabled. This must never appear in normal use.",
+        );
+      }
       return {
         info: server.info(),
         sessions: m.list().length,
         activeSessions: m.activeCount(),
         logPath: engineLogPath(),
-        warnings: [],
+        warnings,
         workers: await m.workerStats(),
       };
     }
@@ -123,7 +132,8 @@ export async function handleRequest(
       const slashCommands = await discoverSlashCommandsIn(path);
       return {
         contextFiles: [],
-        skills: 0,
+        // Deliberately absent: the engine does not count skills, and a
+        // fabricated 0 reads as "none" rather than "unknown".
         advisors,
         mcpServers: [],
         slashCommands,
@@ -135,8 +145,26 @@ export async function handleRequest(
     case "project.changes":
       return gitChanges(requireOpenProject(p.path));
 
-    case "project.diff":
-      return gitDiff(requireOpenProject(p.path), String(p.file));
+    case "project.diff": {
+      // The untracked-file fallback in gitDiff reads the file from disk, so
+      // `file` must be contained the same way readProjectFile contains its
+      // target — the boundary is engine-enforced, not a UI courtesy.
+      const root = requireOpenProject(p.path);
+      const { resolve, dirname, basename, join } = await import("node:path");
+      const lexical = resolve(root, String(p.file));
+      let real = lexical;
+      try {
+        real = join(realpathSync(dirname(lexical)), basename(lexical));
+      } catch {
+        /* parent missing — the lexical path is all there is to check */
+      }
+      if (!insideAny([root], real)) {
+        throw Object.assign(new Error("File is outside the project folder."), {
+          kind: "filesystem-permission",
+        });
+      }
+      return gitDiff(root, String(p.file));
+    }
 
     case "project.files": {
       const { listProjectFiles } = await import("@orchestrator/omp-adapter");
@@ -392,6 +420,36 @@ export async function handleRequest(
 
     case "usage.reindex":
       return m.reindexUsage();
+
+    // --- UI preference storage --------------------------------------------
+    // Prefs hold presets, aliases and session ordering — real data, so they
+    // live in a file under Application Support instead of only WKWebView
+    // localStorage, which the OS can wipe without warning.
+    case "prefs.load": {
+      const { readFileSync, existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { appSupportDir } = await import("./logging");
+      const path = join(appSupportDir(), "prefs.json");
+      if (!existsSync(path)) return {};
+      try {
+        return { prefs: JSON.parse(readFileSync(path, "utf8")) };
+      } catch {
+        return {}; // corrupt file: the UI falls back to its defaults
+      }
+    }
+
+    case "prefs.save": {
+      const { mkdirSync, writeFileSync, renameSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { appSupportDir } = await import("./logging");
+      const dir = appSupportDir();
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, "prefs.json");
+      const tmp = `${path}.tmp`;
+      writeFileSync(tmp, JSON.stringify(p.prefs ?? {}, null, 2));
+      renameSync(tmp, path);
+      return { ok: true };
+    }
 
     default: {
       const never: never = req.type as never;

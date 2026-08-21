@@ -88,34 +88,23 @@ function General(): JSX.Element {
 
       <div className="field">
         <span>Notifications</span>
-        {(
-          [
-            ["completion", "Session completed"],
-            ["errors", "Session failed"],
-            ["needsInput", "Needs approval or input"],
-            ["advisorBlockers", "Advisor raised a blocker"],
-          ] as const
-        ).map(([key, label]) => (
-          <label key={key} className="row check-row">
-            <input
-              type="checkbox"
-              checked={n[key]}
-              onChange={(e) => updatePrefs({ notifications: { ...n, [key]: e.target.checked } })}
-            />
-            <span>{label}</span>
-          </label>
-        ))}
-        <div className="hint">Notifications fire only for sessions you are not looking at.</div>
+        <label className="row check-row">
+          <input
+            type="checkbox"
+            checked={n.completion}
+            onChange={(e) => updatePrefs({ notifications: { completion: e.target.checked } })}
+          />
+          <span>Notify when an agent finishes</span>
+        </label>
+        <div className="hint">
+          The only notification the app sends — and only when you are not already looking at that
+          session (background session, or the window is unfocused).
+        </div>
       </div>
 
-      <label className="row check-row">
-        <input
-          type="checkbox"
-          checked={prefs.keepRunningOnClose}
-          onChange={(e) => updatePrefs({ keepRunningOnClose: e.target.checked })}
-        />
-        <span>Keep sessions running when the window closes (quit with ⌘Q)</span>
-      </label>
+      <div className="hint">
+        Closing the window (⌘W) hides it and keeps every session running; ⌘Q quits.
+      </div>
     </div>
   );
 }

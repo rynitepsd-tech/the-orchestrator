@@ -7,7 +7,7 @@
  * MCP prompts) — never a hardcoded list.
  */
 
-import type { ApprovalMode, RunState } from "@orchestrator/protocol";
+import type { AdvisorConfig, ApprovalMode, RunState } from "@orchestrator/protocol";
 import { ask, open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -15,7 +15,9 @@ import { engine } from "../engine-client";
 import { type Attachment, attachmentKind, storeBlob } from "../lib/attachments";
 import type { SessionPreset } from "../lib/prefs";
 import { isActive, modelBasename, useStore } from "../store";
+import { EffortPicker } from "./EffortPicker";
 import { BoltIcon } from "./icons";
+import { ModelPicker } from "./ModelPicker";
 import { PromptDialog } from "./PromptDialog";
 
 export type { Attachment } from "../lib/attachments";
@@ -47,6 +49,8 @@ export function Composer({
   const sentAt = useRef(0);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const commandsCache = useRef<SlashCommand[] | null>(null);
+  /** ↑-history recall state; null while typing normally. */
+  const historyRef = useRef<{ items: string[]; idx: number } | null>(null);
 
   const busy = isActive(runState);
 
@@ -111,6 +115,52 @@ export function Composer({
     setPresetDraft(false);
   };
 
+  // Live model/effort switch (⌘⇧M): "this turn needs a bigger model" must
+  // not require creating a preset. Same session.setModel presets use.
+  const models = useStore((s) => s.models);
+  const [modelPop, setModelPop] = useState(false);
+  const [advisorPop, setAdvisorPop] = useState(false);
+  const modelInfo = summary?.model ? models.find((m) => m.key === summary.model) : undefined;
+  const efforts = modelInfo?.thinking?.efforts ?? [];
+
+  const setLiveModel = (model: string, thinkingLevel?: string) => {
+    if (!sessionId) return;
+    void engine
+      .request("session.setModel", { sessionId, model, thinkingLevel })
+      .then((r) => {
+        if (!r.ok) {
+          useStore.getState().setEngineError({
+            kind: "model-unavailable",
+            message: `The model ${model} is not available.`,
+          } as never);
+        }
+      })
+      .catch((e) => useStore.getState().setEngineError(e));
+  };
+
+  useEffect(() => {
+    const openModel = () => setModelPop(true);
+    const openAdvisors = () => setAdvisorPop(true);
+    window.addEventListener("orchestrator:change-model", openModel);
+    window.addEventListener("orchestrator:configure-advisors", openAdvisors);
+    return () => {
+      window.removeEventListener("orchestrator:change-model", openModel);
+      window.removeEventListener("orchestrator:configure-advisors", openAdvisors);
+    };
+  }, []);
+
+  // Advisor roster for the popover: the session's current roster, toggled
+  // live through the same session.advisors.set the presets use.
+  const advisors = useStore((s) => (sessionId ? s.sessions[sessionId]?.advisors : undefined)) ?? [];
+  const toggleAdvisor = (a: AdvisorConfig) => {
+    if (!sessionId) return;
+    const next = advisors.map((x) => (x.id === a.id ? { ...x, enabled: !x.enabled } : x));
+    void engine
+      .request("session.advisors.set", { sessionId, advisors: next.map((x) => ({ ...x })) })
+      .then((r) => useStore.getState().setSessionAdvisors(sessionId, r.advisors))
+      .catch((e) => useStore.getState().setEngineError(e));
+  };
+
   // Permission mode: how much the agent may do without asking. Server-side
   // enforcement (worker + OMP tier gate); this is just the switch.
   const approvalMode =
@@ -165,14 +215,37 @@ export function Composer({
     </button>
   );
 
+  // Live mirrors for the draft-parking cleanup below — an effect cleanup
+  // closes over the state from when it ran, not the state at switch time.
+  const textRef = useRef(text);
+  textRef.current = text;
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
   useEffect(() => {
     commandsCache.current = null;
     setSlash(null);
-    setAttachments([]);
-    // A half-typed prompt for one repo must never be sent to another.
-    setText("");
+    historyRef.current = null;
+    // Save-previous / restore-next, not clear-on-switch: switching sessions
+    // is the app's most frequent action and routinely happens mid-thought
+    // (visibleSessionId !== runningSessionIds is the documented core loop).
+    // The old clear also kept the isolation guarantee the hard way — a draft
+    // typed for one repo never SENDS to another, because it is parked under
+    // its own session id and restored only there. In-memory only: drafts
+    // survive switches, not relaunches.
+    const draft = sessionId ? useStore.getState().drafts[sessionId] : undefined;
+    setText(draft?.text ?? "");
+    setAttachments(draft?.attachments ?? []);
     // Switching sessions should land you ready to type, like every chat app.
     taRef.current?.focus();
+    return () => {
+      if (sessionId) {
+        useStore.getState().setDraft(sessionId, {
+          text: textRef.current,
+          attachments: attachmentsRef.current,
+        });
+      }
+    };
   }, [sessionId]);
 
   // A rewound message comes back here for editing.
@@ -273,6 +346,8 @@ export function Composer({
     setText("");
     setAttachments([]);
     setSlash(null);
+    // The draft was delivered; a stale parked copy must not resurface later.
+    useStore.getState().clearDraft(sessionId);
   };
 
   const canSend = Boolean(text.trim() || attachments.length);
@@ -291,6 +366,79 @@ export function Composer({
       }}
       onDrop={onDrop}
     >
+      {modelPop && (
+        <div
+          className="composer-pop"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setModelPop(false);
+            }
+          }}
+        >
+          <div className="pop-head">
+            <span>Model for this session</span>
+            <button className="btn btn-ghost" onClick={() => setModelPop(false)} aria-label="Close">
+              ✕
+            </button>
+          </div>
+          <ModelPicker
+            models={models}
+            value={summary?.model}
+            startExpanded
+            autoFocus
+            onChange={(key) => {
+              if (key) setLiveModel(key);
+              setModelPop(false);
+            }}
+          />
+          {efforts.length > 0 && (
+            <div className="pop-row">
+              <span className="hint">Effort</span>
+              <EffortPicker
+                efforts={efforts}
+                value={summary?.thinkingLevel ?? ""}
+                onChange={(lvl) => {
+                  if (summary?.model) setLiveModel(summary.model, lvl || undefined);
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      {advisorPop && (
+        <div
+          className="composer-pop"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setAdvisorPop(false);
+            }
+          }}
+        >
+          <div className="pop-head">
+            <span>Advisors for this session</span>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setAdvisorPop(false)}
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
+          {advisors.length === 0 ? (
+            <div className="empty">No advisors configured — pick a preset that includes some.</div>
+          ) : (
+            advisors.map((a) => (
+              <label key={a.id} className="row check-row pop-row">
+                <input type="checkbox" checked={a.enabled} onChange={() => toggleAdvisor(a)} />
+                <span>{a.name}</span>
+                {a.model && <span className="hint">· {modelBasename(a.model)}</span>}
+              </label>
+            ))
+          )}
+        </div>
+      )}
       {slash && (
         <div className="slash-pop" role="listbox">
           {slash.map((c, i) => (
@@ -340,6 +488,9 @@ export function Composer({
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
+            // Mid-IME Enter confirms the composition, never sends — without
+            // this a half-composed word fires as a prompt.
+            if (e.nativeEvent.isComposing) return;
             if (slash) {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
@@ -361,6 +512,39 @@ export function Composer({
                 setSlash(null);
                 return;
               }
+            }
+            // ↑ on an empty composer recalls sent prompts, newest first; ↓
+            // walks forward and clears past the newest. Any edit resets.
+            if (e.key === "ArrowUp" && !text && sessionId) {
+              const sent = (useStore.getState().sessions[sessionId]?.transcript ?? [])
+                .filter((i) => i.kind === "user")
+                .map((i) => (i as { text: string }).text);
+              if (sent.length) {
+                e.preventDefault();
+                historyRef.current = { items: sent, idx: sent.length - 1 };
+                setText(sent[sent.length - 1]);
+              }
+              return;
+            }
+            if (historyRef.current && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+              const h = historyRef.current;
+              if (text === h.items[h.idx]) {
+                e.preventDefault();
+                if (e.key === "ArrowUp") {
+                  if (h.idx > 0) {
+                    h.idx -= 1;
+                    setText(h.items[h.idx]);
+                  }
+                } else if (h.idx < h.items.length - 1) {
+                  h.idx += 1;
+                  setText(h.items[h.idx]);
+                } else {
+                  historyRef.current = null;
+                  setText("");
+                }
+                return;
+              }
+              historyRef.current = null; // edited — stop hijacking arrows
             }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -402,15 +586,24 @@ export function Composer({
             ))}
             <option value="__new">＋ New preset…</option>
           </select>
+          <button
+            className="ctl-chip"
+            title="Change model or effort for this session (⌘⇧M)"
+            disabled={disabled || !sessionId}
+            onClick={() => setModelPop((v) => !v)}
+          >
+            {modelBasename(summary?.model)}
+            {summary?.thinkingLevel ? ` · ${summary.thinkingLevel}` : ""}
+          </button>
           {fastToggle}
           <select
             className="ctl-chip ctl-select"
             value={approvalMode}
             title={
               approvalMode === "yolo"
-                ? "Full access — tools run without prompts. Server-enforced per session."
+                ? "Full access — tools run without prompts inside the project; anything outside it still asks. Server-enforced per session."
                 : approvalMode === "write"
-                  ? "Auto-accept edits — file edits run without prompts; commands still ask."
+                  ? "Auto-accept edits — content edits run without prompts; commands, deletes and renames still ask."
                   : "Manual — every gated tool asks before running."
             }
             disabled={disabled || !sessionId}

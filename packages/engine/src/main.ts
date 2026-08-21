@@ -61,6 +61,10 @@ if (process.argv.includes("--orchestrator-worker")) {
 async function runSupervisor(): Promise<void> {
   const server = new EngineServer({
     agentDir: process.env.ORCHESTRATOR_AGENT_DIR || undefined,
+    // Test mode disables every approval gate. The GUI can never reach it: the
+    // Tauri shell scrubs this var (and ORCHESTRATOR_TEST_PROVIDERS) from the
+    // engine's environment at spawn, so a persistent `launchctl setenv` cannot
+    // arm it. Direct spawns — bun test, the packaged smoke test — still can.
     testMode: process.env.ORCHESTRATOR_TEST_MODE === "1",
   });
 

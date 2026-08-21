@@ -72,16 +72,48 @@ describe("assistant turn mapping", () => {
   });
 
   test("thinking deltas map to assistant.thinking", () => {
+    // Upstream normalizes every provider's reasoning to thinking_delta; a
+    // "reasoning_delta" alias never existed and is deliberately not handled.
     const out = mapAll([
       { type: "message_start", message: { role: "assistant" } },
       { type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hmm" } },
       {
         type: "message_update",
-        assistantMessageEvent: { type: "reasoning_delta", delta: " more" },
+        assistantMessageEvent: { type: "thinking_delta", delta: " more" },
       },
     ]);
     const thinks = out.filter((e) => e.type === "assistant.thinking") as any[];
     expect(thinks.map((t) => t.delta).join("")).toBe("hmm more");
+  });
+
+  test("mid-stream provider error surfaces as a session notice", () => {
+    const out = mapAll([
+      { type: "message_start", message: { role: "assistant" } },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "error", error: { message: "stream died" } },
+      },
+    ]);
+    const notices = out.filter((e) => e.type === "session.notice") as any[];
+    expect(notices).toHaveLength(1);
+    expect(notices[0].level).toBe("error");
+    expect(notices[0].message).toContain("stream died");
+  });
+
+  test("model fallback maps to an automatic session.model change", () => {
+    const out = mapAll([
+      {
+        type: "retry_fallback_applied",
+        from: { id: "a/big" },
+        to: { id: "a/small" },
+        role: "primary",
+      },
+    ]);
+    const model = out.find((e) => e.type === "session.model") as any;
+    expect(model?.model).toBe("a/small");
+    expect(model?.automatic).toBe(true);
+    const notice = out.find((e) => e.type === "session.notice") as any;
+    expect(notice?.message).toContain("a/small");
   });
 
   test("unknown upstream events degrade to nothing, never throw", () => {

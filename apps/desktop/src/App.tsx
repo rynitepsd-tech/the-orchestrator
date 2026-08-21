@@ -34,6 +34,7 @@ import { TodoStrip } from "./components/TodoStrip";
 import { Transcript } from "./components/Transcript";
 import { UsageCenter } from "./components/UsageCenter";
 import { engine } from "./engine-client";
+import { hasLocalPrefs, sanitizePrefs, setPrefsSink } from "./lib/prefs";
 import { checkForUpdates, installUpdate } from "./lib/updater";
 import { fmtTokens, isActive, modelBasename, runStateLabel, useStore } from "./store";
 
@@ -112,24 +113,14 @@ export function App(): JSX.Element {
         }
       }
 
-      // Native notifications for BACKGROUND sessions only, per user prefs.
-      if (before && st.visibleSessionId !== e.sessionId) {
-        const n = st.prefs.notifications;
-        const title = before.summary.title;
-        if (e.type === "session.finished" && e.runState === "completed" && n.completion) {
-          notify(`${title} finished`, "The session completed.");
-        }
-        if (e.type === "session.failed" && n.errors) {
-          notify(`${title} failed`, e.error.message);
-        }
-        if (e.type === "approval.request" && n.needsInput) {
-          notify(`${title} needs your approval`, e.summary);
-        }
-        if (e.type === "extension.ui.request" && e.ui.kind !== "notification" && n.needsInput) {
-          notify(`${title} needs input`, "An extension is waiting for a response.");
-        }
-        if (e.type === "advisor.message" && e.severity === "blocker" && n.advisorBlockers) {
-          notify(`${e.advisorName} raised a blocker`, title);
+      // One notification, one moment: an agent finished a turn the user was
+      // not watching — a background session, OR the visible one while the
+      // window is unfocused (the canonical "⌘-Tab away and wait" flow, which
+      // the old visible-only gate inverted).
+      const watching = st.visibleSessionId === e.sessionId && document.hasFocus();
+      if (before && !watching && st.prefs.notifications.completion) {
+        if (e.type === "session.finished" && e.runState === "completed") {
+          notify(`${before.summary.title} finished`, "The agent is done.");
         }
       }
     };
@@ -148,6 +139,23 @@ export function App(): JSX.Element {
         });
         void loadCatalogue();
         void loadDiscovered();
+        // Durable prefs: every save also lands in a file under Application
+        // Support, and a wiped localStorage restores from it on next launch.
+        setPrefsSink((p) => {
+          void engine.request("prefs.save", { prefs: p }).catch(() => {});
+        });
+        void engine
+          .request("prefs.load", {})
+          .then((res) => {
+            const cur = useStore.getState();
+            if (res.prefs && !hasLocalPrefs()) {
+              cur.updatePrefs(sanitizePrefs(res.prefs));
+            } else {
+              // Heal a missing/stale mirror from the live prefs.
+              void engine.request("prefs.save", { prefs: cur.prefs }).catch(() => {});
+            }
+          })
+          .catch(() => {});
       }
       if (e.type === "engine.error") st.setEngineError(e.error);
       if (e.type === "engine.auth") {
@@ -219,11 +227,13 @@ export function App(): JSX.Element {
       if (ev.kind === "ready") st.setEngineStage("starting");
     };
 
-    // Dropped frames: refetch the authoritative transcript for the visible
-    // session instead of living with a silently incomplete view.
+    // Dropped frames: the sequence counter is engine-global, so the loss
+    // cannot be attributed to one session — refetch every live session's
+    // authoritative transcript rather than leaving any of them with a hole.
     engine.onSequenceGap = () => {
-      const id = useStore.getState().visibleSessionId;
-      if (id) void refetchTranscript(id);
+      for (const id of Object.keys(useStore.getState().sessions)) {
+        void refetchTranscript(id);
+      }
     };
 
     void engine.connect();
@@ -352,8 +362,8 @@ export function App(): JSX.Element {
   // same session file at a time, or two workers would fight over it.
   const resuming = useRef<string | null>(null);
 
-  const resumeSession = async (d: DiscoveredSession) => {
-    if (resuming.current) return;
+  const resumeSession = async (d: DiscoveredSession): Promise<string | undefined> => {
+    if (resuming.current) return undefined;
     resuming.current = d.path;
     setCreating(true);
     try {
@@ -398,8 +408,10 @@ export function App(): JSX.Element {
       // Pull the persisted conversation into the view.
       await refetchTranscript(res.session.sessionId);
       void loadDiscovered();
+      return res.session.sessionId;
     } catch (e) {
       useStore.getState().setEngineError(e as never);
+      return undefined;
     } finally {
       setCreating(false);
       resuming.current = null;
@@ -431,20 +443,20 @@ export function App(): JSX.Element {
     return () => window.removeEventListener("orchestrator:fork", onFork);
   }, [forkSession]);
 
-  const send = (
+  const sendTo = (
+    id: string,
     text: string,
     whenBusy: "steer" | "queue",
     attachments: Array<{ kind: "image" | "file"; name: string; path: string }> = [],
   ) => {
-    if (!s.visibleSessionId) return;
-    const id = s.visibleSessionId;
     // Optimistically show the user's message immediately; the worker echoes it
     // once OMP picks it up, and the store reconciles that echo into this
     // bubble by id pattern + text (see reduce "user.message").
+    const messageId = `u${Date.now()}`;
     useStore.getState().apply({
       type: "user.message",
       sessionId: id,
-      messageId: `u${Date.now()}`,
+      messageId,
       text,
       attachments: attachments.map((a) => ({ kind: a.kind, name: a.name, path: a.path })),
     });
@@ -458,8 +470,44 @@ export function App(): JSX.Element {
           : undefined,
       })
       .catch((e) => {
-        useStore.getState().setEngineError(e);
+        // The send failed: the bubble must not sit there looking delivered,
+        // and the text (its only surviving copy) goes back to the composer.
+        const st = useStore.getState();
+        st.removeTranscriptItem(id, messageId);
+        st.setComposerPrefill({ sessionId: id, text });
+        st.setEngineError(e);
       });
+  };
+
+  const send = (
+    text: string,
+    whenBusy: "steer" | "queue",
+    attachments: Array<{ kind: "image" | "file"; name: string; path: string }> = [],
+  ) => {
+    if (!s.visibleSessionId) return;
+    const id = s.visibleSessionId;
+    const view = useStore.getState().sessions[id];
+    // A hibernated session wakes transparently: respawn its worker from the
+    // persisted file, then deliver the prompt to the fresh session.
+    if (view?.summary.runState === "hibernated" && view.summary.ompSessionPath) {
+      const d: DiscoveredSession = {
+        ompSessionId: view.summary.ompSessionId ?? "",
+        path: view.summary.ompSessionPath,
+        cwd: view.summary.projectPath,
+        title: view.summary.title,
+        messageCount: view.summary.messageCount,
+        sizeBytes: 0,
+        openInThisApp: false,
+      };
+      void (async () => {
+        useStore.getState().removeSession(id);
+        const newId = await resumeSession(d);
+        if (newId) sendTo(newId, text, whenBusy, attachments);
+        else useStore.getState().setComposerPrefill({ sessionId: id, text });
+      })();
+      return;
+    }
+    sendTo(id, text, whenBusy, attachments);
   };
 
   const abort = useCallback(() => {
@@ -470,7 +518,10 @@ export function App(): JSX.Element {
   // ---- quit flow ----------------------------------------------------------
   const quitNow = useCallback(async () => {
     try {
-      await engine.request("engine.shutdown", { force: false }, 20_000);
+      // The ack is honest now — it resolves only after every worker has been
+      // disposed and the usage index flushed, so the budget must cover the
+      // engine's own teardown ladder (up to ~17s/worker, in parallel).
+      await engine.request("engine.shutdown", { force: false }, 30_000);
     } catch {
       /* the engine may already be gone */
     }
@@ -505,8 +556,12 @@ export function App(): JSX.Element {
         const id = st().visibleSessionId;
         if (id) void forkSession(id);
       }),
-      listen("menu://session-model", () => st().setPalette(true, "commands")),
-      listen("menu://session-advisors", () => st().setPalette(true, "commands")),
+      listen("menu://session-model", () =>
+        window.dispatchEvent(new CustomEvent("orchestrator:change-model")),
+      ),
+      listen("menu://session-advisors", () =>
+        window.dispatchEvent(new CustomEvent("orchestrator:configure-advisors")),
+      ),
       listen("menu://settings", () => st().setMainView("settings")),
       listen("menu://view-usage", () => st().setMainView("usage")),
       listen("menu://view-changes", () => st().setInspectorTab("changes")),
@@ -538,6 +593,22 @@ export function App(): JSX.Element {
       } else if (meta && e.key.toLowerCase() === "u") {
         e.preventDefault();
         st.setMainView(st.mainView === "usage" ? "sessions" : "usage");
+      } else if (meta && e.key.toLowerCase() === "f" && !e.shiftKey && !e.altKey) {
+        // Native find can't reach unmounted history; the transcript has its own.
+        if (st.mainView === "sessions" && st.visibleSessionId) {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent("orchestrator:find"));
+        }
+      } else if (meta && e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        // ⌥⌘↑/↓ cycles through open sessions in sidebar order.
+        e.preventDefault();
+        const order = st.order;
+        if (order.length > 1) {
+          const cur = st.visibleSessionId ? order.indexOf(st.visibleSessionId) : -1;
+          const step = e.key === "ArrowUp" ? -1 : 1;
+          const next = order[(cur + step + order.length) % order.length];
+          if (next) st.select(next);
+        }
       } else if (e.key === "Escape") {
         // One consistent rule: Escape dismisses the topmost surface.
         if (st.paletteOpen) st.setPalette(false);

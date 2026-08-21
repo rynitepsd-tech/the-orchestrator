@@ -106,6 +106,89 @@ describe("global identity", () => {
   });
 });
 
+describe("audit fixes", () => {
+  test("a reindexed primary row does not duplicate a live subagent row (same responseId)", () => {
+    const index = tempIndex();
+    // Live path attributed the response to a subagent…
+    index.ingest([
+      rec({
+        sessionId: "orch-A",
+        actorId: "subagent:task-1",
+        actorType: "subagent",
+        messageId: "resp-7",
+        ompSessionId: "omp-A",
+        source: "subagent-log",
+      }),
+    ]);
+    // …then a reindex of the session file labels the same response "primary".
+    index.ingest([
+      rec({
+        sessionId: "omp-A",
+        messageId: "resp-7",
+        ompSessionId: "omp-A",
+        source: "omp-session",
+      }),
+    ]);
+    expect(index.size()).toBe(1);
+    // The more specific attribution survives the authority upgrade.
+    expect(index.records()[0].actorType).toBe("subagent");
+  });
+
+  test("fork history without responseIds dedups on the timestamp fingerprint", () => {
+    const index = tempIndex();
+    // ts: ids are provider timestamps, copied verbatim into a fork's file.
+    index.ingest([
+      rec({ sessionId: "omp-parent", messageId: "ts:1755740000000", ompSessionId: "omp-parent" }),
+    ]);
+    index.ingest([
+      rec({
+        sessionId: "omp-fork",
+        messageId: "ts:1755740000000",
+        ompSessionId: "omp-fork",
+        source: "omp-session",
+      }),
+    ]);
+    expect(index.size()).toBe(1);
+  });
+
+  test("re-observed cumulative snapshot keeps its original timestamp", () => {
+    const index = tempIndex();
+    const base = {
+      sessionId: "A",
+      actorId: "advisor:Reviewer",
+      actorType: "advisor" as const,
+      messageId: "cumulative",
+      ompSessionId: "omp-A",
+    };
+    index.ingest([rec({ ...base, inputTokens: 500, cost: 0.5 })]);
+    const monday = index.records()[0].completedAt;
+    expect(monday).toBeTruthy();
+    // Resume days later: same totals, cost float jitter — must NOT refile
+    // the whole cumulative figure under "today".
+    index.ingest([rec({ ...base, inputTokens: 500, cost: 0.5000001 })]);
+    expect(index.records()[0].completedAt).toBe(monday);
+  });
+
+  test("flush merges the on-disk file instead of clobbering another writer", () => {
+    const dir = mkdtempSync(join(tmpdir(), "orch-usage-"));
+    dirs.push(dir);
+    // Two instances (dev build beside the packaged app) both load while the
+    // file is empty…
+    const a = new UsageIndex(dir);
+    a.load();
+    const b = new UsageIndex(dir);
+    b.load();
+    // …a flushes first, then b flushes without ever seeing a's record in
+    // memory. Last-writer-wins used to erase a's session entirely.
+    a.ingest([rec({ sessionId: "A", messageId: "resp-a" })]);
+    a.flush();
+    b.ingest([rec({ sessionId: "B", messageId: "resp-b" })]);
+    b.flush();
+    const c = new UsageIndex(dir);
+    expect(c.load()).toBe(2);
+  });
+});
+
 describe("authority", () => {
   test("omp-session outranks live-event; late live cannot clobber", () => {
     const index = tempIndex();

@@ -18,10 +18,8 @@ export interface SessionPreset {
 }
 
 export interface NotificationPrefs {
+  /** Notify when an agent finishes a turn — the only notification the app sends. */
   completion: boolean;
-  errors: boolean;
-  needsInput: boolean;
-  advisorBlockers: boolean;
 }
 
 export interface Prefs {
@@ -37,7 +35,6 @@ export interface Prefs {
   inspectorWidth: number;
   sidebarWidth: number;
   usageRange: "today" | "7d" | "30d" | "all";
-  keepRunningOnClose: boolean;
   /** First-run setup finished (or explicitly skipped). */
   setupComplete: boolean;
   /** Project paths whose sidebar group is collapsed. */
@@ -77,11 +74,10 @@ export const DEFAULT_PREFS: Prefs = {
   pinnedProjects: [],
   archivedSessions: [],
   presets: [],
-  notifications: { completion: true, errors: true, needsInput: true, advisorBlockers: true },
+  notifications: { completion: true },
   inspectorWidth: 320,
   sidebarWidth: 260,
   usageRange: "7d",
-  keepRunningOnClose: true,
   setupComplete: false,
   collapsedProjects: [],
   projectOrder: [],
@@ -92,25 +88,123 @@ export const DEFAULT_PREFS: Prefs = {
   sessionApprovalByPath: {},
 };
 
+/**
+ * Field-by-field validation. Prefs hold presets, aliases and ordering — real
+ * data — and used to be spread over defaults unchecked, so one corrupted field
+ * (`presets: "oops"`) white-screened the app on the next render. Each field
+ * falls back to its default independently instead.
+ */
+export function sanitizePrefs(parsed: unknown): Prefs {
+  const p = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+  const strArr = (v: unknown, dflt: string[]): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : dflt;
+  const strMap = (v: unknown): Record<string, string> => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof val === "string") out[k] = val;
+    }
+    return out;
+  };
+  const num = (v: unknown, dflt: number): number =>
+    typeof v === "number" && Number.isFinite(v) ? v : dflt;
+  const bool = (v: unknown, dflt: boolean): boolean => (typeof v === "boolean" ? v : dflt);
+
+  return {
+    theme: ["system", "light", "dark"].includes(String(p.theme))
+      ? (p.theme as Prefs["theme"])
+      : DEFAULT_PREFS.theme,
+    favoriteModels: strArr(p.favoriteModels, []),
+    recentModels: strArr(p.recentModels, []),
+    recentProjects: strArr(p.recentProjects, []),
+    pinnedProjects: strArr(p.pinnedProjects, []),
+    archivedSessions: strArr(p.archivedSessions, []),
+    presets: Array.isArray(p.presets)
+      ? (p.presets as unknown[]).filter(
+          (x): x is SessionPreset =>
+            !!x &&
+            typeof x === "object" &&
+            typeof (x as SessionPreset).name === "string" &&
+            Array.isArray((x as SessionPreset).advisors),
+        )
+      : [],
+    notifications: {
+      completion: bool((p.notifications as Record<string, unknown> | undefined)?.completion, true),
+    },
+    inspectorWidth: num(p.inspectorWidth, DEFAULT_PREFS.inspectorWidth),
+    sidebarWidth: num(p.sidebarWidth, DEFAULT_PREFS.sidebarWidth),
+    usageRange: ["today", "7d", "30d", "all"].includes(String(p.usageRange))
+      ? (p.usageRange as Prefs["usageRange"])
+      : DEFAULT_PREFS.usageRange,
+    setupComplete: bool(p.setupComplete, false),
+    collapsedProjects: strArr(p.collapsedProjects, []),
+    projectOrder: strArr(p.projectOrder, []),
+    openSessionPaths: strArr(p.openSessionPaths, []),
+    sessionOrder: strArr(p.sessionOrder, []),
+    defaultPreset: typeof p.defaultPreset === "string" ? p.defaultPreset : undefined,
+    projectAliases: strMap(p.projectAliases),
+    sessionPresetByPath: strMap(p.sessionPresetByPath),
+    sessionApprovalByPath: strMap(p.sessionApprovalByPath),
+  };
+}
+
+export function hasLocalPrefs(): boolean {
+  try {
+    return localStorage.getItem(KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function loadPrefs(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULT_PREFS };
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_PREFS,
-      ...parsed,
-      notifications: { ...DEFAULT_PREFS.notifications, ...(parsed?.notifications ?? {}) },
-    };
+    return sanitizePrefs(JSON.parse(raw));
   } catch {
     return { ...DEFAULT_PREFS };
   }
 }
 
-export function savePrefs(p: Prefs): void {
+/**
+ * Optional durable sink, registered by the app shell once the engine is up:
+ * prefs also persist to a file under Application Support, so a WKWebView
+ * storage wipe no longer silently loses presets and session ordering.
+ */
+let durableSink: ((p: Prefs) => void) | null = null;
+export function setPrefsSink(sink: (p: Prefs) => void): void {
+  durableSink = sink;
+}
+
+/**
+ * Debounced persist. savePrefs used to write synchronously on every call —
+ * including ~120Hz during panel resize, stringifying the whole blob each
+ * pointermove. The trailing write catches the final state; pagehide flushes.
+ */
+let pendingSave: Prefs | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushPrefs(): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  const p = pendingSave;
+  pendingSave = null;
+  if (!p) return;
   try {
     localStorage.setItem(KEY, JSON.stringify(p));
   } catch {
-    /* storage full or unavailable — prefs are conveniences, not data */
+    /* storage full or unavailable — the durable sink below still runs */
   }
+  durableSink?.(p);
+}
+
+export function savePrefs(p: Prefs): void {
+  pendingSave = p;
+  if (!saveTimer) saveTimer = setTimeout(flushPrefs, 300);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushPrefs);
 }

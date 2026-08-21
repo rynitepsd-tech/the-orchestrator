@@ -31,6 +31,9 @@ export const RUN_STATES = [
   "completed",
   "interrupted",
   "error",
+  // Worker disposed after a long idle to reclaim its memory; the transcript
+  // stays in the UI and the session respawns transparently on the next prompt.
+  "hibernated",
 ] as const;
 export type RunState = (typeof RUN_STATES)[number];
 
@@ -190,6 +193,12 @@ export interface UsageRecord extends TokenCounts {
    * and reconciles with reindexed session files.
    */
   ompSessionId?: string;
+
+  /**
+   * Human session title, when known — so "By session" views can show a name
+   * instead of an opaque id prefix. Display metadata only, never identity.
+   */
+  sessionTitle?: string;
 }
 
 export function emptyTokenCounts(): TokenCounts {
@@ -407,7 +416,8 @@ export interface GitDiff {
 
 export interface ProjectEnvironment {
   contextFiles: string[];
-  skills: number;
+  /** Absent when the engine cannot count them — never a fabricated zero. */
+  skills?: number;
   advisors: AdvisorConfig[];
   mcpServers: Array<{ name: string; status: "connected" | "failed" | "unknown"; error?: string }>;
   slashCommands: string[];

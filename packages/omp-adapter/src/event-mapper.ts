@@ -293,6 +293,38 @@ export class EventMapper {
         ];
       }
 
+      case "retry_fallback_applied": {
+        // OMP silently rerouted the turn to a different model. The header
+        // chip must follow, and the user must see WHY they're suddenly
+        // billed at a different rate.
+        const to = modelIdOf((ev as any).to) ?? "unknown";
+        const from = modelIdOf((ev as any).from);
+        return [
+          { type: "session.model", sessionId, model: to, automatic: true, reason: "fallback" },
+          {
+            type: "session.notice",
+            sessionId,
+            level: "warning",
+            message: `Provider failure — OMP switched the model${from ? ` from ${from}` : ""} to ${to} for this turn.`,
+            source: "retry",
+          },
+        ];
+      }
+
+      case "model_changed": {
+        // Model rollback after a fallback, or any upstream-initiated change.
+        const to = modelIdOf((ev as any).model ?? (ev as any).to);
+        if (!to) return [];
+        return [
+          { type: "session.model", sessionId, model: to, automatic: true, reason: "upstream" },
+        ];
+      }
+
+      case "todo_auto_clear":
+        // The runtime cleared the checklist; without this the pinned todo
+        // panel shows stale tasks forever.
+        return [{ type: "todo.update", sessionId, phases: [] }];
+
       case "notice": {
         // Upstream routes real failure causes here (e.g. `Advisor "X"
         // unavailable for provider/model: 401 …`). Dropping them leaves the UI
@@ -313,9 +345,17 @@ export class EventMapper {
       }
 
       default:
+        // Never silently: an unmapped upstream kind is exactly the thing to
+        // notice on an OMP bump. Logged once per kind per session.
+        if (!this.#unmappedLogged.has(type)) {
+          this.#unmappedLogged.add(type);
+          console.error(`event-mapper: unmapped upstream event kind "${type}"`);
+        }
         return [];
     }
   }
+
+  readonly #unmappedLogged = new Set<string>();
 
   #mapAdvisorNotes(msg: OmpEvent): ProductEvent[] {
     const sessionId = this.#ctx.sessionId;
@@ -377,13 +417,19 @@ export class EventMapper {
         this.#ctx.onRunState?.("streaming");
         return [{ type: "assistant.text", sessionId, messageId: this.#messageId(), delta }];
       }
-      // Upstream uses distinct names across providers for reasoning output.
-      case "thinking_delta":
-      case "reasoning_delta": {
+      // Every provider normalizes reasoning output to thinking_delta upstream
+      // (a "reasoning_delta" alias never existed — verified against 17.x).
+      case "thinking_delta": {
         const delta = String(ame.delta ?? ame.thinking ?? "");
         if (!delta) return [];
         this.#ctx.onRunState?.("thinking");
         return [{ type: "assistant.thinking", sessionId, messageId: this.#messageId(), delta }];
+      }
+      case "error": {
+        // The stream-level failure envelope every provider can push mid-turn.
+        // Dropping it left the transcript ending mid-sentence with no why.
+        const message = String(ame.error?.message ?? ame.message ?? "Provider stream error.");
+        return [{ type: "session.notice", sessionId, level: "error", message, source: "stream" }];
       }
       default:
         return [];
@@ -394,6 +440,14 @@ export class EventMapper {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Best-effort model id from the several shapes upstream uses. */
+function modelIdOf(v: any): string | undefined {
+  if (!v) return undefined;
+  if (typeof v === "string") return v;
+  const id = v.id ?? v.model ?? v.name;
+  return typeof id === "string" && id ? id : undefined;
+}
 
 /** Concatenate text parts of an OMP message's content array. */
 export function textOf(message: any): string {
@@ -429,8 +483,12 @@ function contentText(result: any): string {
     .join("");
 }
 
-/** Structured detail so the UI can render native cards instead of raw text. */
-function toolDetail(
+/**
+ * Structured detail so the UI can render native cards instead of raw text.
+ * Exported for replay: a resumed session's tool cards deserve the same diffs,
+ * exit codes and match counts as live ones — the data is in the file.
+ */
+export function toolDetail(
   toolName: string,
   ev: OmpEvent,
   rememberedArgs?: Record<string, unknown>,

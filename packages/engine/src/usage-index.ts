@@ -43,7 +43,17 @@ export function globalUsageKey(r: UsageRecord): string {
   const messageId = parts.length >= 3 ? parts.slice(2).join(SEP) : r.key;
   if (!isSessionScopedMessageId(messageId)) {
     // Provider response ids are globally unique per billable response.
-    return ["r", r.actorType, messageId].join(SEP);
+    // Deliberately NOT keyed by actorType: a reindex labels every file row
+    // "primary" while the live path labels the same response "subagent" —
+    // keying on actorType indexed that one response twice.
+    return ["r", messageId].join(SEP);
+  }
+  if (messageId.startsWith("ts:")) {
+    // No responseId, but a provider timestamp. Forks copy history verbatim
+    // (same timestamps, different session ids), so a session-scoped key would
+    // double-count the copied rows. The timestamp plus the token fingerprint
+    // identifies one billable response well enough to dedup across forks.
+    return ["t", messageId, r.model, String(r.inputTokens), String(r.outputTokens)].join(SEP);
   }
   const scope = r.ompSessionId || r.sessionId;
   return ["s", scope, r.actorId, messageId].join(SEP);
@@ -97,12 +107,29 @@ export class UsageIndex {
     let changed = 0;
     const now = new Date().toISOString();
     for (const r of records) {
-      const globalized: UsageRecord = {
-        ...r,
-        key: globalUsageKey(r),
-        // Time-filterable even for snapshot records that carry no timestamp.
-        completedAt: r.completedAt ?? now,
-      };
+      const key = globalUsageKey(r);
+      const existing = this.#acc.get(key);
+      // Time-filterable even for snapshot records that carry no timestamp —
+      // but a cumulative snapshot re-observed after resume (same or jittered
+      // totals) must keep its ORIGINAL stamp, or Monday's advisor tokens get
+      // refiled under "Today" every time the session is reopened. Only real
+      // growth earns a fresh timestamp.
+      let completedAt = r.completedAt ?? existing?.completedAt ?? now;
+      if (!r.completedAt && existing?.completedAt && totalTokens(r) > totalTokens(existing)) {
+        completedAt = now;
+      }
+      let globalized: UsageRecord = { ...r, key, completedAt };
+      // A responseId names one billable event, not an actor. When a file
+      // reindex (which labels everything "primary") meets a live record with
+      // more specific attribution, keep the specific actor.
+      if (existing && r.actorType === "primary" && existing.actorType !== "primary") {
+        globalized = {
+          ...globalized,
+          actorType: existing.actorType,
+          actorId: existing.actorId,
+          actorName: existing.actorName,
+        };
+      }
       if (this.#acc.ingest(globalized)) changed++;
     }
     if (changed > 0) this.#scheduleSave();
@@ -146,6 +173,24 @@ export class UsageIndex {
       return;
     }
     try {
+      // Merge the on-disk file first: another instance (dev build alongside
+      // the packaged app) may have flushed since we loaded, and a blind
+      // rewrite would erase its records. Stored keys are already global, so
+      // they ingest directly; R1/R2 make re-reading our own rows a no-op.
+      try {
+        const text = readFileSync(this.#path, "utf8");
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const r = JSON.parse(line) as UsageRecord;
+            if (typeof r?.key === "string" && typeof r?.actorId === "string") this.#acc.ingest(r);
+          } catch {
+            /* torn line from a crashed writer */
+          }
+        }
+      } catch {
+        /* first flush: no file yet */
+      }
       const dir = join(this.#path, "..");
       mkdirSync(dir, { recursive: true });
       const tmp = `${this.#path}.tmp`;

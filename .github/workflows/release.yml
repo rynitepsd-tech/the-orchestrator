@@ -37,6 +37,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Verify tag matches the version everywhere
+        # The updater feed (latest.json) takes its version from the TAG, while
+        # the installed app reports the version baked in from tauri.conf.json /
+        # Cargo.toml. If they disagree, every install is offered an "update"
+        # that installs an app still reporting the old version, which is then
+        # offered again — a permanent update loop. Fail fast instead.
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)".*/\1/p' apps/desktop/src-tauri/Cargo.toml | head -n 1)
+          TAURI_VERSION=$(python3 -c 'import json; print(json.load(open("apps/desktop/src-tauri/tauri.conf.json"))["version"])')
+          PKG_VERSION=$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')
+          echo "tag=$TAG_VERSION cargo=$CARGO_VERSION tauri=$TAURI_VERSION package.json=$PKG_VERSION"
+          fail=0
+          for pair in "Cargo.toml:$CARGO_VERSION" "tauri.conf.json:$TAURI_VERSION" "package.json:$PKG_VERSION"; do
+            file="${pair%%:*}"; ver="${pair#*:}"
+            if [ "$ver" != "$TAG_VERSION" ]; then
+              echo "::error::tag v$TAG_VERSION does not match $file version $ver" >&2
+              fail=1
+            fi
+          done
+          exit "$fail"
+
       - name: Set up Bun ${{ env.BUN_VERSION }}
         uses: oven-sh/setup-bun@v2
         with:
@@ -135,7 +158,7 @@ jobs:
         run: bunx tauri build
 
       - name: Packaged smoke test
-        # 12 checks against the engine binary INSIDE the built .app: correct
+        # Checks against the engine binary INSIDE the built .app: correct
         # architecture, addon present beside the binary, config discovery, model
         # registry load, session create, a real tool call, persistence, quit.
         #
@@ -172,12 +195,24 @@ jobs:
           ls -l "$BUNDLE/macos/The Orchestrator.app/Contents/Resources/engine"
 
           cd dist-release
+
+          # GitHub replaces spaces with dots in uploaded asset names, so a
+          # checksum file written against the local spaced names fails
+          # `shasum -c` for every downloaded asset. Rename the artefacts to
+          # their as-served names BEFORE checksumming, so SHA256SUMS.txt and
+          # the uploaded assets match byte for byte and name for name.
+          for f in *" "*; do
+            mv "$f" "${f// /.}"
+          done
+          ls -l
+
           shasum -a 256 *.dmg *.app.tar.gz | tee SHA256SUMS.txt
 
       - name: Generate updater feed (latest.json)
-        # The app polls releases/latest/download/latest.json. GitHub replaces
-        # spaces with dots in uploaded asset names, so the URL must use the
-        # normalized name.
+        # The app polls releases/latest/download/latest.json. The artefacts
+        # were already renamed to their dot-normalized as-served names in the
+        # previous step; the ${TARBALL// /.} below is kept as a no-op guard in
+        # case an un-renamed file ever reaches this step.
         run: |
           set -euo pipefail
           cd dist-release
@@ -213,7 +248,7 @@ jobs:
             dist-release/latest.json
             dist-release/SHA256SUMS.txt
           body: |
-            macOS, Apple Silicon (arm64). Requires macOS 11.0 or later.
+            macOS, Apple Silicon (arm64). Requires macOS 14.5 or later.
 
             Existing installs update themselves: once this release is
             published (not draft), running apps show an "Update" button in

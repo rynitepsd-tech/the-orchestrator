@@ -54,19 +54,29 @@ export class EngineClient {
       await listen<any>("engine://supervisor", (ev) => {
         // A dead engine resets the stream; do not report a false gap after restart.
         if (ev.payload?.kind === "spawning") this.#lastSequence = 0;
+        // A dead engine also answers nothing: fail in-flight requests NOW
+        // instead of letting each spin out its full 120s timeout under an
+        // offline banner.
+        if (ev.payload?.kind === "exited" || ev.payload?.kind === "launch-failed") {
+          this.#failPending("The engine stopped before responding.");
+        }
         this.onSupervisor(ev.payload);
       }),
     );
   }
 
+  #failPending(message: string): void {
+    for (const [, p] of this.#pending) {
+      clearTimeout(p.timer);
+      p.reject({ kind: "engine", message, retryable: true });
+    }
+    this.#pending.clear();
+  }
+
   dispose(): void {
     for (const u of this.#unlisteners) u();
     this.#unlisteners = [];
-    for (const [, p] of this.#pending) {
-      clearTimeout(p.timer);
-      p.reject({ kind: "engine", message: "The engine connection closed." });
-    }
-    this.#pending.clear();
+    this.#failPending("The engine connection closed.");
   }
 
   #onFrame(line: string): void {

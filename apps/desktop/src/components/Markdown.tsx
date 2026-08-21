@@ -10,8 +10,51 @@
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JSX, ReactNode } from "react";
-import { memo } from "react";
+import { memo, useMemo, useState } from "react";
 import { useStore } from "../store";
+
+/**
+ * A fenced code block: syntax-highlighted when hljs knows the language, with
+ * a hover copy button — the code the agent wrote is the thing most copied out
+ * of a transcript, and it had no affordance.
+ *
+ * The ONE dangerouslySetInnerHTML in this file: hljs.highlight escapes its
+ * input, so the produced markup contains only hljs span wrappers. Never hand
+ * this path anything but hljs output.
+ */
+function CodeBlock({ lang, code }: { lang?: string; code: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const html = useMemo(() => {
+    const h = (globalThis as { hljs?: any }).hljs;
+    if (!lang || !h?.getLanguage?.(lang)) return null;
+    try {
+      return h.highlight(code, { language: lang, ignoreIllegals: true }).value as string;
+    } catch {
+      return null;
+    }
+  }, [lang, code]);
+  const copy = () => {
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="md-code-wrap">
+      <button className="md-copy" onClick={copy} title="Copy code">
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <pre className="md-code" data-lang={lang || undefined}>
+        {html !== null ? (
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: hljs-escaped output only
+          <code dangerouslySetInnerHTML={{ __html: html }} />
+        ) : (
+          <code>{code}</code>
+        )}
+      </pre>
+    </div>
+  );
+}
 
 function isSafeHref(href: string): boolean {
   return /^https?:\/\//i.test(href);
@@ -320,11 +363,7 @@ export const Markdown = memo(function Markdown({
             return <H key={key}>{renderInline(b.lines[0] ?? "", key, projectPath)}</H>;
           }
           case "code":
-            return (
-              <pre key={key} className="md-code" data-lang={b.lang || undefined}>
-                <code>{b.lines.join("\n")}</code>
-              </pre>
-            );
+            return <CodeBlock key={key} lang={b.lang} code={b.lines.join("\n")} />;
           case "ul":
             return (
               <ul key={key}>

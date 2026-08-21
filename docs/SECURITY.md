@@ -6,7 +6,7 @@ assumes familiarity with [ARCHITECTURE.md](./ARCHITECTURE.md) — in particular
 that the app is a Tauri 2 shell around a supervisor process that spawns one OMP
 worker process per session.
 
-The Orchestrator is an unofficial harness. It is version 0.2.0, macOS only
+The Orchestrator is an unofficial harness. It is macOS only
 (Apple Silicon builds; the x64 target exists in the build script but has not
 been built or tested), and ad-hoc signed.
 

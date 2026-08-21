@@ -84,12 +84,19 @@ export function Transcript({
   const [atBottom, setAtBottom] = useState(true);
 
   const hidden = Math.max(0, items.length - shown);
-  const visible = hidden > 0 ? items.slice(hidden) : items;
+  const visible = useMemo(() => (hidden > 0 ? items.slice(hidden) : items), [items, hidden]);
 
+  const active = runState !== undefined && isActive(runState);
+  // toNodes ran on EVERY render (any store change re-renders the app shell);
+  // memoized it only re-derives when the transcript actually changed.
+  const nodes = useMemo(() => toNodes(visible, active), [visible, active]);
+
+  // Depends on the transcript: reading scrollHeight after every unrelated
+  // render forced a synchronous layout per frame across all sessions.
   useLayoutEffect(() => {
     const el = ref.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  });
+  }, [items]);
 
   const onScroll = () => {
     const el = ref.current;
@@ -99,8 +106,122 @@ export function Transcript({
     setAtBottom(near);
   };
 
+  // ---- find in transcript (⌘F) -------------------------------------------
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCur, setFindCur] = useState(0);
+  const findRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const open = () => {
+      setFindOpen(true);
+      requestAnimationFrame(() => findRef.current?.select());
+    };
+    window.addEventListener("orchestrator:find", open);
+    return () => window.removeEventListener("orchestrator:find", open);
+  }, []);
+
+  // Searches the FULL item list, not just the mounted window — that is the
+  // whole point (native find can't reach unmounted history).
+  const findMatches = useMemo(() => {
+    const q = findQuery.trim().toLowerCase();
+    if (!q) return [];
+    const out: string[] = [];
+    for (const it of items) {
+      const text =
+        it.kind === "user" || it.kind === "system" || it.kind === "advisor"
+          ? it.text
+          : it.kind === "assistant"
+            ? it.text
+            : "";
+      if (text?.toLowerCase().includes(q)) out.push(it.id);
+    }
+    return out;
+  }, [items, findQuery]);
+
+  // Reveal an item wherever it is: raise the render window until it is
+  // mounted, then scroll its wrapper into view. Shared by find-jumps and the
+  // PendingBar's "Show in transcript" (which used to silently no-op whenever
+  // the approval had scrolled out of the window).
+  const revealItem = (id: string) => {
+    const itemIdx = items.findIndex((i) => i.id === id);
+    if (itemIdx >= 0 && itemIdx < hidden) {
+      setShown(items.length - itemIdx + 20);
+    }
+    pinned.current = false;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = ref.current?.querySelector(`[data-tid="${CSS.escape(id)}"]`);
+        (el?.firstElementChild ?? el)?.scrollIntoView({ block: "center" });
+      });
+    });
+  };
+  const revealRef = useRef(revealItem);
+  revealRef.current = revealItem;
+
+  useEffect(() => {
+    const onReveal = (e: Event) => {
+      const id = (e as CustomEvent).detail?.itemId;
+      if (typeof id === "string") revealRef.current(id);
+    };
+    window.addEventListener("orchestrator:reveal", onReveal);
+    return () => window.removeEventListener("orchestrator:reveal", onReveal);
+  }, []);
+
+  const jumpTo = (matchIdx: number) => {
+    const id = findMatches[matchIdx];
+    if (id) revealItem(id);
+  };
+
+  const findStep = (dir: 1 | -1) => {
+    if (!findMatches.length) return;
+    const next = (findCur + dir + findMatches.length) % findMatches.length;
+    setFindCur(next);
+    jumpTo(next);
+  };
+
   return (
     <div className="transcript-wrap">
+      {findOpen && (
+        <div className="find-bar">
+          <input
+            ref={findRef}
+            className="input find-input"
+            placeholder="Find in transcript…"
+            value={findQuery}
+            autoFocus
+            onChange={(e) => {
+              setFindQuery(e.target.value);
+              setFindCur(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (findCur === 0 && findMatches.length) jumpTo(0);
+                findStep(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setFindOpen(false);
+              }
+            }}
+          />
+          <span className="hint find-count">
+            {findQuery.trim()
+              ? `${findMatches.length ? findCur + 1 : 0} / ${findMatches.length}`
+              : ""}
+          </span>
+          <button className="btn btn-ghost" onClick={() => findStep(-1)} title="Previous (⇧Enter)">
+            ↑
+          </button>
+          <button className="btn btn-ghost" onClick={() => findStep(1)} title="Next (Enter)">
+            ↓
+          </button>
+          <button className="btn btn-ghost" onClick={() => setFindOpen(false)} title="Close (Esc)">
+            ✕
+          </button>
+        </div>
+      )}
       <div className="transcript" ref={ref} onScroll={onScroll}>
         {/* .stream is the measure: centred column with side padding, so text
             never runs wall to wall. */}
@@ -123,19 +244,26 @@ export function Transcript({
               </button>
             </div>
           )}
-          {toNodes(visible, runState !== undefined && isActive(runState)).map((n) =>
+          {nodes.map((n) =>
             n.kind === "plain" ? (
-              <Item
-                key={n.item.id}
-                item={n.item}
-                sessionId={sessionId}
-                projectPath={projectPath}
-                onRewind={
-                  canRewind && n.item.kind === "user"
-                    ? () => void rewindTo(sessionId, items, n.item as never)
-                    : undefined
-                }
-              />
+              // display:contents wrapper — a find-jump scroll target with no
+              // effect on the flex layout.
+              <div key={n.item.id} className="titem" data-tid={n.item.id}>
+                <Item
+                  item={n.item}
+                  sessionId={sessionId}
+                  projectPath={projectPath}
+                  onRewind={
+                    canRewind && n.item.kind === "user"
+                      ? () => void rewindTo(sessionId, items, n.item as never)
+                      : undefined
+                  }
+                />
+              </div>
+            ) : n.kind === "draft" ? (
+              <div key={n.item.id} className="titem" data-tid={n.item.id}>
+                <DraftRow item={n.item} projectPath={projectPath} />
+              </div>
             ) : n.kind === "files" ? (
               <FilesRow key={n.key} files={n.files} projectPath={projectPath} />
             ) : (
@@ -188,6 +316,7 @@ type EditedFile = { path: string; additions: number; deletions: number; created?
 
 type RenderNode =
   | { kind: "plain"; item: TranscriptItem }
+  | { kind: "draft"; item: TranscriptItem }
   | { kind: "work"; key: string; items: TranscriptItem[]; live: boolean; durationMs?: number }
   | { kind: "files"; key: string; files: EditedFile[] };
 
@@ -232,13 +361,22 @@ function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] 
     const segment = seg;
     seg = [];
 
+    // Group keys must be stable while the render window slides: keying on
+    // bucket[0].id remounted the group on every window shift, snapping open
+    // cards shut mid-run. The worker's turnId plus the bucket's ordinal
+    // within its turn is stable regardless of where the window starts.
+    const segTurn = segment.find((it) => it.turnId)?.turnId;
+    let bucketOrdinal = 0;
+    const bucketKey = (first: TranscriptItem): string =>
+      segTurn ? `wg-${segTurn}-${bucketOrdinal++}` : `wg-${first.id}`;
+
     if (!closed) {
       // Still running: advisor notes and alwaysVisible items stay plain; all
       // work gathers into live groups that render expanded.
       const bucket: TranscriptItem[] = [];
       const flushBucket = () => {
         if (!bucket.length) return;
-        nodes.push({ kind: "work", key: `wg-${bucket[0].id}`, items: [...bucket], live: true });
+        nodes.push({ kind: "work", key: bucketKey(bucket[0]), items: [...bucket], live: true });
         bucket.length = 0;
       };
       for (const it of segment) {
@@ -260,9 +398,15 @@ function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] 
     // subagents, settled approvals, advisor notes, intermediate narration —
     // folds into "Worked" lines. An advisor-driven turn produces SEVERAL real
     // answers separated by review notes, so every substantive report stays
-    // visible — folding all but the literal last message buried a 20-minute
+    // reachable — folding all but the literal last message buried a 20-minute
     // report under the "Worked" line while a trailing bookkeeping remark
     // became "the" answer. One-line narration ("Now the db layer:") condenses.
+    //
+    // But "reachable" ≠ "expanded": the system prompt requires the post-review
+    // answer to be complete and standalone, so a report that an advisor
+    // reviewed (an advisor note follows it, and a later report replaced it)
+    // is a superseded draft. Rendering it in full stacks two near-identical
+    // mega-answers; it collapses to a one-line row instead.
     const isReport = (it: TranscriptItem): boolean =>
       it.kind === "assistant" && (it.text.trim().length >= 400 || /\n\s*\n/.test(it.text.trim()));
     let lastAnswer = -1;
@@ -273,6 +417,16 @@ function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] 
         break;
       }
     }
+    let lastReport = -1;
+    for (let i = segment.length - 1; i >= 0; i--) {
+      if (isReport(segment[i])) {
+        lastReport = i;
+        break;
+      }
+    }
+    const lastAdvisor = segment.reduce((a, it, i) => (it.kind === "advisor" ? i : a), -1);
+    const isSupersededDraft = (i: number): boolean =>
+      i !== lastAnswer && i < lastReport && i < lastAdvisor && isReport(segment[i]);
     const files = editedFiles(segment);
     let filesEmitted = false;
     const bucket: TranscriptItem[] = [];
@@ -281,7 +435,7 @@ function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] 
       if (!bucket.length) return;
       nodes.push({
         kind: "work",
-        key: `wg-${bucket[0].id}`,
+        key: bucketKey(bucket[0]),
         items: [...bucket],
         live: false,
         // The turn's wall time labels the main work line; splinter buckets
@@ -294,7 +448,9 @@ function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] 
     segment.forEach((it, i) => {
       if (i === lastAnswer || isReport(it) || alwaysVisible(it)) {
         flushBucket();
-        nodes.push({ kind: "plain", item: it });
+        nodes.push(
+          isSupersededDraft(i) ? { kind: "draft", item: it } : { kind: "plain", item: it },
+        );
         if (i === lastAnswer && files.length) {
           nodes.push({ kind: "files", key: `files-${it.id}`, files });
           filesEmitted = true;
@@ -563,6 +719,74 @@ function WorkGroup({
   );
 }
 
+/**
+ * Streaming assistant text with progressive markdown. The stable prefix ends
+ * at the last blank line outside an open code fence; everything before it is
+ * final and renders through the memoized <Markdown> (re-parsed only when the
+ * prefix string changes — once per settled paragraph), while the tail streams
+ * as plain text.
+ */
+function stableCut(text: string): number {
+  let inFence = false;
+  let cut = 0;
+  let i = 0;
+  while (i <= text.length) {
+    const nl = text.indexOf("\n", i);
+    const line = (nl < 0 ? text.slice(i) : text.slice(i, nl)).trim();
+    if (line.startsWith("```") || line.startsWith("~~~")) inFence = !inFence;
+    else if (!inFence && line === "" && nl >= 0) cut = nl + 1;
+    if (nl < 0) break;
+    i = nl + 1;
+  }
+  return cut;
+}
+
+function StreamingMarkdown({
+  text,
+  projectPath,
+}: {
+  text: string;
+  projectPath?: string;
+}): JSX.Element {
+  const cut = stableCut(text);
+  const head = text.slice(0, cut);
+  const tail = text.slice(cut);
+  return (
+    <>
+      {head && <Markdown text={head} projectPath={projectPath} />}
+      {tail && <div className="streaming-text">{tail}</div>}
+    </>
+  );
+}
+
+/**
+ * A pre-review answer that an advisor reviewed and a later report replaced.
+ * The revision is standalone by contract, so the draft collapses to one line
+ * — expandable for comparing what the review changed.
+ */
+function DraftRow({
+  item,
+  projectPath,
+}: {
+  item: TranscriptItem;
+  projectPath?: string;
+}): JSX.Element {
+  const text = item.kind === "assistant" ? item.text : "";
+  const firstLine = text.trim().split("\n", 1)[0] ?? "";
+  return (
+    <details className="draft-superseded">
+      <summary title="An advisor reviewed this draft; the answer below replaces it.">
+        <span className="draft-label">Draft</span>
+        <span className="hint">superseded after advisor review</span>
+        <span className="draft-preview hint">{firstLine}</span>
+      </summary>
+      <div className="draft-body">
+        <Markdown text={text} projectPath={projectPath} />
+      </div>
+    </details>
+  );
+}
+
 /** Post-answer list of the files a finished turn edited, Codex-style. */
 function FilesRow({
   files,
@@ -685,11 +909,23 @@ const Item = memo(function Item({
             ))}
           {item.text &&
             (item.streaming ? (
-              // Plain text while streaming avoids re-parsing markdown per delta;
-              // the final render swaps in the full markdown tree.
-              <div className="streaming-text">{item.text}</div>
+              // Progressive markdown: settled paragraphs render styled (the
+              // memoized <Markdown> re-parses only when the stable prefix
+              // grows — once per paragraph); only the in-flight tail stays
+              // plain. No more raw ## and pipe tables during the most-watched
+              // part of every turn, and no full-height snap at the end.
+              <StreamingMarkdown text={item.text} projectPath={projectPath} />
             ) : (
-              <Markdown text={item.text} projectPath={projectPath} />
+              <>
+                <Markdown text={item.text} projectPath={projectPath} />
+                <button
+                  className="btn btn-ghost copy-answer"
+                  title="Copy the answer as markdown"
+                  onClick={() => void navigator.clipboard.writeText(item.text)}
+                >
+                  Copy answer
+                </button>
+              </>
             ))}
         </div>
       );
@@ -1272,7 +1508,7 @@ const InteractionCard = memo(function InteractionCard({
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void respond(text);
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) void respond(text);
               }}
               autoFocus
             />

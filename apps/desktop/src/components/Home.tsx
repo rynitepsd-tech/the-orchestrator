@@ -177,7 +177,9 @@ export function Home({
           onChange={(e) => setText(e.target.value)}
           onPaste={onPaste}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            // Mid-IME Enter confirms the composition; launching a session (and
+            // a worker process) on a half-composed word would be brutal.
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               launch();
             }

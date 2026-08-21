@@ -54,7 +54,9 @@ export class EngineServer {
   info(): EngineInfo {
     return {
       protocolVersion: PROTOCOL_VERSION,
-      engineVersion: process.env.ORCHESTRATOR_VERSION ?? "0.2.0",
+      // The shell injects the real app version at spawn; a hardcoded fallback
+      // here went ten releases stale, so a direct run honestly says "dev".
+      engineVersion: process.env.ORCHESTRATOR_VERSION ?? "dev",
       ompVersion: ompVersion(),
       bunVersion: typeof Bun !== "undefined" ? Bun.version : "n/a",
       arch: process.arch,
@@ -174,6 +176,11 @@ export class EngineServer {
 
   get shuttingDown(): boolean {
     return this.#shuttingDown;
+  }
+
+  /** True when the approval-disabling test hooks are armed — never silent. */
+  get testMode(): boolean {
+    return this.#opts.testMode === true;
   }
 
   async shutdown(): Promise<void> {

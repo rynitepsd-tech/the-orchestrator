@@ -25,6 +25,8 @@
  * The frontend cannot tell the difference — the supervisor speaks the same
  * protocol either way. That is what the adapter boundary bought us.
  */
+import { realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   advisorUsageFromStats,
   contextUsageOf,
@@ -106,15 +108,61 @@ const HISTORY_CAP = 20_000;
 const history: ProductEvent[] = [];
 let historyBase = 0; // local sequence of history[0]
 
+/**
+ * Turn identity, carried on every event.
+ *
+ * The client used to re-derive turn boundaries from a flat item list with a
+ * heuristic — the single most rewritten piece of UI in the changelog. The
+ * worker KNOWS the structure (it sees the prompt start and the turn end), so
+ * it stamps a stable turnId instead and the client renders a given structure.
+ */
+let turnCounter = 0;
+let currentTurnId: string | undefined;
+const beginTurn = (): string => {
+  currentTurnId = `t${++turnCounter}`;
+  return currentTurnId;
+};
+
 const emit = (event: ProductEvent) => {
-  history.push(event);
+  const stamped = currentTurnId ? { ...event, turnId: currentTurnId } : event;
+  history.push(stamped);
   if (history.length > HISTORY_CAP) {
     history.splice(0, history.length - HISTORY_CAP);
     historyBase += 1;
   }
-  out({ protocolVersion: PROTOCOL_VERSION, sequence: ++seq, sessionId: boot.sessionId, event });
+  out({
+    protocolVersion: PROTOCOL_VERSION,
+    sequence: ++seq,
+    sessionId: boot.sessionId,
+    event: stamped,
+  });
 };
 let seq = 0;
+
+/**
+ * Crash containment, registered BEFORE any top-level await so boot failures
+ * are covered too. A crashed subscribe callback or timer must never leave the
+ * UI with a spinner that has nothing behind it: the session is declared
+ * failed and the turn settled, loudly, instead of "thinking" forever.
+ */
+function settleCrash(origin: string, e: unknown): void {
+  err(`${origin}: ${String((e as Error)?.message ?? e)}`, {
+    stack: (e as Error)?.stack,
+  });
+  try {
+    // Only a session that LOOKS busy needs settling — an idle session's
+    // background hiccup is a log line, not a failure banner.
+    const active = !["idle", "completed", "interrupted", "error"].includes(runState);
+    if (!active) return;
+    emit({ type: "session.failed", sessionId: boot.sessionId, error: classifyError(e) });
+    setRunState("interrupted");
+    emit({ type: "session.finished", sessionId: boot.sessionId, runState: "interrupted" });
+  } catch {
+    /* emitting must never crash the crash handler (incl. pre-boot TDZ) */
+  }
+}
+process.on("uncaughtException", (e) => settleCrash("uncaught", e));
+process.on("unhandledRejection", (e) => settleCrash("unhandled rejection", e));
 
 /** Map an upstream failure onto the product error taxonomy — never a raw stack. */
 function classifyError(e: unknown): EngineErrorPayload {
@@ -150,7 +198,19 @@ const advisors = new Map<string, AdvisorConfig>();
 for (const a of boot.advisors ?? []) advisors.set(a.id, a);
 let approvalMode: ApprovalMode = boot.approvalMode ?? "always-ask";
 
+// Idle-hibernation clock (see maybeHibernate below). Declared with the rest
+// of the session state so every code path may stamp it without TDZ hazards.
+const IDLE_HIBERNATE_MS = (() => {
+  const raw = Number(process.env.ORCHESTRATOR_IDLE_HIBERNATE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 30 * 60_000;
+})();
+let lastActivityMs = Date.now();
+let hibernating = false;
+
 function setRunState(s: RunState, activity?: string): void {
+  // Any state transition is activity — the idle-hibernation clock restarts.
+  // (Called only after boot completes, so the late `let` is initialized.)
+  lastActivityMs = Date.now();
   if (runState === s) return;
   // Once a turn is being aborted, ordinary activity transitions must not walk
   // it back to "completed" — the abort outcome is authoritative.
@@ -271,9 +331,47 @@ const created = await OMP.createAgentSession({
     "a revision read as a reply to the review; restate the full outcome for the user.\n" +
     "The UI renders GitHub-flavored markdown only — no LaTeX or math delimiters. Write " +
     "status labels and emphasis as plain markdown (e.g. **P0 — ship-blocking**), never " +
-    "\\textcolor or $…$.",
+    "\\textcolor or $…$.\n" +
+    "Answer style — the user reads your answers in a chat transcript, so optimize for " +
+    "readability over density:\n" +
+    "- Lead with the conclusion in one or two plain sentences before any detail.\n" +
+    "- Write complete sentences, not fragment chains or arrow notation (A → B → fails).\n" +
+    "- Cite a file/line at most once per point, at the end of the sentence or in " +
+    "parentheses — never weave several citations through one sentence.\n" +
+    "- Use inline code only for identifiers the reader must recognize exactly, not for " +
+    "every technical noun. A paragraph should never be mostly code spans.\n" +
+    "- Use bold sparingly — a handful of times per answer, for the takeaways that " +
+    "matter most. Bold on every other phrase highlights nothing.\n" +
+    "- Prefer short paragraphs; use headers only in long answers, and lists only when " +
+    "enumerating more than three parallel items.",
 } as never);
 const session = created.session;
+
+/**
+ * Probe optional upstream capabilities ONCE, loudly, at boot. These are the
+ * seams that break silently on an OMP minor bump: an `(s as any).compact?.()`
+ * that no longer exists would report success and write a transcript marker
+ * for something that never happened. Probing here turns that into a visible
+ * log line at startup and an honest error at call time.
+ */
+const sessionCaps = {
+  compact: typeof (session as any).compact === "function",
+  abort: typeof (session as any).abort === "function",
+  setModel: typeof (session as any).setModel === "function",
+  navigateTree: typeof (session as any).navigateTree === "function",
+  titleGeneration: typeof (session as any).maybeStartTitleGeneration === "function",
+} as const;
+for (const [name, ok] of Object.entries(sessionCaps)) {
+  if (!ok) err(`upstream capability missing: session.${name}`, { kind: "configuration" });
+}
+function requireCap(name: keyof typeof sessionCaps, what: string): void {
+  if (!sessionCaps[name]) {
+    throw Object.assign(new Error(`This OMP build does not support ${what}.`), {
+      kind: "configuration",
+    });
+  }
+}
+
 const mcpManager: any = (created as any).mcpManager;
 // The session's own bus — subagent lifecycle/progress/event channels are
 // published here (task/types.ts upstream). Process isolation means it is
@@ -319,14 +417,65 @@ function leaveWaiting(): void {
  * The gate covers bash / edit / delete / move (see acp-permission-gate.ts).
  *
  *  - "always-ask": every gated call prompts the host.
- *  - "write":      file edits auto-allow; bash still prompts.
+ *  - "write":      content edits (edit/write) auto-allow; bash, delete and
+ *                  move still prompt — same destructive effect as `bash rm`,
+ *                  same gate.
  *  - "yolo":       everything the gate covers auto-allows. Explicit user
  *                  choice — never a silent default.
+ *
+ * Path scoping cuts across all modes: a mutating tool whose target resolves
+ * outside the project folder ALWAYS prompts, even in yolo. That is the
+ * prompt-injection guardrail — "yolo" means everything inside the project,
+ * not ~/.ssh.
  */
-function policyAllows(toolName: string): boolean {
+const PATHY_INPUT_KEYS = [
+  "path",
+  "file_path",
+  "filePath",
+  "old_path",
+  "new_path",
+  "oldPath",
+  "newPath",
+  "source",
+  "destination",
+] as const;
+
+const projectRootReal = (() => {
+  try {
+    return realpathSync(boot.projectPath);
+  } catch {
+    return boot.projectPath;
+  }
+})();
+
+/** Target paths in a tool call that resolve outside the project folder. */
+function pathsOutsideProject(rawInput: unknown): string[] {
+  if (!rawInput || typeof rawInput !== "object") return [];
+  const out: string[] = [];
+  for (const k of PATHY_INPUT_KEYS) {
+    const v = (rawInput as Record<string, unknown>)[k];
+    if (typeof v !== "string" || !v) continue;
+    const lexical = resolve(boot.projectPath, v);
+    // Symlink-resolve the nearest existing ancestor so a link inside the
+    // project cannot smuggle a write outside it.
+    let real = lexical;
+    try {
+      real = join(realpathSync(dirname(lexical)), basename(lexical));
+    } catch {
+      /* parent missing — the lexical path is all there is to check */
+    }
+    if (real !== projectRootReal && !real.startsWith(`${projectRootReal}/`)) out.push(v);
+  }
+  return out;
+}
+
+function policyAllows(toolCall: { toolName: string; rawInput?: unknown }): boolean {
+  if (approvalMode === "always-ask") return false;
+  if (toolCall.toolName !== "bash" && pathsOutsideProject(toolCall.rawInput).length > 0) {
+    return false;
+  }
   if (approvalMode === "yolo") return true;
-  if (approvalMode === "write") return toolName !== "bash";
-  return false;
+  return toolCall.toolName === "edit" || toolCall.toolName === "write";
 }
 
 const clientBridge = {
@@ -338,14 +487,18 @@ const clientBridge = {
   ): Promise<
     { outcome: "cancelled" } | { outcome: "selected"; optionId: string; kind?: string }
   > => {
-    if (policyAllows(toolCall.toolName)) {
+    if (policyAllows(toolCall)) {
       return { outcome: "selected", optionId: "allow_once", kind: "allow_once" };
     }
     const approvalId = interactionId("appr");
+    const escaped = toolCall.toolName === "bash" ? [] : pathsOutsideProject(toolCall.rawInput);
     const detail =
       toolCall.toolName === "bash" && toolCall.rawInput && typeof toolCall.rawInput === "object"
         ? String((toolCall.rawInput as Record<string, unknown>).command ?? "")
-        : undefined;
+        : escaped.length > 0
+          ? // Say WHY this is asking even in a permissive mode.
+            `Outside the project folder: ${escaped.join(", ")}`
+          : undefined;
 
     emit({
       type: "approval.request",
@@ -712,6 +865,9 @@ function refreshAdvisors(): void {
 }
 
 session.subscribe((ev: any) => {
+  // Advisor-triggered continuation turns never pass through the prompt
+  // handler; the raw agent_start is their turn boundary.
+  if (ev?.type === "agent_start" && !currentTurnId) beginTurn();
   for (const o of mapper.map(ev)) {
     if (o.type === "assistant.text") {
       textBuf.set(o.messageId, (textBuf.get(o.messageId) ?? "") + o.delta);
@@ -754,6 +910,44 @@ session.subscribe((ev: any) => {
 setInterval(() => {
   if (advisors.size > 0 || (session as any).isAdvisorActive?.()) refreshAdvisors();
 }, 5_000).unref?.();
+
+// ---------------------------------------------------------------------------
+// Idle hibernation
+//
+// A parked session holds ~350MB with nothing to do, and nothing else ever
+// reclaims it — fifteen open sessions is 6GB. After a long idle the worker
+// parks itself: it announces session.hibernated (the UI keeps the transcript
+// and resumes from the persisted file on the next prompt) and exits cleanly.
+// ---------------------------------------------------------------------------
+
+function maybeHibernate(): void {
+  if (hibernating || IDLE_HIBERNATE_MS === 0) return;
+  const parked =
+    (runState === "idle" || runState === "completed") &&
+    pendingApprovals.size === 0 &&
+    pendingUi.size === 0 &&
+    !advisorReviewInFlight;
+  if (!parked || Date.now() - lastActivityMs < IDLE_HIBERNATE_MS) return;
+  // Never hibernate a session that has nothing on disk to resume from.
+  const sessionFile = (session as any).sessionFile ?? (sessionManager as any).getSessionFile?.();
+  if (!sessionFile) return;
+  hibernating = true;
+  emit({
+    type: "session.hibernated",
+    sessionId: boot.sessionId,
+    ompSessionPath: String(sessionFile),
+  });
+  setTimeout(() => process.exit(0), 3_000).unref?.();
+  void (async () => {
+    try {
+      await session.dispose();
+    } catch {
+      /* exiting anyway */
+    }
+    process.exit(0);
+  })();
+}
+setInterval(maybeHibernate, 60_000).unref?.();
 
 // ---------------------------------------------------------------------------
 // Subagent channels (see task/types.ts upstream)
@@ -942,6 +1136,8 @@ out({
 
 async function handle(req: any): Promise<unknown> {
   const s: any = session;
+  // Any host request is activity — the hibernation clock restarts.
+  lastActivityMs = Date.now();
   switch (req.type) {
     case "session.prompt": {
       const busy = Boolean(s.isStreaming);
@@ -1015,7 +1211,10 @@ async function handle(req: any): Promise<unknown> {
       // delivered — emitting `finished` there would declare the turn done
       // while the owning prompt is still mid-flight.
       const owning = !busy;
-      if (owning) setRunState("queued");
+      if (owning) {
+        beginTurn();
+        setRunState("queued");
+      }
       const turnStartedAt = Date.now();
       // The turn runs in the background: the host gets an immediate ack so the
       // user can switch sessions while this one keeps working.
@@ -1047,6 +1246,9 @@ async function handle(req: any): Promise<unknown> {
               runState: outcome,
               durationMs: Date.now() - turnStartedAt,
             });
+            // The turn is over; post-turn chatter (advisor polling, context
+            // updates) belongs to no turn until the next prompt begins one.
+            currentTurnId = undefined;
           }
           checkPersisted();
         }
@@ -1058,6 +1260,7 @@ async function handle(req: any): Promise<unknown> {
     }
 
     case "session.abort":
+      requireCap("abort", "aborting a running turn");
       setRunState("stopping");
       // Cancel any prompts blocked on user input, or the abort would hang
       // behind a dialog nobody can answer any more.
@@ -1069,12 +1272,13 @@ async function handle(req: any): Promise<unknown> {
         pendingUi.delete(id);
         p.resolve({ value: undefined, cancelled: true });
       }
-      await s.abort?.();
+      await s.abort();
       setRunState("interrupted");
       return { aborted: true };
 
     case "session.compact":
-      await s.compact?.();
+      requireCap("compact", "compaction");
+      await s.compact();
       emit({ type: "session.compacted", sessionId: boot.sessionId, at: new Date().toISOString() });
       emitContext();
       return { ok: true };
@@ -1090,6 +1294,7 @@ async function handle(req: any): Promise<unknown> {
     }
 
     case "session.rewind": {
+      requireCap("navigateTree", "rewinding the conversation");
       if (s.isStreaming) throw new Error("Stop the run before rewinding.");
       // navigateTree stays in the SAME session file and hands the target
       // message's text back for editing. Conversation-only: files on disk
@@ -1126,9 +1331,10 @@ async function handle(req: any): Promise<unknown> {
     }
 
     case "session.setModel": {
+      requireCap("setModel", "changing the model on a live session");
       const m = resolveModel(String(req.payload.model));
       if (!m) return { ok: false, model: String(req.payload.model) };
-      await s.setModel?.(m);
+      await s.setModel(m);
       if (req.payload.thinkingLevel) await s.setThinkingLevel?.(req.payload.thinkingLevel);
       emit({
         type: "session.model",
@@ -1162,9 +1368,9 @@ async function handle(req: any): Promise<unknown> {
         level: mode === "yolo" ? "warning" : "info",
         message:
           mode === "yolo"
-            ? "Approval mode set to Full access — tools now run without prompts."
+            ? "Approval mode set to Full access — tools run without prompts inside the project; anything outside it still asks."
             : mode === "write"
-              ? "Approval mode set to Auto-accept edits — file edits run without prompts; commands still ask."
+              ? "Approval mode set to Auto-accept edits — content edits run without prompts; commands, deletes and renames still ask."
               : "Approval mode set to Manual — every gated tool asks first.",
         source: "approval",
       });
@@ -1286,8 +1492,7 @@ const decoder = new FrameDecoder();
 const td = new TextDecoder();
 const reader = Bun.stdin.stream().getReader();
 
-process.on("uncaughtException", (e) => err(`uncaught: ${e?.message}`, { stack: e?.stack }));
-process.on("unhandledRejection", (e) => err(`unhandled rejection: ${String(e)}`));
+// Crash handlers are registered at the top of this file, before boot awaits.
 
 // A supervisor kill() lands here as SIGTERM. Dispose the session so MCP/LSP
 // child processes are torn down with us instead of being orphaned; the
@@ -1304,13 +1509,11 @@ process.on("SIGTERM", () => {
   })();
 });
 
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  const { frames, errors } = decoder.push(td.decode(value, { stream: true }));
-  for (const msg of errors) err(`frame decode: ${msg}`);
-  for (const f of frames) {
-    const req = f as any;
+// Requests run CONCURRENTLY: responses correlate by requestId, and awaiting
+// each handler serially meant a stalled MCP reconnect queued session.abort
+// and approval answers behind it — Stop did nothing exactly when needed.
+function dispatch(req: any): void {
+  void (async () => {
     try {
       const result = await handle(req);
       out({ protocolVersion: PROTOCOL_VERSION, requestId: req.requestId, ok: true, result });
@@ -1325,8 +1528,20 @@ while (true) {
           : classified,
       });
     }
-  }
+  })();
 }
 
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  const { frames, errors } = decoder.push(td.decode(value, { stream: true }));
+  for (const msg of errors) err(`frame decode: ${msg}`);
+  for (const f of frames) dispatch(f);
+}
+
+// stdin EOF: the supervisor went away. The same escape hatch as the SIGTERM
+// path — dispose can hang on a wedged MCP server, and an orphaned worker at
+// ~350MB holding the session file open is worse than a bounded exit.
+setTimeout(() => process.exit(0), 3_000).unref?.();
 await session.dispose().catch(() => {});
 process.exit(0);

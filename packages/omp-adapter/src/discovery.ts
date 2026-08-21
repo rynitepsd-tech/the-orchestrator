@@ -487,31 +487,6 @@ export async function discoverAdvisors(cwd: string, agentDir: string): Promise<A
   }
 }
 
-/**
- * Load the raw WATCHDOG config for a project, for "Save as project default".
- *
- * Returns null when upstream cannot provide it, so the UI can disable the
- * action rather than silently writing a file it does not understand.
- */
-export async function loadWatchdogConfig(cwd: string): Promise<unknown | null> {
-  try {
-    const m = await import("@oh-my-pi/pi-coding-agent/advisor/index");
-    const load = (m as any).loadWatchdogConfigFile;
-    const resolvePath = (m as any).resolveAdvisorConfigEditPath;
-    if (typeof load !== "function") return null;
-    // Upstream wants the FILE path (WATCHDOG.yml), not the project dir —
-    // passing the dir always yielded the empty doc, and saving an empty doc
-    // deletes the file.
-    const filePath =
-      typeof resolvePath === "function"
-        ? await resolvePath("project", { projectDir: cwd, agentDir: ompAgentDir() })
-        : `${cwd}/WATCHDOG.yml`;
-    return await load(filePath);
-  } catch {
-    return null;
-  }
-}
-
 /** Convert an upstream `AdvisorConfig` into the product shape. */
 export function normalizeAdvisor(
   a: any,

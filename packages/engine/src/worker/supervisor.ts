@@ -10,7 +10,7 @@
  * worker and forwards worker events upward verbatim.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { projectIdFor } from "@orchestrator/omp-adapter";
@@ -47,6 +47,8 @@ class Worker {
   readonly stderrTail: string[] = [];
   #ready = false;
   #exited = false;
+  /** Set when the worker announced session.hibernated — its exit is deliberate. */
+  hibernated = false;
   pid: number | undefined;
 
   constructor(
@@ -216,8 +218,28 @@ function workerCommand(): string[] {
   return [process.execPath, join(here, "main.ts")];
 }
 
+/**
+ * Canonical form of a session-file path for identity checks. APFS is
+ * case-insensitive: …/Sessions/a.jsonl and …/sessions/a.jsonl are the same
+ * file and different strings, so a raw compare is not a single-writer guard.
+ */
+function canonicalSessionPath(p: string): string {
+  try {
+    return realpathSync(p).toLowerCase();
+  } catch {
+    return p.toLowerCase();
+  }
+}
+
 export class WorkerSupervisor {
   readonly #workers = new Map<string, Worker>();
+  /**
+   * Workers whose close was requested but whose process has not yet exited.
+   * They still hold the session file open — the single-writer guard and
+   * openSessionPaths must keep seeing them, or close-then-immediately-reopen
+   * puts two writers on one .jsonl.
+   */
+  readonly #closing = new Map<string, Worker>();
   /** Summaries of sessions whose worker exited, kept for diagnostics/restart. */
   readonly #closed = new Map<string, SessionSummary>();
   readonly #emit: (e: ProductEvent) => void;
@@ -246,13 +268,22 @@ export class WorkerSupervisor {
     }
 
     // Single-writer guarantee: OMP session .jsonl files have NO file lock, and
-    // two writers silently lose data. Refuse to open one twice.
+    // two writers silently lose data. Refuse to open one twice — including
+    // while a just-closed worker is still draining (it holds the file until
+    // its process actually exits).
     if (config.resumeSessionPath) {
-      for (const w of this.#workers.values()) {
-        if (w.summary.ompSessionPath === config.resumeSessionPath) {
-          throw Object.assign(new Error("That session is already open in The Orchestrator."), {
-            kind: "session-corruption",
-          });
+      const wanted = canonicalSessionPath(config.resumeSessionPath);
+      for (const w of [...this.#workers.values(), ...this.#closing.values()]) {
+        const held = w.summary.ompSessionPath;
+        if (held && canonicalSessionPath(held) === wanted) {
+          throw Object.assign(
+            new Error(
+              this.#closing.has(w.sessionId)
+                ? "That session is still closing — try again in a moment."
+                : "That session is already open in The Orchestrator.",
+            ),
+            { kind: "session-corruption" },
+          );
         }
       }
     }
@@ -287,8 +318,8 @@ export class WorkerSupervisor {
       resumeSessionPath: config.resumeSessionPath,
       approvalMode: config.approvalMode,
       fastMode: config.fastMode,
-      // MCP and LSP are per-process now; keep them off in tests and opt-in
-      // elsewhere so N sessions do not spawn N language servers unasked.
+      // MCP and LSP are per-process and always on in normal operation; test
+      // mode keeps them off so unit tests don't spawn language servers.
       enableMCP: !this.#testMode,
       enableLsp: !this.#testMode,
       // Tests auto-approve by default so the mock provider can run tools
@@ -329,6 +360,12 @@ export class WorkerSupervisor {
         // extensions) must reach the summary too, or sessions.list would
         // keep resurrecting the stale launch title.
         if (e.type === "session.title") summary.title = e.title;
+        // A self-parked worker is about to exit ON PURPOSE; its exit must not
+        // be reported as a crash.
+        if (e.type === "session.hibernated") {
+          worker.hibernated = true;
+          summary.runState = "hibernated";
+        }
         this.#emit(e);
       },
       (code) => this.#onWorkerExit(sessionId, code),
@@ -379,14 +416,31 @@ export class WorkerSupervisor {
     });
   }
 
+  /** Remember a closed session's summary, bounded so a long run can't leak. */
+  #noteClosed(sessionId: string, summary: SessionSummary): void {
+    this.#closed.set(sessionId, summary);
+    if (this.#closed.size > 200) {
+      const oldest = this.#closed.keys().next().value;
+      if (oldest !== undefined) this.#closed.delete(oldest);
+    }
+  }
+
   #onWorkerExit(sessionId: string, code: number | null): void {
     const w = this.#workers.get(sessionId);
     if (!w) return;
     // Remove the dead worker so it cannot swallow future routing, but keep the
     // summary for diagnostics and so the UI can offer resume.
     this.#workers.delete(sessionId);
+    if (w.hibernated) {
+      // Deliberate self-park, already announced as session.hibernated — a
+      // clean close, not a failure.
+      w.summary.runState = "hibernated";
+      this.#noteClosed(sessionId, w.summary);
+      logger.info("supervisor", `session worker hibernated`, { sessionId });
+      return;
+    }
     w.summary.runState = "interrupted";
-    this.#closed.set(sessionId, w.summary);
+    this.#noteClosed(sessionId, w.summary);
     logger.warn("supervisor", `session worker exited`, { sessionId, code });
     // Never report an in-flight run as still running once its process died.
     this.#emit({
@@ -424,11 +478,6 @@ export class WorkerSupervisor {
 
   list(): SessionSummary[] {
     return [...this.#workers.values()].map((w) => w.summary);
-  }
-
-  /** Sessions whose worker exited (crash or close) since engine start. */
-  closedSummaries(): SessionSummary[] {
-    return [...this.#closed.values()];
   }
 
   /** Live worker process stats for diagnostics. Cheap ping per worker. */
@@ -471,8 +520,13 @@ export class WorkerSupervisor {
   }
 
   openSessionPaths(): Set<string> {
+    // Closing workers still hold their file open; listing them as open keeps
+    // the sidebar from offering a resume that the single-writer guard (and
+    // the file itself) cannot yet honour.
     return new Set(
-      [...this.#workers.values()].map((w) => w.summary.ompSessionPath).filter(Boolean) as string[],
+      [...this.#workers.values(), ...this.#closing.values()]
+        .map((w) => w.summary.ompSessionPath)
+        .filter(Boolean) as string[],
     );
   }
 
@@ -488,12 +542,24 @@ export class WorkerSupervisor {
     return this.get(sessionId).request<T>(type, payload);
   }
 
-  async close(sessionId: string, dispose: boolean): Promise<void> {
+  /**
+   * `_dispose` is accepted for wire compatibility but a close ALWAYS disposes:
+   * a non-disposing close would leave a live writer on the session file with
+   * no owner in the registry — exactly the two-writer hazard this guards.
+   */
+  async close(sessionId: string, _dispose: boolean): Promise<void> {
     const w = this.#workers.get(sessionId);
     if (!w) return;
     this.#workers.delete(sessionId);
-    this.#closed.set(sessionId, w.summary);
-    if (dispose) await w.shutdown();
+    // Registered as closing BEFORE shutdown starts: until the process exits it
+    // is still a live writer on its session file, and the guards must see it.
+    this.#closing.set(sessionId, w);
+    this.#noteClosed(sessionId, w.summary);
+    try {
+      await w.shutdown();
+    } finally {
+      this.#closing.delete(sessionId);
+    }
   }
 
   /** Parallel shutdown; no worker may be orphaned past the kill deadline. */

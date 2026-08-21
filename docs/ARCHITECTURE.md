@@ -70,7 +70,7 @@ way, and the concurrency tests assert against the supervisor's public API rather
 
 ### Costs accepted
 
-- ~320 MB RSS per live worker, packaged (~350 MB in dev). See
+- Roughly 300–470 MB RSS per live worker, depending on load. See
   [PERFORMANCE.md](./PERFORMANCE.md) for the full measured breakdown, including how RSS scales
   across concurrent workers.
 - MCP servers and LSP pools are per-session rather than shared: each worker starts its own, so N
