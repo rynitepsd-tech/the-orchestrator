@@ -287,6 +287,13 @@ export interface SessionFinished extends EventBase {
   runState: Extract<RunState, "completed" | "interrupted" | "error">;
   /** Wall-clock length of the turn, when the runtime measured it. */
   durationMs?: number;
+  /**
+   * This turn was an advisor-triggered continuation of the turn before it —
+   * the model revised its answer after a post-turn review note. No user
+   * prompt started it. The UI treats the previous turn's end as superseded:
+   * one user turn, one "finished" marker, placed after the revised answer.
+   */
+  continuation?: boolean;
 }
 
 /**

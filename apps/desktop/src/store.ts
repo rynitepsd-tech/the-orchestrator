@@ -1236,9 +1236,37 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
       // is the same event applied twice, not a new turn.
       const tail = v.transcript[v.transcript.length - 1];
       const isDup = marker && tail?.kind === "turn-end";
+      let transcript = v.transcript;
+      if (marker && !isDup) {
+        // An advisor-triggered revision is the SAME user turn finishing
+        // again, not a new one. Its first "finished" marker already landed
+        // before the review note and the revised answer; leaving it there
+        // splits the turn in two and renders both answers in full. Move the
+        // marker to the tail (summing wall time) so the transcript sees one
+        // turn — pre-review answer, review note, revision — and folds the
+        // superseded draft. Guarded structurally: a user message after the
+        // old marker means a genuinely new turn, whatever the flag says.
+        const prevIdx = lastIndex(transcript, (i) => i.kind === "turn-end");
+        const prev =
+          prevIdx >= 0
+            ? (transcript[prevIdx] as Extract<TranscriptItem, { kind: "turn-end" }>)
+            : null;
+        const sameTurn =
+          prev !== null &&
+          (e.continuation || transcript.slice(prevIdx + 1).some((i) => i.kind === "advisor")) &&
+          !transcript.slice(prevIdx + 1).some((i) => i.kind === "user");
+        if (sameTurn && prev) {
+          transcript = transcript.filter((_, i) => i !== prevIdx);
+          marker.durationMs =
+            prev.durationMs !== undefined || marker.durationMs !== undefined
+              ? (prev.durationMs ?? 0) + (marker.durationMs ?? 0)
+              : undefined;
+        }
+        transcript = [...transcript, marker];
+      }
       return {
         ...v,
-        transcript: marker && !isDup ? [...v.transcript, marker] : v.transcript,
+        transcript,
         summary: {
           ...v.summary,
           runState: e.runState,

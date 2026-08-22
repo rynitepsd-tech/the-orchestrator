@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.1
+
+- **One answer per turn, even after an advisor review.** When an advisor's
+  post-turn note made the model revise, the transcript showed both the
+  original and the revised answer in full, with "Turn finished" stuck between
+  them. Cause: advisors review after `turn_end`, so the turn had already been
+  closed before the revision ran as a new turn. The engine now announces the
+  continuation's end (`session.finished` with `continuation: true`) and the
+  UI moves the turn-end marker after the revision, so the first answer folds
+  into the existing collapsed "Draft — superseded after advisor review" row.
+  The system prompt also stops the revision from opening as a reply to the
+  reviewer ("you're right…").
+
 ## 0.6.0
 
 The self-audit release: a multi-agent audit of the whole codebase (2026-08-20)

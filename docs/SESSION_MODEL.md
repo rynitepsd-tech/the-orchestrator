@@ -218,6 +218,18 @@ that sees the upstream event does not know the user's intent.
 `session.finished` is emitted exactly once per turn, carrying the state that actually
 occurred. The store's reducer trusts it and also sets `unread: !visible` from it.
 
+**Advisor-triggered continuation turns are the one exception to "the prompt handler is the
+sole emitter".** Advisors review *after* `turn_end`, so by the time a blocker lands the owning
+prompt has already resolved and emitted `session.finished`. OMP then starts a fresh agent run
+with no prompt from the host — the revision. The worker spots it (an `agent_start` with no
+current turn), and on its terminal `agent_end` emits a second `session.finished` flagged
+`continuation: true`. The store does not treat that as a new turn: it *moves* the turn-end
+marker to the tail (summing wall time) so the transcript sees one segment — pre-review
+answer, review note, revision — and folds the pre-review answer into a collapsed "Draft"
+row. Without this, the two full answers rendered back to back. The relocation is guarded
+structurally: a user message after the old marker (a queued follow-up) always means a
+genuinely new turn, whatever the flag says.
+
 ## 4. Concurrent execution
 
 **Switching the visible session does not stop execution.** This is a design guarantee, not an

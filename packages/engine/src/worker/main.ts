@@ -122,6 +122,15 @@ const beginTurn = (): string => {
   currentTurnId = `t${++turnCounter}`;
   return currentTurnId;
 };
+/**
+ * An advisor-triggered continuation turn: OMP starts a fresh agent run after
+ * a post-turn review note (blocker/concern) without any prompt from the host.
+ * The prompt handler owns `session.finished` for the turns it starts; a
+ * continuation has no owner, so the subscriber below must emit it instead —
+ * flagged, so the UI folds the revision into the user turn it revises rather
+ * than showing two finished answers back to back.
+ */
+let continuationStartedAt: number | undefined;
 
 const emit = (event: ProductEvent) => {
   const stamped = currentTurnId ? { ...event, turnId: currentTurnId } : event;
@@ -327,8 +336,11 @@ const created = await OMP.createAgentSession({
   appendSystemPrompt:
     "Advisor agents may interject review notes (as <advisory> messages) while you work. " +
     "Weigh them on their merits — but your final message each turn must be a complete, " +
-    "standalone answer addressed to the user. Never address the advisor, and never let " +
-    "a revision read as a reply to the review; restate the full outcome for the user.\n" +
+    "standalone answer addressed to the user. The user did not write the advisory and " +
+    'does not see it: never address the advisor, never open with "you\'re right" or ' +
+    '"the advisor\'s concern is legitimate", and never let a revision read as a reply to ' +
+    "the review. Restate the full, corrected outcome for the user as if it were your " +
+    "first and only answer.\n" +
     "The UI renders GitHub-flavored markdown only — no LaTeX or math delimiters. Write " +
     "status labels and emphasis as plain markdown (e.g. **P0 — ship-blocking**), never " +
     "\\textcolor or $…$.\n" +
@@ -867,7 +879,10 @@ function refreshAdvisors(): void {
 session.subscribe((ev: any) => {
   // Advisor-triggered continuation turns never pass through the prompt
   // handler; the raw agent_start is their turn boundary.
-  if (ev?.type === "agent_start" && !currentTurnId) beginTurn();
+  if (ev?.type === "agent_start" && !currentTurnId) {
+    beginTurn();
+    continuationStartedAt = Date.now();
+  }
   for (const o of mapper.map(ev)) {
     if (o.type === "assistant.text") {
       textBuf.set(o.messageId, (textBuf.get(o.messageId) ?? "") + o.delta);
@@ -901,6 +916,24 @@ session.subscribe((ev: any) => {
     // "reviewing"), and it equally covers advisor-triggered continuation turns
     // that never pass through the prompt handler.
     if (ev.isTerminal !== false) beginAdvisorReviewWatch();
+    // A continuation turn has no prompt handler to close it. Announce its end
+    // here — exactly once, with the state that actually occurred — so the
+    // host learns the revised answer is the real finish of the user's turn.
+    if (ev.isTerminal !== false && continuationStartedAt !== undefined) {
+      const startedAt = continuationStartedAt;
+      continuationStartedAt = undefined;
+      const outcome =
+        runState === "interrupted" || runState === "stopping" ? "interrupted" : "completed";
+      setRunState(outcome);
+      emit({
+        type: "session.finished",
+        sessionId: boot.sessionId,
+        runState: outcome,
+        durationMs: Date.now() - startedAt,
+        continuation: true,
+      });
+      currentTurnId = undefined;
+    }
   }
 });
 
@@ -1213,6 +1246,7 @@ async function handle(req: any): Promise<unknown> {
       const owning = !busy;
       if (owning) {
         beginTurn();
+        continuationStartedAt = undefined; // this turn has an owner
         setRunState("queued");
       }
       const turnStartedAt = Date.now();
