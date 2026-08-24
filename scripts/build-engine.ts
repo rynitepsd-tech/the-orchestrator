@@ -20,7 +20,7 @@
  * Usage:
  *   bun run scripts/build-engine.ts [--target=arm64|x64|both]
  */
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -28,7 +28,7 @@ const OUT = join(ROOT, "resources", "engine");
 const ENTRY = join(ROOT, "packages", "engine", "src", "main.ts");
 
 /** OMP version this build is pinned to. Must match package.json exactly. */
-const OMP_VERSION = "17.3.4";
+const OMP_VERSION = "17.3.8";
 
 interface Target {
   key: "arm64" | "x64";
@@ -67,14 +67,26 @@ if (wanted.length === 0) {
 
 /** Locate a file inside an installed package, tolerating bun's store layout. */
 function findInPackage(pkg: string, file: string): string | null {
+  // The top-level link can point at any hoisted version; trust it only when
+  // its version matches the pin — stale store entries from previous OMP pins
+  // survive `bun install`, and a mismatched native addon ABI panics at load.
   const direct = join(ROOT, "node_modules", pkg, file);
-  if (existsSync(direct)) return direct;
+  if (existsSync(direct)) {
+    try {
+      const manifest = JSON.parse(
+        readFileSync(join(ROOT, "node_modules", pkg, "package.json"), "utf8"),
+      );
+      if (manifest.version === OMP_VERSION) return direct;
+    } catch {
+      /* fall through to the version-scoped store scan */
+    }
+  }
 
-  // bun's isolated store: node_modules/.bun/<pkg>@<ver>/node_modules/<pkg>/<file>
+  // bun's isolated store: node_modules/.bun/<pkg>@<ver>[+hash]/node_modules/<pkg>/<file>
   const storeDir = join(ROOT, "node_modules", ".bun");
   if (!existsSync(storeDir)) return null;
   const flat = pkg.replace("/", "+");
-  const glob = new Bun.Glob(`${flat}@*/node_modules/${pkg}/${file}`);
+  const glob = new Bun.Glob(`${flat}@${OMP_VERSION}*/node_modules/${pkg}/${file}`);
   for (const hit of glob.scanSync({ cwd: storeDir, onlyFiles: true })) {
     return join(storeDir, hit);
   }

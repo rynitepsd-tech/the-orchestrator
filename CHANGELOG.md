@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.2
+
+- **No more "prevented from modifying apps" notifications.** OMP's browser
+  daemon launched headless Chrome from the system `Google Chrome.app`;
+  Chrome's startup housekeeping touches its own bundle, and macOS App
+  Management attributed that to The Orchestrator and posted the notification
+  on every prompt that started the daemon. OMP 17.3.5+ prefers an isolated
+  Chrome for Testing binary (cached under `~/.omp/puppeteer`) on macOS, so
+  the system Chrome bundle is never touched. Dependency bumped
+  17.3.4 → 17.3.8 (patch-line fixes only).
+- **Engine build pairs the native addon with the pinned OMP.** The build
+  script located `pi-natives` with a version-unscoped glob over bun's store,
+  so leftover store entries from a previous OMP pin could ship a mismatched
+  addon beside the engine. Resolution is now scoped to `OMP_VERSION`, and the
+  top-level link is trusted only when its manifest version matches the pin.
+
 ## 0.6.1
 
 - **One answer per turn, even after an advisor review.** When an advisor's
