@@ -80,8 +80,29 @@ export function Transcript({
   const canRewind = runState !== undefined && !isActive(runState);
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  /**
+   * Scroll anchor for unpinned readers: the first visible row and its offset
+   * from the viewport top, recorded on every user scroll. WKWebView has no
+   * native scroll anchoring (`overflow-anchor` is unsupported in Safari), so
+   * any layout change above the viewport — the render window sliding, a
+   * finished turn condensing into its "Worked for…" row — silently shifts
+   * whatever the reader was looking at. The layout effect below restores the
+   * anchor row to its recorded offset before paint.
+   */
+  const anchor = useRef<{ id: string; top: number } | null>(null);
   const [shown, setShown] = useState(WINDOW);
   const [atBottom, setAtBottom] = useState(true);
+
+  // Window discipline (render-phase derivation): a pinned reader rides the
+  // sliding window, but for an unpinned reader the window start freezes —
+  // otherwise every appended item unmounts a row ABOVE the viewport, and
+  // without native anchoring the page visibly lurches on every new line.
+  const prevTotal = useRef(items.length);
+  if (items.length !== prevTotal.current) {
+    const grew = items.length - prevTotal.current;
+    prevTotal.current = items.length;
+    if (grew > 0 && !pinned.current && items.length > shown) setShown(shown + grew);
+  }
 
   const hidden = Math.max(0, items.length - shown);
   const visible = useMemo(() => (hidden > 0 ? items.slice(hidden) : items), [items, hidden]);
@@ -91,12 +112,39 @@ export function Transcript({
   // memoized it only re-derives when the transcript actually changed.
   const nodes = useMemo(() => toNodes(visible, active), [visible, active]);
 
-  // Depends on the transcript: reading scrollHeight after every unrelated
-  // render forced a synchronous layout per frame across all sessions.
+  // Depends on the render input (nodes, not items): regrouping can change
+  // layout without an item append — e.g. the live segment condensing when
+  // runState settles — and the scroll correction must run for those too.
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [items]);
+    if (!el) return;
+    if (pinned.current) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    const a = anchor.current;
+    if (!a) return;
+    const row = el.querySelector<HTMLElement>(`[data-tid="${CSS.escape(a.id)}"]`);
+    if (!row) return;
+    // .titem is display:contents — the wrapper has no box; measure its child.
+    const box = (row.firstElementChild ?? row).getBoundingClientRect();
+    const delta = box.top - el.getBoundingClientRect().top - a.top;
+    if (delta !== 0) el.scrollTop += delta;
+  }, [nodes]);
+
+  const captureAnchor = () => {
+    const el = ref.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    for (const row of el.querySelectorAll<HTMLElement>("[data-tid]")) {
+      const box = (row.firstElementChild ?? row).getBoundingClientRect();
+      if (box.bottom > top) {
+        anchor.current = { id: row.dataset.tid as string, top: box.top - top };
+        return;
+      }
+    }
+    anchor.current = null;
+  };
 
   const onScroll = () => {
     const el = ref.current;
@@ -104,6 +152,14 @@ export function Transcript({
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     pinned.current = near;
     setAtBottom(near);
+    if (near) {
+      anchor.current = null;
+      // Re-pinned: resume the normal sliding window and drop any extra rows
+      // the frozen window accumulated (the pin effect keeps us at bottom).
+      if (shown !== WINDOW) setShown(WINDOW);
+    } else {
+      captureAnchor();
+    }
   };
 
   // ---- find in transcript (⌘F) -------------------------------------------
@@ -231,13 +287,10 @@ export function Transcript({
               <button
                 className="btn btn-ghost"
                 onClick={() => {
-                  const el = ref.current;
-                  const before = el?.scrollHeight ?? 0;
+                  // The layout effect's anchor restore keeps the viewport on
+                  // the first previously-visible row after the rows mount.
+                  captureAnchor();
                   setShown((n) => n + WINDOW);
-                  // Keep the viewport anchored on the first previously-visible item.
-                  requestAnimationFrame(() => {
-                    if (el) el.scrollTop += el.scrollHeight - before;
-                  });
                 }}
               >
                 Show {fmtCount(Math.min(WINDOW, hidden))} earlier ({fmtCount(hidden)} hidden)
@@ -265,16 +318,21 @@ export function Transcript({
                 <DraftRow item={n.item} projectPath={projectPath} />
               </div>
             ) : n.kind === "files" ? (
-              <FilesRow key={n.key} files={n.files} projectPath={projectPath} />
+              // Groups get data-tid wrappers too so the scroll anchor can
+              // latch onto them; keys are stable across window slides.
+              <div key={n.key} className="titem" data-tid={n.key}>
+                <FilesRow files={n.files} projectPath={projectPath} />
+              </div>
             ) : (
-              <WorkGroup
-                key={n.key}
-                items={n.items}
-                sessionId={sessionId}
-                live={n.live}
-                durationMs={n.durationMs}
-                projectPath={projectPath}
-              />
+              <div key={n.key} className="titem" data-tid={n.key}>
+                <WorkGroup
+                  items={n.items}
+                  sessionId={sessionId}
+                  live={n.live}
+                  durationMs={n.durationMs}
+                  projectPath={projectPath}
+                />
+              </div>
             ),
           )}
         </div>

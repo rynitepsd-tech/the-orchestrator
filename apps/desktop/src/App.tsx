@@ -877,7 +877,15 @@ export function App(): JSX.Element {
                   </div>
                 )}
 
-                <Transcript items={view.transcript} sessionId={view.summary.sessionId} />
+                {/* Keyed by session: scroll pin, render window, and find state
+                    are per-conversation. Without the key one shared instance
+                    carried another session's scroll offset (and unpinned
+                    state) across a switch, landing mid-history. */}
+                <Transcript
+                  key={view.summary.sessionId}
+                  items={view.transcript}
+                  sessionId={view.summary.sessionId}
+                />
 
                 {view.pendingInteractions > 0 && <PendingBar view={view} />}
 

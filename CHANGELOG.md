@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.3
+
+- **The transcript no longer loses your place while the agent streams.**
+  Reading an earlier part of the conversation mid-run drifted on every new
+  line the agent emitted: the 300-item render window slid a row off the top
+  per append, and WKWebView has no native scroll anchoring to compensate, so
+  the viewport walked away from what you were reading — turn condensation
+  ("Worked for…" collapse) made it jump further. The transcript now anchors
+  the first visible row across every re-render, and freezes the render
+  window while you're scrolled up so nothing unmounts above the viewport
+  mid-read. Pinned-at-bottom streaming behavior is unchanged.
+- **Per-session scroll state.** The transcript is keyed by session, so
+  switching conversations no longer inherits the previous session's scroll
+  offset (which could land mid-history); each session opens at its latest
+  message and remembers its own pin state.
+
 ## 0.6.2
 
 - **No more "prevented from modifying apps" notifications.** OMP's browser
