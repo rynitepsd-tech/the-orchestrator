@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.5
+
+- **Advisor revision cascades no longer stack duplicate answers.** OMP
+  delivers mid-turn ("steered") blocker advisories straight into agent state
+  with no message event — since 17.3.5 that is the normal path for revision
+  cascades — so advisor notes vanished from the transcript and the fold that
+  collapses superseded drafts had nothing to key on: every revision rendered
+  as a full answer. The worker now sweeps agent state each event and surfaces
+  unseen advisor cards itself (deduped against the event path, safe across
+  compaction and resume), landing each note ahead of the revision it
+  triggered. The advisor's critiques are visible again, and earlier drafts
+  fold back into "Draft — superseded" rows.
+
 ## 0.6.4
 
 - **Fixed a crash when dragging files over the window.** The windowing

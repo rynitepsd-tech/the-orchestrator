@@ -152,6 +152,35 @@ describe("advisor note mapping", () => {
     expect(b.severity).toBe("nit");
   });
 
+  test("mapAdvisorCard surfaces a steered card that never arrived as an event", () => {
+    // Real shape from a live session: OMP steers blocker advisories straight
+    // into agent state with no message_start/message_end, so the worker
+    // sweeps state and feeds the raw card through mapAdvisorCard.
+    const mapper = new EventMapper({ sessionId: "S1" });
+    const out = mapper.mapAdvisorCard({
+      role: "custom",
+      customType: "advisor",
+      content:
+        '<advisory advisor="Reviewer" severity="blocker" guidance="weigh, don\'t blindly obey">\nStop tracing the retired walkthrough handoff.\n</advisory>',
+      details: {
+        notes: [
+          {
+            note: "Stop tracing the retired walkthrough handoff.",
+            severity: "blocker",
+            advisor: "Reviewer",
+          },
+        ],
+      },
+      timestamp: Date.now(),
+    } as never);
+    expect(out.length).toBe(1);
+    const [n] = out as any[];
+    expect(n.type).toBe("advisor.message");
+    expect(n.advisorName).toBe("Reviewer");
+    expect(n.severity).toBe("blocker");
+    expect(n.text).toBe("Stop tracing the retired walkthrough handoff.");
+  });
+
   test("unknown severity degrades to 'unknown', not dropped", () => {
     const out = mapAll([
       {

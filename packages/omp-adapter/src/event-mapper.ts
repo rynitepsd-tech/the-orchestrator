@@ -357,6 +357,18 @@ export class EventMapper {
 
   readonly #unmappedLogged = new Set<string>();
 
+  /**
+   * Map one advisor card (a `role: "custom", customType: "advisor"` message)
+   * to advisor.message events. Public because not every card arrives as an
+   * event: OMP delivers mid-turn (steered) advisories straight into agent
+   * state with NO message_start/message_end — since 17.3.5 that is the normal
+   * path for blocker-driven revision cascades — so the worker sweeps agent
+   * state and feeds unseen cards through here itself.
+   */
+  mapAdvisorCard(msg: OmpEvent): ProductEvent[] {
+    return this.#mapAdvisorNotes(msg);
+  }
+
   #mapAdvisorNotes(msg: OmpEvent): ProductEvent[] {
     const sessionId = this.#ctx.sessionId;
     const notes: any[] = Array.isArray(msg?.details?.notes) ? msg.details.notes : [];

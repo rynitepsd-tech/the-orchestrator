@@ -876,6 +876,44 @@ function refreshAdvisors(): void {
   }
 }
 
+// --- advisor cards delivered without events ----------------------------------
+// OMP surfaces advisor advisories two ways. Idle ("preserved") cards arrive as
+// message_start/message_end events the mapper handles. Mid-turn ("steered")
+// cards — the normal path for blocker-driven revision cascades since OMP
+// 17.3.5 — are appended straight into agent state with NO event at all. If
+// they never reach the transcript, the fold that collapses superseded drafts
+// has no advisor note to key on, and every revision renders as a full
+// duplicate answer. Sweep agent state before mapping each event and surface
+// unseen cards ourselves; a content key dedupes against the event path (and
+// against compaction rewrites, which can replay old cards at new indices).
+const surfacedAdvisorCards = new Set<string>();
+let advisorCardsSeen = ((session as any)?.agent?.state?.messages ?? []).length;
+function advisorCardKey(m: any): string {
+  const c = typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "");
+  return `${m?.timestamp ?? ""}:${c.length}:${c.slice(0, 120)}`;
+}
+function isAdvisorCardMessage(m: any): boolean {
+  return m?.role === "custom" && m?.customType === "advisor";
+}
+function sweepAdvisorCards(): void {
+  const msgs: any[] = (session as any)?.agent?.state?.messages;
+  if (!Array.isArray(msgs)) return;
+  if (advisorCardsSeen > msgs.length) advisorCardsSeen = msgs.length; // compaction shrank history
+  if (msgs.length === advisorCardsSeen) return;
+  const fresh = msgs.slice(advisorCardsSeen);
+  advisorCardsSeen = msgs.length;
+  for (const m of fresh) {
+    if (!isAdvisorCardMessage(m)) continue;
+    const key = advisorCardKey(m);
+    if (surfacedAdvisorCards.has(key)) continue;
+    surfacedAdvisorCards.add(key);
+    for (const o of mapper.mapAdvisorCard(m)) {
+      flush();
+      emit(o);
+    }
+  }
+}
+
 // --- dev-server preview ------------------------------------------------------
 // Tool output announcing a local server (Vite's "Local: http://localhost:5173/",
 // Next's "ready on http://localhost:3000", …) surfaces a preview pane in the
@@ -900,6 +938,19 @@ session.subscribe((ev: any) => {
   if (ev?.type === "agent_start" && !currentTurnId) {
     beginTurn();
     continuationStartedAt = Date.now();
+  }
+  // Surface silently-steered advisor cards before this event's own items, so
+  // a note lands ahead of the revision it triggered (see sweepAdvisorCards).
+  sweepAdvisorCards();
+  // The event path and the sweep must not both render the same card.
+  if (
+    (ev?.type === "message_end" || ev?.type === "message_start") &&
+    isAdvisorCardMessage(ev.message)
+  ) {
+    const key = advisorCardKey(ev.message);
+    if (ev.type === "message_start") return; // end carries the render
+    if (surfacedAdvisorCards.has(key)) return;
+    surfacedAdvisorCards.add(key);
   }
   for (const o of mapper.map(ev)) {
     if (o.type === "assistant.text") {
