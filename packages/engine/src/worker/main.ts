@@ -876,6 +876,24 @@ function refreshAdvisors(): void {
   }
 }
 
+// --- dev-server preview ------------------------------------------------------
+// Tool output announcing a local server (Vite's "Local: http://localhost:5173/",
+// Next's "ready on http://localhost:3000", …) surfaces a preview pane in the
+// UI. Normalized to a bare origin — path noise from curls to deep routes must
+// not churn the pane — and re-emitted only on change. Requires an explicit
+// port: "localhost" in prose without one is chatter, not a server.
+const PREVIEW_URL_RE = /(https?):\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{2,5})/i;
+let lastPreviewUrl: string | undefined;
+function scanForPreviewUrl(text: string | undefined): void {
+  if (!text || !text.includes("://")) return;
+  const m = PREVIEW_URL_RE.exec(text);
+  if (!m) return;
+  const url = `${m[1].toLowerCase()}://localhost:${m[2]}/`;
+  if (url === lastPreviewUrl) return;
+  lastPreviewUrl = url;
+  emit({ type: "session.preview", sessionId: boot.sessionId, url });
+}
+
 session.subscribe((ev: any) => {
   // Advisor-triggered continuation turns never pass through the prompt
   // handler; the raw agent_start is their turn boundary.
@@ -894,6 +912,8 @@ session.subscribe((ev: any) => {
       scheduleFlush();
       continue;
     }
+    if (o.type === "tool.update") scanForPreviewUrl(o.outputDelta);
+    else if (o.type === "tool.end") scanForPreviewUrl(o.output);
     flush();
     emit(o);
   }

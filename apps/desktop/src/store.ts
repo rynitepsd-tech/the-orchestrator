@@ -157,6 +157,8 @@ export interface SessionView {
   error?: EngineErrorPayload;
   /** Set when the worker died; the session can be resumed from persistence. */
   interrupted?: boolean;
+  /** Local dev-server origin seen in tool output; offers the preview pane. */
+  previewUrl?: string;
 }
 
 /**
@@ -1195,6 +1197,9 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
         interrupted: e.error.kind === "engine" ? true : v.interrupted,
         transcript: [...t, { kind: "system", id: nextId(), text: e.error.message, tone: "error" }],
       };
+
+    case "session.preview":
+      return v.previewUrl === e.url ? v : { ...v, previewUrl: e.url };
 
     case "session.notice": {
       // Runtime notices carry the REAL cause behind terse state flips (which

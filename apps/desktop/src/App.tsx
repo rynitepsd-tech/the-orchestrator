@@ -26,6 +26,7 @@ import { FolderIcon, PanelLeftIcon, PanelRightIcon } from "./components/icons";
 import { NewSession } from "./components/NewSession";
 import { Onboarding } from "./components/Onboarding";
 import { PendingBar } from "./components/PendingBar";
+import { PreviewPanel } from "./components/PreviewPanel";
 import { PromptDialog } from "./components/PromptDialog";
 import { QuitDialog } from "./components/QuitDialog";
 import { Settings } from "./components/Settings";
@@ -41,6 +42,8 @@ import { fmtTokens, isActive, modelBasename, runStateLabel, useStore } from "./s
 export function App(): JSX.Element {
   const s = useStore();
   const [creating, setCreating] = useState(false);
+  /** Per-session preview-pane visibility; the detected URL lives in the view. */
+  const [previewOpen, setPreviewOpen] = useState<Record<string, boolean>>({});
   const notifyOk = useRef(false);
 
   const view = s.visibleSessionId ? s.sessions[s.visibleSessionId] : undefined;
@@ -851,56 +854,79 @@ export function App(): JSX.Element {
             )}
 
             {view ? (
-              <>
-                {view.interrupted && view.summary.ompSessionPath && (
-                  <div className="banner" style={{ margin: "10px 12px 0" }}>
-                    This session was interrupted.
-                    <button
-                      className="btn"
-                      style={{ marginLeft: 8 }}
-                      onClick={() => {
-                        const d: DiscoveredSession = {
-                          ompSessionId: view.summary.ompSessionId ?? "",
-                          path: view.summary.ompSessionPath!,
-                          cwd: view.summary.projectPath,
-                          title: view.summary.title,
-                          messageCount: view.summary.messageCount,
-                          sizeBytes: 0,
-                          openInThisApp: false,
-                        };
-                        useStore.getState().removeSession(view.summary.sessionId);
-                        void resumeSession(d);
-                      }}
-                    >
-                      Resume Session
-                    </button>
-                  </div>
-                )}
+              <div className="session-split">
+                <div className="session-col">
+                  {view.interrupted && view.summary.ompSessionPath && (
+                    <div className="banner" style={{ margin: "10px 12px 0" }}>
+                      This session was interrupted.
+                      <button
+                        className="btn"
+                        style={{ marginLeft: 8 }}
+                        onClick={() => {
+                          const d: DiscoveredSession = {
+                            ompSessionId: view.summary.ompSessionId ?? "",
+                            path: view.summary.ompSessionPath!,
+                            cwd: view.summary.projectPath,
+                            title: view.summary.title,
+                            messageCount: view.summary.messageCount,
+                            sizeBytes: 0,
+                            openInThisApp: false,
+                          };
+                          useStore.getState().removeSession(view.summary.sessionId);
+                          void resumeSession(d);
+                        }}
+                      >
+                        Resume Session
+                      </button>
+                    </div>
+                  )}
 
-                {/* Keyed by session: scroll pin, render window, and find state
+                  {/* Keyed by session: scroll pin, render window, and find state
                     are per-conversation. Without the key one shared instance
                     carried another session's scroll offset (and unpinned
                     state) across a switch, landing mid-history. */}
-                <Transcript
-                  key={view.summary.sessionId}
-                  items={view.transcript}
-                  sessionId={view.summary.sessionId}
-                />
-
-                {view.pendingInteractions > 0 && <PendingBar view={view} />}
-
-                {/* The plan docks on the composer, a tab growing out of its top. */}
-                <div className="composer-zone">
-                  {view.todoPhases && <TodoStrip phases={view.todoPhases} />}
-                  <Composer
+                  <Transcript
+                    key={view.summary.sessionId}
+                    items={view.transcript}
                     sessionId={view.summary.sessionId}
-                    runState={view.summary.runState}
-                    onSend={send}
-                    onAbort={abort}
-                    disabled={s.engineStage === "offline" || Boolean(view.interrupted)}
                   />
+
+                  {view.pendingInteractions > 0 && <PendingBar view={view} />}
+
+                  {/* The plan docks on the composer, a tab growing out of its top. */}
+                  <div className="composer-zone">
+                    {view.todoPhases && <TodoStrip phases={view.todoPhases} />}
+                    <Composer
+                      sessionId={view.summary.sessionId}
+                      runState={view.summary.runState}
+                      onSend={send}
+                      onAbort={abort}
+                      disabled={s.engineStage === "offline" || Boolean(view.interrupted)}
+                    />
+                  </div>
+
+                  {view.previewUrl && !previewOpen[view.summary.sessionId] && (
+                    <button
+                      className="btn preview-chip"
+                      title={view.previewUrl}
+                      onClick={() =>
+                        setPreviewOpen((p) => ({ ...p, [view.summary.sessionId]: true }))
+                      }
+                    >
+                      Preview {new URL(view.previewUrl).host}
+                    </button>
+                  )}
                 </div>
-              </>
+
+                {view.previewUrl && previewOpen[view.summary.sessionId] && (
+                  <PreviewPanel
+                    url={view.previewUrl}
+                    onClose={() =>
+                      setPreviewOpen((p) => ({ ...p, [view.summary.sessionId]: false }))
+                    }
+                  />
+                )}
+              </div>
             ) : (
               <Home
                 busy={creating}

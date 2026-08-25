@@ -118,7 +118,11 @@ export function startMockProvider(): MockServer {
                     type: "function",
                     function: {
                       name: "bash",
-                      arguments: JSON.stringify({ command: `echo ${tag}-FROM-TOOL && pwd` }),
+                      arguments: JSON.stringify({
+                        // The Vite-style "Local:" line exercises dev-server
+                        // preview detection (session.preview) end to end.
+                        command: `echo ${tag}-FROM-TOOL && echo "Local:   http://localhost:5199/" && pwd`,
+                      }),
                     },
                   },
                 ],

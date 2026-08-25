@@ -308,6 +308,16 @@ export interface SessionNotice extends EventBase {
   source?: string;
 }
 
+/**
+ * Emitted when tool output announces a local dev server (e.g. Vite's
+ * "Local: http://localhost:5173/"), so the UI can offer a live preview
+ * pane. Normalized to a bare origin; re-emitted only when the URL changes.
+ */
+export interface PreviewDetected extends EventBase {
+  type: "session.preview";
+  url: string;
+}
+
 /** Emitted when the engine persists the session, so the UI can link to it. */
 export interface SessionPersisted extends EventBase {
   type: "session.persisted";
@@ -373,6 +383,7 @@ export type ProductEvent =
   | SessionFailed
   | SessionFinished
   | SessionNotice
+  | PreviewDetected
   | SessionPersisted
   | SessionHibernated
   | ExtensionUIRequested

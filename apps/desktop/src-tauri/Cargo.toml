@@ -1,6 +1,6 @@
 [package]
 name = "the-orchestrator"
-version = "0.6.3"
+version = "0.6.4"
 description = "An unofficial native macOS desktop harness for OhMyPi"
 authors = ["The Orchestrator contributors"]
 license = "MIT"
@@ -42,3 +42,6 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"

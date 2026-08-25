@@ -105,6 +105,11 @@ describe("path handling", () => {
     // pwd output proves the tool ran inside the spaced path, un-mangled.
     expect(String(toolEnd?.output ?? "")).toContain("My Project With Spaces");
     expect(String(toolEnd?.output ?? "")).not.toContain("%20");
+
+    // The mock tool prints a Vite-style "Local:" line; the worker must
+    // surface it as a normalized dev-server preview origin.
+    const preview = eventsFor(s.sessionId).find((e) => e.type === "session.preview") as any;
+    expect(preview?.url).toBe("http://localhost:5199/");
   }, 60_000);
 });
 

@@ -198,6 +198,13 @@ try {
       !!toolEnd && String(toolEnd.event.output ?? "").includes("SMOKE-FROM-TOOL"),
     );
 
+    const preview = frames.find((f) => f.event?.type === "session.preview");
+    check(
+      "detects the dev-server preview URL from tool output",
+      preview?.event?.url === "http://localhost:5199/",
+      preview ? preview.event.url : "no session.preview event",
+    );
+
     const persisted = frames.find((f) => f.event?.type === "session.persisted");
     check(
       "persists the session where OMP can find it",

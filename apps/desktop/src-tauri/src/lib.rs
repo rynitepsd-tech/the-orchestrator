@@ -96,6 +96,25 @@ pub fn run() {
 
             menu::install(app.handle())?;
 
+            // tao registers the NSWindow as a drag destination and its
+            // `draggingEntered:` unwraps the deprecated NSFilenamesPboardType,
+            // which modern Finder drags may not populate — a drag merely
+            // passing over the window then aborts the whole app (tao 0.35.3
+            // window_delegate.rs:424, still present upstream). We never use
+            // window-level drops (the composer handles HTML5 drops in the
+            // webview, which keeps its own registration), so unregister the
+            // window and the fragile handlers can never fire.
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                if let Ok(ns_window) = w.ns_window() {
+                    unsafe {
+                        use objc2::msg_send;
+                        let ns_window = ns_window as *mut objc2::runtime::AnyObject;
+                        let _: () = msg_send![&*ns_window, unregisterDraggedTypes];
+                    }
+                }
+            }
+
             // Start the engine immediately; the UI shows staged progress from
             // the engine's own lifecycle events rather than a blank spinner.
             if let Err(e) = supervisor.spawn() {

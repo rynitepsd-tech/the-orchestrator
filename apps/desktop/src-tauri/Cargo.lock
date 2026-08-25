@@ -4240,11 +4240,12 @@ dependencies = [
 
 [[package]]
 name = "the-orchestrator"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "env_logger",
  "libc",
  "log",
+ "objc2",
  "parking_lot",
  "serde",
  "serde_json",

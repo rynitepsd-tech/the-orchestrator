@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.4
+
+- **Fixed a crash when dragging files over the window.** The windowing
+  layer (tao) registers the window as a drag destination and unwraps the
+  deprecated `NSFilenamesPboardType` pasteboard entry in `draggingEntered:`;
+  modern Finder drags may not populate it, so a drag merely passing over the
+  window aborted the whole app. The window is no longer a drag destination —
+  the composer's drop target lives in the webview and is unaffected.
+- **Live dev-server preview.** When the agent starts a dev server (Vite,
+  Next, anything announcing a `localhost` URL with a port in tool output),
+  a "Preview" chip appears over the transcript. It opens a side panel with
+  the running site in an iframe, with reload, open-in-browser, and close
+  controls; the pane remembers open/closed per session and follows the
+  latest detected URL.
+
 ## 0.6.3
 
 - **The transcript no longer loses your place while the agent streams.**
