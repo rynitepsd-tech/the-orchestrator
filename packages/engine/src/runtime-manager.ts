@@ -14,12 +14,15 @@ import {
   discoverSessions,
   fetchProviderQuotas,
   forkSessionFile,
+  listDisabledProviderCauses,
   listModels,
   listProviders,
   newModelRegistry,
   ompAgentDir,
   openAuthStorage,
+  providerAuthHealth,
   readSessionFileUsage,
+  relocateProjectSessions,
 } from "@orchestrator/omp-adapter";
 import type {
   AdvisorConfig,
@@ -110,7 +113,18 @@ export class RuntimeManager {
   }
 
   async providers(): Promise<ProviderInfo[]> {
-    return listProviders(await this.models(), this.#authStorage as never);
+    const out = listProviders(await this.models(), this.#authStorage as never);
+    // Attach tombstone causes so an auto-disabled sign-in (expired OAuth
+    // grant) reads as "sign-in expired" in the UI, not "never connected".
+    try {
+      const causes = await listDisabledProviderCauses(this.#authStorage as never);
+      for (const p of out) {
+        if (!p.authenticated && causes.has(p.name)) p.disabledCause = causes.get(p.name);
+      }
+    } catch {
+      /* tombstones are advisory; the list itself must never fail over them */
+    }
+    return out;
   }
 
   /**
@@ -189,6 +203,18 @@ export class RuntimeManager {
     const open = this.#supervisor.openSessionPaths();
     for (const s of found) s.openInThisApp = open.has(s.path);
     return found;
+  }
+
+  /**
+   * Re-home persisted sessions after their project folder moved on disk.
+   * Sessions with a live worker are skipped — the single-writer rule that
+   * guards resume applies to relocation too.
+   */
+  async relocateSessions(
+    fromCwd: string,
+    toCwd: string,
+  ): Promise<{ moved: Array<{ from: string; to: string }>; skipped: string[]; errors: string[] }> {
+    return relocateProjectSessions(fromCwd, toCwd, this.#supervisor.openSessionPaths());
   }
 
   async projectAdvisors(projectPath: string): Promise<AdvisorConfig[]> {
@@ -333,7 +359,69 @@ export class RuntimeManager {
   // Sessions (delegated to worker processes)
   // -------------------------------------------------------------------------
 
-  create(config: SessionLaunchConfig): Promise<SessionSummary> {
+  /**
+   * The provider auth gate.
+   *
+   * Refuses any action that would run inference through a provider with no
+   * usable credentials. This exists because a dead OAuth grant does NOT mean
+   * requests fail: OMP falls back to the stale access token, and Anthropic
+   * has been observed accepting it while silently billing the org's prepaid
+   * API credits instead of the subscription (2026-08-25 incident). Failing
+   * loudly here is the only place the product can make that impossible.
+   *
+   * Providers authenticated via API key or env var pass: explicit per-token
+   * billing the user set up themselves is allowed. Test-double providers
+   * registered through workerEnv are exempt — their keys live only in the
+   * worker's registry, which this storage cannot see.
+   */
+  async assertProvidersUsable(modelKeys: Array<string | undefined>, action: string): Promise<void> {
+    const testProviders =
+      this.#opts.workerEnv?.testProviders ?? envTestProviders()?.testProviders ?? [];
+    const exempt = new Set(testProviders.map((p) => p.name));
+    const providers = new Set<string>();
+    for (const key of modelKeys) {
+      if (!key) continue;
+      const i = key.indexOf("/");
+      // A bare model id carries no provider to check; the worker's own
+      // resolution decides, and the prompt-time gate re-checks with the
+      // resolved key it announces at boot.
+      if (i <= 0) continue;
+      const provider = key.slice(0, i);
+      if (!exempt.has(provider)) providers.add(provider);
+    }
+    for (const provider of providers) {
+      const health = await providerAuthHealth(this.#authStorage as never, provider);
+      if (health.usable) continue;
+      const expired = /expired|refresh|revoked/i.test(health.disabledCause ?? "");
+      throw Object.assign(
+        new Error(
+          `${
+            expired
+              ? `Your ${provider} sign-in has expired.`
+              : `${provider} has no usable credentials.`
+          } ${action} is blocked so requests cannot silently bill API credits. ` +
+            `Reconnect ${provider} in Settings → Providers (or \`omp login ${provider}\`), then try again.`,
+        ),
+        {
+          kind: "auth",
+          provider,
+          ...(health.disabledCause ? { detail: health.disabledCause } : {}),
+        },
+      );
+    }
+  }
+
+  /** Prompt-time gate for a live session, keyed off its announced model. */
+  async assertSessionProvidersUsable(sessionId: string): Promise<void> {
+    const s = this.list().find((x) => x.sessionId === sessionId);
+    await this.assertProvidersUsable([s?.model], "Sending this message");
+  }
+
+  async create(config: SessionLaunchConfig): Promise<SessionSummary> {
+    await this.assertProvidersUsable(
+      [config.model, ...(config.advisors ?? []).filter((a) => a.enabled).map((a) => a.model)],
+      "Starting this session",
+    );
     return this.#supervisor.create(config);
   }
 

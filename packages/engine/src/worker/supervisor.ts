@@ -360,6 +360,13 @@ export class WorkerSupervisor {
         // extensions) must reach the summary too, or sessions.list would
         // keep resurrecting the stale launch title.
         if (e.type === "session.title") summary.title = e.title;
+        // Track the session's real model (boot announcement for resumed
+        // sessions, upstream fallbacks, explicit switches) — the engine's
+        // provider auth gate reads it at prompt time.
+        if (e.type === "session.model") {
+          summary.model = e.model;
+          if (e.thinkingLevel) summary.thinkingLevel = e.thinkingLevel;
+        }
         // A self-parked worker is about to exit ON PURPOSE; its exit must not
         // be reported as a crash.
         if (e.type === "session.hibernated") {

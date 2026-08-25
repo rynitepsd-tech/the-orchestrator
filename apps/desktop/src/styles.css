@@ -417,6 +417,29 @@ button {
   font-weight: 500;
 }
 
+/* A project whose folder vanished from disk: visible but clearly inert.
+   Hiding these entirely read as data loss when a folder was merely moved. */
+.project-missing .session-row {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.project-missing-head .missing-hint {
+  color: var(--warn);
+}
+
+.project-missing-head .locate-btn {
+  margin-left: auto;
+  flex: none;
+  font-size: 12px;
+  padding: 1px 8px;
+}
+
+.relocate-error {
+  color: var(--danger);
+  padding: 0 6px 4px;
+}
+
 .project-branch {
   color: var(--text-faint);
   font-weight: 400;
@@ -1127,6 +1150,10 @@ button {
   border-radius: var(--radius);
   padding: 9px 12px;
   font-size: 14px;
+}
+
+.banner-auth {
+  margin: 12px 12px 0;
 }
 
 .banner.warn {

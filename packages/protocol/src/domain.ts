@@ -127,6 +127,13 @@ export interface ProviderInfo {
   authenticated: boolean;
   /** How the credential was supplied, e.g. "oauth" | "api-key" | "env". */
   credentialSource?: string;
+  /**
+   * Set when the provider is unauthenticated because its stored credential
+   * was auto-disabled (e.g. an expired OAuth grant). Verbatim cause from
+   * OMP's tombstone — the UI uses it to say "sign-in expired, reconnect"
+   * instead of a generic "not connected".
+   */
+  disabledCause?: string;
   modelCount: number;
   /** Account labels when the provider has OAuth accounts attached. */
   accounts?: Array<{ id: string; label?: string }>;

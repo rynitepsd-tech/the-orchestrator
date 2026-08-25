@@ -391,6 +391,23 @@ const mcpManager: any = (created as any).mcpManager;
 const eventBus: any = (created as any).eventBus;
 ompSessionId = String((session as any).sessionId ?? "");
 
+// Announce the session's ACTUAL model. A resumed session boots with no model
+// in its launch config (the session header decides), so without this the
+// engine-side summary — and the provider auth gate that reads it at prompt
+// time — would never learn which provider this session bills against.
+{
+  const bootedModel: any = (session as any).model;
+  if (bootedModel?.provider && bootedModel?.id) {
+    emit({
+      type: "session.model",
+      sessionId: boot.sessionId,
+      model: `${bootedModel.provider}/${bootedModel.id}`,
+      automatic: true,
+      reason: "boot",
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Interaction bridges (approvals + extension UI)
 // ---------------------------------------------------------------------------

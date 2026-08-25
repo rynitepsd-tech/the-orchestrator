@@ -274,7 +274,10 @@ export function App(): JSX.Element {
   // (other machines and the CLI consume the same windows).
   useEffect(() => {
     const t = setInterval(() => {
-      if (useStore.getState().engineStage === "ready") void refreshQuotas();
+      // Full catalogue refresh (models + providers + quotas) so a credential
+      // that dies mid-session (expired OAuth grant) surfaces as a banner
+      // without an app restart.
+      if (useStore.getState().engineStage === "ready") void loadCatalogue();
     }, 600_000);
     return () => clearInterval(t);
   }, []);
@@ -810,6 +813,31 @@ export function App(): JSX.Element {
       )}
 
       <main className="main">
+        {/* Dead sign-in banner: the engine refuses sessions on these
+            providers (auth gate) — say why and route to the fix. */}
+        {s.mainView !== "settings" &&
+          (() => {
+            const dead = s.providers.filter((p) => !p.authenticated && p.disabledCause);
+            if (dead.length === 0) return null;
+            return (
+              <div className="banner banner-auth">
+                <strong>
+                  {dead.map((p) => p.name).join(", ")} sign-in expired — sessions blocked.
+                </strong>
+                <div style={{ marginTop: 4 }}>
+                  Requests through an expired sign-in can be silently billed to your API credits
+                  instead of your subscription, so the engine refuses them until you reconnect.
+                </div>
+                <button
+                  className="btn"
+                  style={{ marginTop: 8 }}
+                  onClick={() => s.setMainView("settings")}
+                >
+                  Reconnect in Settings
+                </button>
+              </div>
+            );
+          })()}
         {s.mainView === "usage" ? (
           <UsageCenter />
         ) : s.mainView === "inbox" ? (

@@ -270,3 +270,61 @@ describe("session fork", () => {
     expect(readFileSync(forkPath!, "utf8")).not.toContain("second original turn");
   }, 90_000);
 });
+
+describe("provider auth gate", () => {
+  // 2026-08-25 incident: a session on a provider whose OAuth grant died kept
+  // running on the stale access token, and the provider billed the org's
+  // prepaid API credits instead of the subscription. The engine must refuse
+  // inference-triggering actions for providers with no usable credentials.
+  test("refuses to create a session on an unauthenticated provider", async () => {
+    const dir = makeProject("authgate");
+    await expect(
+      manager.create({
+        projectPath: dir,
+        title: "gated",
+        model: "no-such-provider-xyz/some-model",
+        advisors: [],
+      }),
+    ).rejects.toThrow(/no usable credentials|sign-in has expired/i);
+  });
+
+  test("refuses an enabled advisor on an unauthenticated provider", async () => {
+    const dir = makeProject("authgate-adv");
+    await expect(
+      manager.create({
+        projectPath: dir,
+        title: "gated-advisor",
+        model: "mockprov/mock-alpha",
+        advisors: [
+          {
+            id: "advisor:Ghost",
+            name: "Ghost",
+            enabled: true,
+            model: "no-such-provider-xyz/some-model",
+            origin: "session",
+          },
+        ],
+      }),
+    ).rejects.toThrow(/no usable credentials|sign-in has expired/i);
+  });
+
+  test("test-double providers stay exempt and disabled advisors are ignored", async () => {
+    const dir = makeProject("authgate-ok");
+    const s = await manager.create({
+      projectPath: dir,
+      title: "not gated",
+      model: "mockprov/mock-alpha",
+      advisors: [
+        {
+          id: "advisor:Ghost",
+          name: "Ghost",
+          enabled: false,
+          model: "no-such-provider-xyz/some-model",
+          origin: "session",
+        },
+      ],
+    });
+    expect(s.sessionId).toBeTruthy();
+    await manager.close(s.sessionId, true);
+  });
+});

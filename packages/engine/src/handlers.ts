@@ -299,6 +299,28 @@ export async function handleRequest(
     case "sessions.discover":
       return { sessions: await m.discoverSessions(p?.projectPath) };
 
+    case "sessions.relocate": {
+      // Re-home sessions whose project folder moved. The destination must be a
+      // real directory; the source must actually be gone — when the recorded
+      // folder still exists the sessions are resumable and "relocation" would
+      // be a rename feature this request deliberately does not implement.
+      const { existsSync, statSync } = await import("node:fs");
+      const fromCwd = String(p.fromCwd);
+      const toCwd = String(p.toCwd);
+      if (!existsSync(toCwd) || !statSync(toCwd).isDirectory()) {
+        throw Object.assign(new Error(`Folder not found: ${toCwd}`), {
+          kind: "filesystem-permission",
+        });
+      }
+      if (existsSync(fromCwd)) {
+        throw Object.assign(
+          new Error("The original folder still exists; sessions can be opened from it directly."),
+          { kind: "configuration" },
+        );
+      }
+      return m.relocateSessions(fromCwd, toCwd);
+    }
+
     case "sessions.create":
       return { session: await m.create(p) };
 
@@ -311,6 +333,9 @@ export async function handleRequest(
 
     // --- one session -------------------------------------------------------
     case "session.prompt":
+      // Auth gate: a dead OAuth grant must fail HERE, loudly — OMP's stale
+      // token fallback otherwise keeps working and bills API credits.
+      await m.assertSessionProvidersUsable(String(p.sessionId));
       return m.route(String(p.sessionId), "session.prompt", p) as never;
 
     case "session.abort":
@@ -356,6 +381,7 @@ export async function handleRequest(
     }
 
     case "session.setModel":
+      await m.assertProvidersUsable([String(p.model)], "Switching to this model");
       return m.route(String(p.sessionId), "session.setModel", p) as never;
 
     case "session.setFastMode":
@@ -370,8 +396,14 @@ export async function handleRequest(
     case "session.transcript":
       return m.route(String(p.sessionId), "session.transcript", p) as never;
 
-    case "session.advisors.set":
+    case "session.advisors.set": {
+      const advisors = Array.isArray(p.advisors) ? p.advisors : [];
+      await m.assertProvidersUsable(
+        advisors.filter((a: any) => a?.enabled).map((a: any) => a?.model),
+        "Enabling these advisors",
+      );
       return m.route(String(p.sessionId), "session.advisors.set", p) as never;
+    }
 
     case "session.advisors.get":
       return m.route(String(p.sessionId), "session.advisors.get", p) as never;

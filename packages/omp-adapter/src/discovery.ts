@@ -179,6 +179,70 @@ export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderI
 }
 
 /**
+ * Whether a provider has usable credentials RIGHT NOW, with the disable cause
+ * when it does not.
+ *
+ * This is the auth gate's source of truth. The 2026-08-25 billing incident:
+ * OMP tombstones an OAuth credential whose refresh fails, then keeps sending
+ * the stale access token — which Anthropic accepts but bills to the org's
+ * prepaid API credits instead of the subscription. Sessions must therefore be
+ * refused while a provider's only credential is a tombstone. A provider that
+ * authenticates via API key or env var is deliberately usable — per-token
+ * billing the user explicitly configured is not a failure mode.
+ *
+ * The storage is reloaded from SQLite before answering. Credential state
+ * changes in OTHER processes — a worker tombstoning the credential when its
+ * refresh fails, or `omp login` restoring it — and `hasAuth` alone serves a
+ * possibly-stale in-memory view. `reload()` is one equality-guarded SQLite
+ * read; gate call sites are human-frequency, so the cost is irrelevant and
+ * the answer must be current in both directions.
+ */
+export async function providerAuthHealth(
+  auth: AuthStorage,
+  provider: string,
+): Promise<{ usable: boolean; disabledCause?: string }> {
+  const a = auth as any;
+  const usable = (): boolean => {
+    try {
+      return Boolean(a.hasAuth?.(provider) ?? a.has?.(provider));
+    } catch {
+      return false;
+    }
+  };
+  try {
+    await a.reload?.();
+  } catch {
+    /* corrupt store: answer from the in-memory view rather than exploding */
+  }
+  if (usable()) return { usable: true };
+  let disabledCause: string | undefined;
+  try {
+    const tombstones = await a.listDisabledCredentials?.(provider);
+    const cause = Array.isArray(tombstones) ? tombstones[0]?.cause : undefined;
+    disabledCause = cause ? String(cause) : undefined;
+  } catch {
+    disabledCause = undefined;
+  }
+  return { usable: false, disabledCause };
+}
+
+/** Disable causes for every provider with a tombstoned credential. */
+export async function listDisabledProviderCauses(auth: AuthStorage): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const tombstones = await (auth as any).listDisabledCredentials?.();
+    for (const t of Array.isArray(tombstones) ? tombstones : []) {
+      if (t?.provider && t?.cause && !out.has(String(t.provider))) {
+        out.set(String(t.provider), String(t.cause));
+      }
+    }
+  } catch {
+    /* no tombstone API in this OMP build: nothing to report */
+  }
+  return out;
+}
+
+/**
  * Provider subscription/quota, strictly from OMP's own reporting.
  *
  * Never inferred from token volume. When a provider does not report limits the
@@ -237,6 +301,57 @@ export async function discoverSessions(projectPath?: string): Promise<Discovered
       cwdMissing: !checkCwd(cwd) || undefined,
     };
   });
+}
+
+/**
+ * Re-home every persisted session recorded under `fromCwd` to `toCwd`.
+ *
+ * Used when a project folder was moved or renamed on disk: the sessions'
+ * recorded cwd points at a path that no longer exists, which makes them
+ * unresumable (and previously made them vanish from the sidebar entirely —
+ * indistinguishable from data loss). Relocation goes through OMP's own
+ * `SessionManager.moveTo`, which moves the session file and artifacts and
+ * rewrites the header cwd, so the CLI and this app stay in agreement.
+ *
+ * `skipSessionPaths` must contain the session files currently open in this
+ * app: OMP session files have no lock and two writers silently lose data.
+ */
+export async function relocateProjectSessions(
+  fromCwd: string,
+  toCwd: string,
+  skipSessionPaths: ReadonlySet<string> = new Set(),
+): Promise<{ moved: Array<{ from: string; to: string }>; skipped: string[]; errors: string[] }> {
+  const from = resolve(fromCwd);
+  const to = resolve(toCwd);
+  const moved: Array<{ from: string; to: string }> = [];
+  const skipped: string[] = [];
+  const errors: string[] = [];
+
+  const all: any[] = (await (SessionManager as any).listAll()) ?? [];
+  const targets = all.filter((s) => s?.cwd && resolve(String(s.cwd)) === from && s?.path);
+
+  for (const s of targets) {
+    const path = String(s.path);
+    if (skipSessionPaths.has(path)) {
+      skipped.push(path);
+      continue;
+    }
+    try {
+      // initialCwd anchors the manager at the GONE recorded cwd — open()
+      // falls back to the launch cwd for a missing recorded cwd, which would
+      // make moveTo a no-op when it equals the destination. Same pattern as
+      // OMP's own moved-project re-rooting.
+      const mgr = await (SessionManager as any).open(path, undefined, undefined, {
+        initialCwd: from,
+        suppressBreadcrumb: true,
+      });
+      await mgr.moveTo(to);
+      moved.push({ from: path, to: String(mgr.getSessionFile() ?? path) });
+    } catch (e) {
+      errors.push(`${path}: ${(e as Error).message}`);
+    }
+  }
+  return { moved, skipped, errors };
 }
 
 function toIso(v: unknown): string | undefined {

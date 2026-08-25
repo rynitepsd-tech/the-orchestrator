@@ -152,6 +152,14 @@ export interface RequestPayloads {
   "attachments.store": { name: string; base64: string };
 
   "sessions.discover": { projectPath?: string };
+  /**
+   * Re-home persisted sessions whose recorded project folder no longer exists
+   * (the folder was moved or renamed). Every discovered session whose cwd is
+   * `fromCwd` is relocated to `toCwd` — session file, artifacts and header —
+   * via OMP's own move machinery. Sessions currently open in this app are
+   * skipped (single-writer guarantee).
+   */
+  "sessions.relocate": { fromCwd: string; toCwd: string };
   "sessions.create": SessionLaunchConfig;
   "sessions.close": { sessionId: SessionId; dispose: boolean };
   "sessions.list": Record<string, never>;
@@ -287,6 +295,12 @@ export interface ResponsePayloads {
   };
 
   "sessions.discover": { sessions: DiscoveredSession[] };
+  /** `moved` pairs old→new session file paths so the UI can migrate prefs. */
+  "sessions.relocate": {
+    moved: Array<{ from: string; to: string }>;
+    skipped: string[];
+    errors: string[];
+  };
   "sessions.create": { session: SessionSummary };
   "sessions.close": { closed: true };
   "sessions.list": { sessions: SessionSummary[] };
@@ -410,6 +424,7 @@ export const REQUEST_TYPES = [
   "project.ship",
   "attachments.store",
   "sessions.discover",
+  "sessions.relocate",
   "sessions.create",
   "sessions.close",
   "sessions.list",

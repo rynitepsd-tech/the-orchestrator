@@ -7,6 +7,7 @@
  */
 
 import type { DiscoveredSession } from "@orchestrator/protocol";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { DragEvent, JSX } from "react";
 import { useMemo, useState } from "react";
@@ -163,6 +164,62 @@ export function Sidebar({
   const resumableHidden = allResumable.length - resumable.length;
 
   const archivedCount = discovered.filter((d) => prefs.archivedSessions.includes(d.path)).length;
+
+  // Sessions whose project folder no longer exists (moved/renamed/deleted),
+  // grouped by their old path. Hiding these silently is indistinguishable from
+  // data loss — they render as inert groups with a "Locate folder…" re-home
+  // action instead. Archived ones stay hidden like everywhere else.
+  const missingByProject = useMemo(() => {
+    const archived = new Set(prefs.archivedSessions);
+    const groups = new Map<string, DiscoveredSession[]>();
+    for (const d of discovered) {
+      if (!d.cwdMissing || d.openInThisApp || archived.has(d.path)) continue;
+      if (q && !d.title.toLowerCase().includes(q) && !d.cwd.toLowerCase().includes(q)) continue;
+      const g = groups.get(d.cwd);
+      if (g) g.push(d);
+      else groups.set(d.cwd, [d]);
+    }
+    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [discovered, q, prefs.archivedSessions]);
+
+  const setDiscovered = useStore((s) => s.setDiscovered);
+  const [relocating, setRelocating] = useState<string | null>(null);
+  const [relocateError, setRelocateError] = useState<{ cwd: string; message: string } | null>(null);
+
+  const locateProject = async (fromCwd: string) => {
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      title: `Locate the moved folder (was ${fromCwd})`,
+    }).catch(() => null);
+    if (typeof picked !== "string" || !picked) return;
+    setRelocating(fromCwd);
+    setRelocateError(null);
+    try {
+      const res = await engine.request("sessions.relocate", { fromCwd, toCwd: picked });
+      // Session files move to the new project's session directory: migrate
+      // every pref that is keyed by session path so remembered-open state,
+      // manual ordering and archive flags survive the re-home.
+      if (res.moved.length > 0) {
+        const map = new Map(res.moved.map((m) => [m.from, m.to]));
+        const remap = (paths: string[]) => paths.map((p) => map.get(p) ?? p);
+        updatePrefs({
+          openSessionPaths: remap(prefs.openSessionPaths),
+          sessionOrder: remap(prefs.sessionOrder),
+          archivedSessions: remap(prefs.archivedSessions),
+        });
+      }
+      if (res.errors.length > 0) {
+        setRelocateError({ cwd: fromCwd, message: res.errors[0] });
+      }
+      const fresh = await engine.request("sessions.discover", {});
+      setDiscovered(fresh.sessions);
+    } catch (e) {
+      setRelocateError({ cwd: fromCwd, message: (e as Error).message });
+    } finally {
+      setRelocating(null);
+    }
+  };
 
   const updatePrefs = useStore((s) => s.updatePrefs);
   const goHome = useStore((s) => s.goHome);
@@ -385,6 +442,41 @@ export function Sidebar({
           );
         })}
 
+        {missingByProject.map(([cwd, list]) => (
+          <div key={`missing:${cwd}`} className="project-group project-missing">
+            <div className="project-head project-missing-head" title={cwd}>
+              <span className="group-folder">
+                <FolderIcon />
+              </span>
+              <span className="project-name">{projectName(cwd)}</span>
+              <span className="hint missing-hint">folder not found</span>
+              <button
+                className="btn btn-ghost locate-btn"
+                disabled={relocating === cwd}
+                title={`The folder ${cwd} no longer exists. If it was moved or renamed, pick its new location to re-home these sessions.`}
+                onClick={() => void locateProject(cwd)}
+              >
+                {relocating === cwd ? "Relocating…" : "Locate folder…"}
+              </button>
+            </div>
+            {relocateError?.cwd === cwd && (
+              <div className="hint relocate-error">{relocateError.message}</div>
+            )}
+            {list.map((d) => (
+              <div key={d.path} className="session-row missing-row" title={`${d.path}\n${cwd}`}>
+                <span className="dot idle" aria-hidden />
+                <span className="session-col">
+                  <span className="session-title">{d.title}</span>
+                  <span className="session-sub hint">
+                    {d.messageCount} messages
+                    {d.modified && ` · ${new Date(d.modified).toLocaleDateString()}`}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+
         {resumable.length > 0 && (
           <div className="project-group">
             <div className="project-head">
@@ -445,7 +537,7 @@ export function Sidebar({
           </div>
         )}
 
-        {byProject.length === 0 && resumable.length === 0 && (
+        {byProject.length === 0 && resumable.length === 0 && missingByProject.length === 0 && (
           <div className="empty">
             {q
               ? "No sessions match."

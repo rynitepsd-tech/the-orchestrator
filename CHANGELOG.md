@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.6
+
+- **Sessions are refused when a provider's sign-in is dead.** An expired
+  OAuth grant does not make requests fail: OMP falls back to the stale access
+  token, and the provider can accept it while silently billing prepaid API
+  credits instead of the subscription (this happened — 2.5 hours of Anthropic
+  usage billed to org credits after a refresh token aged out). The engine now
+  checks provider credentials before starting a session, sending a prompt,
+  switching models, or enabling advisors, and refuses with a clear
+  "reconnect" error instead. Providers connected via API key or env var are
+  unaffected — explicit per-token billing stays allowed. A banner names the
+  expired provider and links to Settings; re-login (in-app or `omp login`)
+  is picked up immediately, no restart needed.
+- **Sessions whose project folder moved are no longer hidden.** A moved or
+  renamed project folder made its sessions vanish from the sidebar —
+  indistinguishable from data loss. They now show under their old path,
+  dimmed, with "folder not found" and a "Locate folder…" button: pick the
+  folder's new location and the sessions re-home to it (session files,
+  artifacts and recorded cwd all move via OMP's own relocation, so the CLI
+  agrees), keeping their ordering, archive flags and remembered-open state.
+
 ## 0.6.5
 
 - **Advisor revision cascades no longer stack duplicate answers.** OMP
