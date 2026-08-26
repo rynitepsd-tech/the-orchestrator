@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.7
+
+- **Closed sessions no longer resurface when their folder is gone.** 0.6.6's
+  moved-folder recovery surfaced *every* session whose recorded folder no
+  longer exists — including sessions closed long ago — so every dead project
+  ever worked in reappeared in the sidebar as a "folder not found" group.
+  The group now only shows sessions that were open when the folder vanished,
+  which is the case that actually reads as data loss; closed sessions stay
+  closed.
+- **Missing-folder groups are dismissible and no longer wrap into a mess.**
+  The header kept the label and Locate button crammed on one line, wrapping
+  into three at sidebar widths, and offered no way to say "I know, go away".
+  The label now stays on one line with the folder name ellipsizing, the
+  actions moved to their own row, and a new Dismiss button hides the group
+  without touching anything on disk — if the folder comes back (remounted
+  drive, restored from trash), the sessions reappear under Closed sessions.
+
 ## 0.6.6
 
 - **Sessions are refused when a provider's sign-in is dead.** An expired

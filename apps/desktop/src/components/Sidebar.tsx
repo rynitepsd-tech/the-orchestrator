@@ -166,21 +166,25 @@ export function Sidebar({
   const archivedCount = discovered.filter((d) => prefs.archivedSessions.includes(d.path)).length;
 
   // Sessions whose project folder no longer exists (moved/renamed/deleted),
-  // grouped by their old path. Hiding these silently is indistinguishable from
-  // data loss — they render as inert groups with a "Locate folder…" re-home
-  // action instead. Archived ones stay hidden like everywhere else.
+  // grouped by their old path. Only remembered-OPEN sessions qualify: those
+  // would otherwise vanish from their project group, which reads as data
+  // loss, so they render as inert groups with "Locate folder…" / Dismiss
+  // actions. Closed sessions with a missing folder stay closed — resurfacing
+  // them here once resurrected every dead project the user had ever closed.
   const missingByProject = useMemo(() => {
     const archived = new Set(prefs.archivedSessions);
+    const remembered = new Set(prefs.openSessionPaths);
     const groups = new Map<string, DiscoveredSession[]>();
     for (const d of discovered) {
       if (!d.cwdMissing || d.openInThisApp || archived.has(d.path)) continue;
+      if (!remembered.has(d.path)) continue;
       if (q && !d.title.toLowerCase().includes(q) && !d.cwd.toLowerCase().includes(q)) continue;
       const g = groups.get(d.cwd);
       if (g) g.push(d);
       else groups.set(d.cwd, [d]);
     }
     return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [discovered, q, prefs.archivedSessions]);
+  }, [discovered, q, prefs.archivedSessions, prefs.openSessionPaths]);
 
   const setDiscovered = useStore((s) => s.setDiscovered);
   const [relocating, setRelocating] = useState<string | null>(null);
@@ -219,6 +223,15 @@ export function Sidebar({
     } finally {
       setRelocating(null);
     }
+  };
+
+  // Dismiss a missing-folder group: the sessions stop counting as open, so
+  // the group disappears. Nothing on disk is touched — if the folder ever
+  // comes back (remounted drive, restored from trash) the sessions reappear
+  // under "Closed sessions" like any other closed session.
+  const dismissMissing = (list: DiscoveredSession[]) => {
+    const paths = new Set(list.map((d) => d.path));
+    updatePrefs({ openSessionPaths: prefs.openSessionPaths.filter((p) => !paths.has(p)) });
   };
 
   const updatePrefs = useStore((s) => s.updatePrefs);
@@ -443,25 +456,18 @@ export function Sidebar({
         })}
 
         {missingByProject.map(([cwd, list]) => (
-          <div key={`missing:${cwd}`} className="project-group project-missing">
-            <div className="project-head project-missing-head" title={cwd}>
+          <div
+            key={`missing:${cwd}`}
+            className="project-group project-missing"
+            title={`${cwd} — this folder no longer exists`}
+          >
+            <div className="project-head project-missing-head">
               <span className="group-folder">
                 <FolderIcon />
               </span>
               <span className="project-name">{projectName(cwd)}</span>
               <span className="hint missing-hint">folder not found</span>
-              <button
-                className="btn btn-ghost locate-btn"
-                disabled={relocating === cwd}
-                title={`The folder ${cwd} no longer exists. If it was moved or renamed, pick its new location to re-home these sessions.`}
-                onClick={() => void locateProject(cwd)}
-              >
-                {relocating === cwd ? "Relocating…" : "Locate folder…"}
-              </button>
             </div>
-            {relocateError?.cwd === cwd && (
-              <div className="hint relocate-error">{relocateError.message}</div>
-            )}
             {list.map((d) => (
               <div key={d.path} className="session-row missing-row" title={`${d.path}\n${cwd}`}>
                 <span className="dot idle" aria-hidden />
@@ -474,6 +480,27 @@ export function Sidebar({
                 </span>
               </div>
             ))}
+            <div className="missing-actions">
+              <button
+                className="btn btn-ghost missing-action"
+                disabled={relocating === cwd}
+                title={`If ${cwd} was moved or renamed, pick its new location to re-home these sessions.`}
+                onClick={() => void locateProject(cwd)}
+              >
+                {relocating === cwd ? "Relocating…" : "Locate folder…"}
+              </button>
+              <button
+                className="btn btn-ghost missing-action"
+                disabled={relocating === cwd}
+                title="Stop showing this group. Transcripts stay on disk and reappear under Closed sessions if the folder comes back."
+                onClick={() => dismissMissing(list)}
+              >
+                Dismiss
+              </button>
+            </div>
+            {relocateError?.cwd === cwd && (
+              <div className="hint relocate-error">{relocateError.message}</div>
+            )}
           </div>
         ))}
 
