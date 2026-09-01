@@ -39,8 +39,6 @@ import {
 import {
   type AdvisorConfig,
   type ApprovalMode,
-  type EngineErrorPayload,
-  type ErrorKind,
   encodeFrame,
   FrameDecoder,
   PROTOCOL_VERSION,
@@ -50,6 +48,7 @@ import {
   type UsageRecord,
 } from "@orchestrator/protocol";
 import { UsageAccumulator } from "@orchestrator/usage";
+import { classifyError } from "./classify-error";
 
 // ---------------------------------------------------------------------------
 // Worker boot contract
@@ -172,27 +171,6 @@ function settleCrash(origin: string, e: unknown): void {
 }
 process.on("uncaughtException", (e) => settleCrash("uncaught", e));
 process.on("unhandledRejection", (e) => settleCrash("unhandled rejection", e));
-
-/** Map an upstream failure onto the product error taxonomy — never a raw stack. */
-function classifyError(e: unknown): EngineErrorPayload {
-  const msg = String((e as Error)?.message ?? e);
-  const lower = msg.toLowerCase();
-  let kind: ErrorKind = "unknown";
-  if (/abort/.test(lower)) kind = "unknown";
-  else if (/(unauthorized|401|invalid api key|authentication|credential)/.test(lower))
-    kind = "auth";
-  else if (/(rate.?limit|quota|429|usage limit|overloaded)/.test(lower)) kind = "provider-quota";
-  else if (/(model .*not (found|available)|no such model|unknown model)/.test(lower))
-    kind = "model-unavailable";
-  else if (/(enoent|eacces|eperm|permission denied)/.test(lower)) kind = "filesystem-permission";
-  else if (/mcp/.test(lower)) kind = "mcp";
-  return {
-    kind,
-    message: msg.slice(0, 300),
-    detail: msg.length > 300 ? msg.slice(0, 4000) : undefined,
-    retryable: kind === "provider-quota",
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Build the single session

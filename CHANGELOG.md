@@ -30,6 +30,12 @@
   happened to win the race. The first catalogue read now waits for discovery
   (bounded, so one unreachable provider cannot empty the model picker) and the
   periodic reload re-runs it.
+- **A model your build cannot run now says so.** Because discovery lists models
+  the pinned OMP may not support yet, picking one could fail with a raw HTTP
+  400 carrying the provider's own advice to "run `claude update`" — a different
+  product, and useless here. That rejection is now classified as
+  model-unavailable and reads "This model needs a newer OMP than the one this
+  build embeds", with the provider's original text kept under disclosure.
 
 ## 0.6.7
 
