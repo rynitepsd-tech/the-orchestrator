@@ -25,31 +25,32 @@ via the published npm SDK, not vendored source and not a fork.
 
 - Project: OhMyPi (OMP)
 - Upstream: <https://github.com/can1357/oh-my-pi>
-- Version embedded: **17.3.8**
+- Version embedded: **18.1.1**
 - Licence: MIT
 - Copyright (c) 2025 Mario Zechner
 - Copyright (c) 2025-2026 Can Bölük
+- Copyright (c) 2026 Stencil Labs, Inc.
 
-The direct dependency is `@oh-my-pi/pi-coding-agent@17.3.8`. That package pulls in
+The direct dependency is `@oh-my-pi/pi-coding-agent@18.1.1`. That package pulls in
 sibling packages from the same upstream project and the same release train, all at
-version 17.3.8 and all under the same MIT licence. The set resolved for this build is:
+version 18.1.1 and all under the same MIT licence. The set resolved for this build is:
 
 | Package | Version |
 | --- | --- |
-| `@oh-my-pi/pi-coding-agent` | 17.3.8 |
-| `@oh-my-pi/pi-agent-core` | 17.3.8 |
-| `@oh-my-pi/pi-ai` | 17.3.8 |
-| `@oh-my-pi/pi-catalog` | 17.3.8 |
-| `@oh-my-pi/pi-mnemopi` | 17.3.8 |
-| `@oh-my-pi/pi-tui` | 17.3.8 |
-| `@oh-my-pi/pi-utils` | 17.3.8 |
-| `@oh-my-pi/pi-wire` | 17.3.8 |
-| `@oh-my-pi/omptype` | 17.3.8 |
-| `@oh-my-pi/omp-stats` | 17.3.8 |
-| `@oh-my-pi/hashline` | 17.3.8 |
-| `@oh-my-pi/snapcompact` | 17.3.8 |
-| `@oh-my-pi/pi-natives` | 17.3.8 |
-| `@oh-my-pi/pi-natives-darwin-arm64` | 17.3.8 |
+| `@oh-my-pi/pi-coding-agent` | 18.1.1 |
+| `@oh-my-pi/pi-agent-core` | 18.1.1 |
+| `@oh-my-pi/pi-ai` | 18.1.1 |
+| `@oh-my-pi/pi-catalog` | 18.1.1 |
+| `@oh-my-pi/pi-mnemopi` | 18.1.1 |
+| `@oh-my-pi/pi-tui` | 18.1.1 |
+| `@oh-my-pi/pi-utils` | 18.1.1 |
+| `@oh-my-pi/pi-wire` | 18.1.1 |
+| `@oh-my-pi/omptype` | 18.1.1 |
+| `@oh-my-pi/omp-stats` | 18.1.1 |
+| `@oh-my-pi/hashline` | 18.1.1 |
+| `@oh-my-pi/snapcompact` | 18.1.1 |
+| `@oh-my-pi/pi-natives` | 18.1.1 |
+| `@oh-my-pi/pi-natives-darwin-arm64` | 18.1.1 |
 
 Because this code is redistributed inside the `.app`, the full licence text is
 reproduced below.
@@ -59,6 +60,7 @@ MIT License
 
 Copyright (c) 2025 Mario Zechner
 Copyright (c) 2025-2026 Can Bölük
+Copyright (c) 2026 Stencil Labs, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -82,9 +84,11 @@ SOFTWARE.
 ### 1.1 pi-natives (Rust N-API addon)
 
 OMP ships a compiled Rust N-API addon. On Apple Silicon this is
-`pi_natives.darwin-arm64.node` (approximately 140 MB), taken from
-`@oh-my-pi/pi-natives-darwin-arm64@17.3.8`. It is published by the same upstream
-project under the same MIT licence and the same copyright holders as above.
+`pi_natives.darwin-arm64.node` (approximately 155 MB), taken from
+`@oh-my-pi/pi-natives-darwin-arm64@18.1.1`. It is published by the same upstream
+project under the same MIT licence. Its own `LICENSE` names two of the three
+holders above — Copyright (c) 2025-2026 Can Bölük and Copyright (c) 2026
+Stencil Labs, Inc. — and that notice is reproduced by the MIT text above.
 
 The addon is copied into the application bundle and **must sit in the same directory as
 the engine binary**, because the addon loader's final search path is the executable's
@@ -115,8 +119,8 @@ requires Bun >= 1.3.14.
 
 | Component | Licence | Shipped in the `.app`? |
 | --- | --- | --- |
-| `@oh-my-pi/pi-coding-agent` and siblings (17.3.8) | MIT | Bundled — compiled into the engine binary |
-| `@oh-my-pi/pi-natives-darwin-arm64` (17.3.8) | MIT | Bundled — `.node` addon beside the engine binary |
+| `@oh-my-pi/pi-coding-agent` and siblings (18.1.1) | MIT | Bundled — compiled into the engine binary |
+| `@oh-my-pi/pi-natives-darwin-arm64` (18.1.1) | MIT | Bundled — `.node` addon beside the engine binary |
 | Bun runtime (Oven) | MIT | Bundled — inside the `bun --compile` executable |
 | `@tauri-apps/api` | Apache-2.0 OR MIT | Bundled — in the built frontend |
 | `@tauri-apps/plugin-dialog` | Apache-2.0 OR MIT | Bundled |

@@ -4240,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "the-orchestrator"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "env_logger",
  "libc",

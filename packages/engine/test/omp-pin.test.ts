@@ -82,6 +82,27 @@ describe("OMP pin coherence", () => {
     }
   });
 
+  test("the notice reproduces every upstream copyright holder", () => {
+    // MIT requires the copyright notice in redistributions, and upstream adds
+    // holders between releases: 18.1.1 introduced Stencil Labs, Inc., which
+    // the version checks above cannot see. Read the holders out of the
+    // installed LICENSE rather than hard-coding them, so the next addition
+    // fails here instead of shipping an incomplete notice.
+    const notice = read("THIRD_PARTY_NOTICES.md");
+    for (const manifest of [
+      "packages/engine/node_modules/@oh-my-pi/pi-coding-agent/LICENSE",
+      "packages/omp-adapter/node_modules/@oh-my-pi/pi-ai/LICENSE",
+    ]) {
+      const holders = [...read(manifest).matchAll(/^Copyright \(c\) .+$/gm)].map((m) =>
+        m[0].trim(),
+      );
+      expect(holders.length).toBeGreaterThan(0);
+      for (const holder of holders) {
+        expect(`${notice.includes(holder)} :: ${holder}`).toBe(`true :: ${holder}`);
+      }
+    }
+  });
+
   test("the compatibility table states the version that actually ships", () => {
     const doc = read("docs/OMP_COMPATIBILITY.md");
     expect(doc).toContain(`| **OMP version** | \`${PIN}\` |`);

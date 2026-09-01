@@ -50,7 +50,7 @@ builds and then fails at runtime inside the packaged bundle.
 
 Check, in order:
 
-1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`17.3.8` as
+1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`18.1.1` as
    of 0.6.8 — the exact string is in `packages/engine/package.json` and
    `packages/omp-adapter/package.json`, which must agree).
 2. `OMP_VERSION` in `scripts/build-engine.ts` matches that version exactly. The constant is what the
@@ -87,7 +87,7 @@ What each step is for:
 | `bun install` | Restore the workspace from `bun.lock`, including the native addon package. | Clean install, no lockfile churn. |
 | `bun run typecheck` | `tsc --build --force` across the workspace. | No errors. |
 | `bun test` | Usage de-duplication, concurrency, adapter, and protocol suites. The concurrency suite drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | All passing, zero failures. |
-| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~85 MB) and `pi_natives.darwin-arm64.node` (~140 MB) in `resources/engine/`. |
+| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~96 MB) and `pi_natives.darwin-arm64.node` (~155 MB) in `resources/engine/`. |
 | `bunx tauri build` | Builds the Vite frontend, compiles the Rust binary, and bundles `resources/engine` into the app as `Contents/Resources/engine`. | `The Orchestrator.app` and `The Orchestrator_<version>_aarch64.dmg` under `apps/desktop/src-tauri/target/release/bundle/`. |
 | `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 25/25 checks passed. |
 
@@ -146,7 +146,7 @@ bun run build:engine -- --target=both
 | `x64` | `bun-darwin-x64` | `pi_natives.darwin-x64-baseline.node` |
 
 Cross-target builds need the matching addon package installed at **the pinned OMP version**, for
-example `bun add -d @oh-my-pi/pi-natives-darwin-x64@17.3.8`. The script fails loudly with that
+example `bun add -d @oh-my-pi/pi-natives-darwin-x64@18.1.1`. The script fails loudly with that
 exact hint when the addon is missing. The version in that command must match the pin everywhere it
 appears in the repo — `@oh-my-pi/pi-coding-agent` in `packages/engine/package.json` and
 `packages/omp-adapter/package.json`, the `OMP_VERSION` constant in `scripts/build-engine.ts`, and

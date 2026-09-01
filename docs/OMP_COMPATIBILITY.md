@@ -7,29 +7,30 @@ It embeds OMP rather than reimplementing it, so it is tightly coupled to a speci
 
 | | |
 |---|---|
-| **OMP version** | `17.3.8` |
+| **OMP version** | `18.1.1` |
 | **Upstream repo** | `can1357/oh-my-pi` |
-| **Tag** | `v17.3.8` |
-| **npm packages** | `@oh-my-pi/pi-coding-agent@17.3.8` and its workspace siblings |
-| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@17.3.8` (and `-darwin-x64` for Intel) |
+| **Tag** | `v18.1.1` |
+| **npm packages** | `@oh-my-pi/pi-coding-agent@18.1.1` and its workspace siblings |
+| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@18.1.1` (and `-darwin-x64` for Intel) |
 | **Required runtime** | Bun `>= 1.3.14` (OMP declares `engines.bun`) |
 | **Upstream licence** | MIT (Mario Zechner; Can Bölük) |
 
-This project is **behind** upstream: the latest published release is `18.1.1`. The pin is
-deliberate — a new upstream release never moves this project automatically (see
-[Updating the bundled OMP](#updating-the-bundled-omp)) — but the gap now has a user-visible
-consequence, so it is a known limitation rather than a neutral choice.
+This project is caught up to upstream's latest release. The pin stays deliberate: a future
+upstream release does not move this project automatically (see
+[Updating the bundled OMP](#updating-the-bundled-omp)).
 
-Two things a `17.3.x` build cannot do:
+**A client-version gate survives this bump.** OMP lists models from each provider's live endpoint
+whether or not the pinned client can run them. `anthropic/claude-fable-5-1` is listed and priced,
+and still fails at inference: `17.3.8` advertised Claude Code `2.1.220` and `18.1.1` advertises
+`2.1.246`, while Anthropic requires `2.1.251 or newer` — so the HTTP 400
+`claude_code_version_too_old` persists, measured on this pin, not inferred. Clearing it needs an
+upstream release that advertises a high enough client version; nothing in this repo can or should
+forge one. The engine reports the rejection as `model-unavailable` naming the embedded OMP
+(`packages/engine/src/worker/classify-error.ts`) rather than relaying the provider's advice to
+update an unrelated product.
 
-- **Run models gated on a newer client.** OMP discovers models from each provider's live
-  endpoint, so a model released after this pin appears in the picker and is rejected only when
-  first used. Observed on this pin: `anthropic/claude-fable-5-1` returns HTTP 400
-  `claude_code_version_too_old`. The engine reports this as `model-unavailable` naming the
-  embedded OMP (`packages/engine/src/worker/classify-error.ts`), rather than relaying the
-  provider's advice to update an unrelated product.
-- **Benefit from upstream fixes in `17.4.x`/`18.x`**, including `18.1.0`'s fix for sampling
-  parameter errors with newer Anthropic models.
+`18.1.0` did fix sampling parameter errors with newer Anthropic models, which is a separate issue
+from the version gate.
 
 ## Integration surface used
 

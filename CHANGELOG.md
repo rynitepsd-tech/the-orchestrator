@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.9
+
+- **Updated the embedded OMP from 17.3.8 to 18.1.1** — sixteen upstream releases,
+  across a major boundary. The whole integration surface was re-verified against
+  the new SDK: session/advisor/subagent APIs, the nested transcript layout the
+  usage ledger depends on (219 transcripts, 4,196 rows, all correctly
+  attributed), model discovery, and the packaged smoke test. Upstream fixes
+  arriving with it include sampling parameter errors on newer Anthropic models,
+  advisor concerns being dropped when catching up across several turns, and
+  assistant text truncated when a tool call starts mid-stream.
+- **Honest note on the version-gated models:** this bump does *not* unlock them.
+  `anthropic/claude-fable-5-1` is still listed, still priced, and still rejected
+  — `17.3.8` advertised Claude Code `2.1.220`, `18.1.1` advertises `2.1.246`,
+  and Anthropic wants `2.1.251` or newer. Measured on this build, not assumed.
+  The app continues to name the real cause instead of relaying the provider's
+  advice to update an unrelated product.
+- **The third-party notice now tracks upstream copyright.** OMP 18.1.1 added a
+  copyright holder (Stencil Labs, Inc.); MIT requires it in redistributions and
+  the version checks could not see it. Added, and a test now reads the holders
+  out of the installed licence so the next addition fails the build instead of
+  shipping an incomplete notice.
+
 ## 0.6.8
 
 - **Finished-turn alerts now wait for advisors.** The worker now publishes an
