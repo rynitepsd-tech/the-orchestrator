@@ -20,6 +20,7 @@ import {
   fmtTokens,
   type InspectorTab,
   isActive,
+  providerLabel,
   type SessionView,
   useStore,
 } from "../store";
@@ -178,37 +179,44 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
   );
 }
 
-export function QuotaSection(): JSX.Element | null {
+export function QuotaSection(): JSX.Element {
   const quotas = useStore((s) => s.quotas);
-  if (quotas.length === 0) return null;
 
   return (
     <>
       <div className="section-label">Provider limits</div>
-      {quotas.map((q: ProviderQuota) => (
-        <div key={`${q.provider}-${q.accountLabel ?? ""}`} style={{ marginBottom: 10 }}>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{q.provider}</div>
-          {q.unavailableReason ? (
-            <div className="hint">{q.unavailableReason}</div>
-          ) : (
-            q.windows.map((w) => (
-              <div key={w.label} style={{ marginTop: 4 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5 }}>
-                  <span style={{ color: "var(--text-muted)" }}>{w.label}</span>
-                  <span className="mono">
-                    {w.fraction !== undefined ? `${Math.round(w.fraction * 100)}%` : "—"}
-                  </span>
-                </div>
-                {w.fraction !== undefined && (
-                  <div className="meter">
-                    <span style={{ width: `${Math.min(100, w.fraction * 100)}%` }} />
+      {quotas.length === 0 ? (
+        // Rendering nothing here read as "no limits", which is a claim we
+        // cannot make: a provider with no usage endpoint and a fetch that
+        // failed look identical from here.
+        <div className="hint">No provider reported a usage limit.</div>
+      ) : (
+        quotas.map((q: ProviderQuota) => (
+          <div key={`${q.provider}-${q.accountLabel ?? ""}`} style={{ marginBottom: 10 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{providerLabel(q.provider)}</div>
+            {q.accountLabel && <div className="hint">{q.accountLabel}</div>}
+            {q.unavailableReason ? (
+              <div className="hint">{q.unavailableReason}</div>
+            ) : (
+              q.windows.map((w) => (
+                <div key={w.id} style={{ marginTop: 4 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5 }}>
+                    <span style={{ color: "var(--text-muted)" }}>{w.label}</span>
+                    <span className="mono">
+                      {w.fraction !== undefined ? `${Math.round(w.fraction * 100)}%` : "—"}
+                    </span>
                   </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      ))}
+                  {w.fraction !== undefined && (
+                    <div className="meter">
+                      <span style={{ width: `${Math.min(100, w.fraction * 100)}%` }} />
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        ))
+      )}
       <div className="hint">
         Reported by the provider through OMP. Never estimated from token volume.
       </div>

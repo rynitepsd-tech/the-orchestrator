@@ -30,11 +30,33 @@ export interface SessionFileUsage {
   records: UsageRecord[];
 }
 
+/**
+ * Who the rows in a transcript belong to.
+ *
+ * A primary session file needs none of this — it *is* the session, and its
+ * rows are the primary agent's. Nested transcripts (`<session-dir>/Foo.jsonl`
+ * for a subagent, `<session-dir>/__advisor.foo.jsonl` for an advisor) are
+ * separate files with their own session headers, but their tokens were spent
+ * on behalf of the PARENT session and must be filed under it.
+ */
+export interface TranscriptActor {
+  actorType: UsageRecord["actorType"];
+  actorId: string;
+  actorName?: string;
+  /** The parent session these rows are attributed to. */
+  ompSessionId: string;
+  /** The parent session's project, for the "By project" rollup. */
+  projectId?: string;
+}
+
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
-export async function readSessionFileUsage(filePath: string): Promise<SessionFileUsage | null> {
+export async function readSessionFileUsage(
+  filePath: string,
+  actor?: TranscriptActor,
+): Promise<SessionFileUsage | null> {
   let ompSessionId = "";
   let cwd = "";
   let title: string | undefined;
@@ -74,12 +96,17 @@ export async function readSessionFileUsage(filePath: string): Promise<SessionFil
         (typeof msg.timestamp === "number" && `ts:${msg.timestamp}`) ||
         `entry:${String(entry.id ?? records.length)}`;
 
+      // Nested transcripts get the PARENT's scope and the real actor; a
+      // primary file is its own scope and its rows are the primary agent's.
+      const scope = actor?.ompSessionId || ompSessionId || filePath;
+      const actorId = actor?.actorId ?? "primary";
       records.push({
-        key: usageKey({ sessionId: ompSessionId || filePath, actorId: "primary", messageId }),
-        sessionId: ompSessionId || filePath,
-        projectId: cwd,
-        actorType: "primary",
-        actorId: "primary",
+        key: usageKey({ sessionId: scope, actorId, messageId }),
+        sessionId: scope,
+        projectId: actor?.projectId ?? cwd,
+        actorType: actor?.actorType ?? "primary",
+        actorId,
+        actorName: actor?.actorName,
         provider: String(msg.provider ?? "unknown"),
         model: String(msg.model ?? "unknown"),
         inputTokens: num(u.input),
@@ -93,7 +120,7 @@ export async function readSessionFileUsage(filePath: string): Promise<SessionFil
         completedAt:
           typeof msg.timestamp === "number" ? new Date(msg.timestamp).toISOString() : undefined,
         source: "omp-session",
-        ompSessionId: ompSessionId || undefined,
+        ompSessionId: scope || undefined,
       });
     }
   } catch {

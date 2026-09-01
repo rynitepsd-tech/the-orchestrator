@@ -8,7 +8,7 @@
  * response exactly once.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { totalTokens, type UsageRecord } from "@orchestrator/protocol";
@@ -235,5 +235,68 @@ describe("persistence", () => {
     index.ingest([rec({ sessionId: "A", messageId: "resp-1" })]);
     // Nothing in the index API removes usage on abort/close; totals stand.
     expect(totalTokens(index.breakdown().total)).toBe(110);
+  });
+});
+
+describe("superseded advisor snapshots", () => {
+  const snapshot = () =>
+    rec({
+      sessionId: "A",
+      actorId: "advisor:Reviewer",
+      actorType: "advisor",
+      messageId: "cumulative",
+      inputTokens: 5_000,
+      source: "advisor-log",
+    });
+
+  test("a cumulative snapshot never enters the engine-wide index", () => {
+    const index = tempIndex();
+    // The advisor's own transcript is indexed per response; a cumulative
+    // total keyed per session+advisor would sum on top of those rows.
+    expect(index.ingest([snapshot()])).toBe(0);
+    expect(index.size()).toBe(0);
+  });
+
+  test("itemized advisor rows are indexed and are not shadowed by a snapshot", () => {
+    const index = tempIndex();
+    index.ingest([
+      rec({
+        sessionId: "A",
+        actorId: "advisor:reviewer",
+        actorType: "advisor",
+        messageId: "resp-adv",
+        inputTokens: 1_000,
+        source: "omp-session",
+      }),
+      snapshot(),
+    ]);
+    expect(index.size()).toBe(1);
+    expect(index.breakdown().total.inputTokens).toBe(1_000);
+  });
+
+  test("snapshots an older build persisted are dropped, and a flush cannot resurrect them", () => {
+    const dir = mkdtempSync(join(tmpdir(), "orch-usage-"));
+    dirs.push(dir);
+    // A file written before snapshots were retired.
+    writeFileSync(
+      join(dir, "records.jsonl"),
+      [
+        JSON.stringify({ ...rec({ sessionId: "A", messageId: "resp-1" }), key: "r\u0000resp-1" }),
+        JSON.stringify({ ...snapshot(), key: "s\u0000A\u0000advisor:Reviewer\u0000cumulative" }),
+      ].join("\n") + "\n",
+    );
+
+    const index = new UsageIndex(dir);
+    expect(index.load()).toBe(1);
+    expect(index.breakdown().total.inputTokens).toBe(100);
+
+    // The flush merge re-reads the file to avoid clobbering another instance's
+    // rows; it must not re-admit the snapshot it just refused to load.
+    index.ingest([rec({ sessionId: "A", messageId: "resp-2", source: "omp-session" })]);
+    index.flush();
+    const reloaded = new UsageIndex(dir);
+    reloaded.load();
+    expect(reloaded.size()).toBe(2);
+    expect(reloaded.records().some((r) => r.source === "advisor-log")).toBe(false);
   });
 });

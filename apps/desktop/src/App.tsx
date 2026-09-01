@@ -37,7 +37,14 @@ import { UsageCenter } from "./components/UsageCenter";
 import { engine } from "./engine-client";
 import { hasLocalPrefs, sanitizePrefs, setPrefsSink } from "./lib/prefs";
 import { checkForUpdates, installUpdate } from "./lib/updater";
-import { fmtTokens, isActive, modelBasename, runStateLabel, useStore } from "./store";
+import {
+  advisorsReviewing,
+  fmtTokens,
+  isActive,
+  modelBasename,
+  runStateLabel,
+  useStore,
+} from "./store";
 
 export function App(): JSX.Element {
   const s = useStore();
@@ -45,6 +52,12 @@ export function App(): JSX.Element {
   /** Per-session preview-pane visibility; the detected URL lives in the view. */
   const [previewOpen, setPreviewOpen] = useState<Record<string, boolean>>({});
   const notifyOk = useRef(false);
+  /**
+   * Sessions whose turn has finished but whose advisors are still reviewing.
+   * The announcement is armed here and fires once the review window closes —
+   * a revised answer is still coming, so "the agent is done" would be a lie.
+   */
+  const notifyArmed = useRef(new Set<string>());
 
   const view = s.visibleSessionId ? s.sessions[s.visibleSessionId] : undefined;
 
@@ -116,14 +129,31 @@ export function App(): JSX.Element {
         }
       }
 
-      // One notification, one moment: an agent finished a turn the user was
-      // not watching — a background session, OR the visible one while the
-      // window is unfocused (the canonical "⌘-Tab away and wait" flow, which
-      // the old visible-only gate inverted).
-      const watching = st.visibleSessionId === e.sessionId && document.hasFocus();
-      if (before && !watching && st.prefs.notifications.completion) {
-        if (e.type === "session.finished" && e.runState === "completed") {
-          notify(`${before.summary.title} finished`, "The agent is done.");
+      // One notification per USER turn, fired the moment the turn is really
+      // over. `session.finished` alone is not that moment: advisors review
+      // afterwards and the model may revise its answer in a continuation turn
+      // that raises a second `session.finished`. So the finish only ARMS the
+      // announcement; it fires on the first event that leaves the session
+      // completed with no review outstanding.
+      if (
+        before &&
+        e.type === "session.finished" &&
+        e.runState === "completed" &&
+        st.prefs.notifications.completion
+      ) {
+        notifyArmed.current.add(e.sessionId);
+      }
+      if (notifyArmed.current.has(e.sessionId)) {
+        const after = useStore.getState().sessions[e.sessionId];
+        if (!after) notifyArmed.current.delete(e.sessionId);
+        else if (after.summary.runState === "completed" && !advisorsReviewing(after)) {
+          notifyArmed.current.delete(e.sessionId);
+          // Not while the user is already watching it: a background session,
+          // OR the visible one while the window is unfocused (the canonical
+          // "⌘-Tab away and wait" flow the old visible-only gate inverted).
+          const watching =
+            useStore.getState().visibleSessionId === e.sessionId && document.hasFocus();
+          if (!watching) notify(`${after.summary.title} finished`, "The agent is done.");
         }
       }
     };
@@ -655,8 +685,7 @@ export function App(): JSX.Element {
 
   // Live status for the breadcrumb: only worth showing while something moves.
   const crumbStatus = view
-    ? !isActive(view.summary.runState) &&
-      Object.values(view.advisorStates).some((st) => st === "reviewing")
+    ? !isActive(view.summary.runState) && advisorsReviewing(view)
       ? "Advisors reviewing…"
       : isActive(view.summary.runState)
         ? (view.summary.activity ?? runStateLabel(view.summary.runState))

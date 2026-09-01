@@ -1016,6 +1016,17 @@ button {
    * glued number like "190.5M$168.85". */
   padding-left: 14px;
 }
+.usage-table th {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: left;
+  padding: 3px 6px;
+}
+.usage-table th.num {
+  text-align: right;
+  padding-left: 14px;
+}
 
 /* The inspector stacks several .usage-table sections (Session usage, By
  * model, …); each table auto-sizes its own columns, so without shared widths
@@ -1835,36 +1846,120 @@ button {
 .home-project-picker {
   position: relative;
 }
+/* Trigger holds an icon plus a folder name of unknown length: inline-flex to
+   centre the glyph, capped so one deep alias can't stretch the control row. */
+.home-project-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+}
+.home-project-trigger-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .home-project-menu {
   position: absolute;
   bottom: calc(100% + 6px);
-  left: 0;
-  min-width: 260px;
-  max-height: 300px;
+  /* Right-anchored: the trigger sits late in the control row, so a menu wide
+     enough for a path has to grow leftwards to stay inside the composer. */
+  right: 0;
+  width: min(400px, calc(100vw - 96px));
+  /* It opens upwards from a vertically centred composer: past ~40vh the top of
+     the menu escapes the window. */
+  max-height: min(340px, 40vh);
   overflow-y: auto;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-  padding: 4px;
+  padding: 5px;
   z-index: 30;
 }
+.home-project-menu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 5px 6px;
+}
+/* Deliberately not a .menu-item: two lines, its own padding, and a selected
+   state that must survive a hover on the same row. */
 .home-menu-item {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  gap: 3px;
   width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
 }
-.home-menu-item.selected {
+.home-menu-item:hover {
+  background: var(--bg-hover);
+}
+.home-menu-item.selected,
+.home-menu-item.selected:hover {
   background: var(--accent-soft);
+  /* The tint alone is faint beside a hovered neighbour; the rail is what makes
+     the current folder findable without reading. */
+  box-shadow: inset 1px 0 0 var(--accent);
 }
-.home-menu-path {
-  font-size: 12px;
-  max-width: 320px;
+.home-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.home-menu-name {
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.home-menu-item.selected .home-menu-name {
+  color: var(--accent);
+}
+.home-menu-path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  /* projectParent() already dropped the leading segments; this only guards a
+     single absurd tail segment. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "pinned" marker on remembered-folder rows — also used by the new-session
+   project field, so both lists mark pinned folders the same way. */
+.pin-tag {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+/* Browse… opens a dialog rather than picking a remembered folder: muted, and
+   below the rule. */
+.menu-item.home-menu-browse {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  color: var(--text-muted);
+}
+.menu-item.home-menu-browse:hover {
+  color: var(--text);
 }
 .home-go {
   border-radius: 999px;
@@ -2702,11 +2797,65 @@ button {
 .preset-del:hover {
   color: var(--danger);
 }
+/* The remembered-folder grid is tall enough to collide with the next field;
+   nothing else in this modal carries vertical rhythm. */
+.project-field {
+  margin-bottom: 12px;
+}
+/* The path stays typeable (people paste paths) but reads as a path in mono,
+   and Browse… stretches to match the shorter mono line-box. */
+.project-field .row {
+  align-items: stretch;
+}
+.project-field .input {
+  font-family: var(--mono);
+  font-size: 13.5px;
+}
+/* Remembered folders: two columns of name-over-path, not a row of clipped
+   chips that all read "…". */
 .recent-projects {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.project-recent {
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 6px;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.project-recent:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.project-recent-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.project-recent-name {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-recent-path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .segmented {
   display: inline-flex;
@@ -2815,6 +2964,9 @@ button {
   flex: 1;
   overflow-y: auto;
   padding: 18px 28px 40px;
+  /* The section grid below reflows on this panel's own width: the sidebar
+   * resizes to 440px and collapses, so viewport queries would lie about it. */
+  container-type: inline-size;
 }
 .usage-toolbar {
   margin-bottom: 22px;
@@ -2964,26 +3116,75 @@ button {
   width: 100%;
   margin-top: 10px;
 }
-.breakdown-table td {
+
+/* Session titles and project paths are unbounded. These tables declare their
+ * widths so an overlong value ellipsises inside its own cell instead of
+ * wrapping the row or dragging the numeric columns off their alignment. */
+.usage-grid .usage-table {
+  table-layout: fixed;
+}
+.usage-grid .usage-table th,
+.usage-grid .usage-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Wide enough for the longest values these formatters produce — "1234.5M"
+ * and "$12,345.67" — since a fixed column ellipsises a number silently. */
+.usage-grid .usage-table th.num {
+  width: 84px;
+}
+.usage-grid .usage-table th.num:last-child {
+  width: 104px;
+}
+/* The project is context for the session title, not a peer of it. */
+.usage-grid .usage-table .col-project {
+  width: 26%;
+  color: var(--text-muted);
+}
+/* Every table in this tab reads as one family: padded cells, a hairline under
+ * each row, and a firmer rule under the header so it never reads as a row. */
+.usage-center .usage-table tbody td,
+.usage-center .usage-table thead th {
   padding: 7px 6px;
+}
+.usage-center .usage-table tbody td.num,
+.usage-center .usage-table thead th.num {
+  padding-left: 14px;
+}
+.usage-center .usage-table tbody td {
   border-bottom: 1px solid var(--border);
 }
+.usage-center .usage-table thead th {
+  border-bottom: 1px solid var(--border-strong);
+}
+
+/* "By session" carries four columns where its siblings carry three, so a
+ * uniform auto-fit track left its title a few characters wide. It takes two
+ * tracks; the siblings take one each. */
 .usage-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 22px;
   align-items: start;
 }
-.usage-table th {
-  font-weight: 500;
-  font-size: 13px;
-  color: var(--text-muted);
-  text-align: left;
-  padding: 3px 6px;
+.usage-grid > section:first-child {
+  grid-column: span 2;
 }
-.usage-table th.num {
-  text-align: right;
-  padding-left: 14px;
+@container (max-width: 1100px) {
+  .usage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* Below this the siblings' own name columns start losing to their numbers. */
+@container (max-width: 720px) {
+  .usage-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* A two-track span in a one-track grid would invent a second column. */
+  .usage-grid > section:first-child {
+    grid-column: auto;
+  }
 }
 
 /* ---- changes / files ---- */

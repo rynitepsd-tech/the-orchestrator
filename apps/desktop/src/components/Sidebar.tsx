@@ -239,13 +239,15 @@ export function Sidebar({
   const moveSession = useStore((s) => s.moveSession);
   const mainView = useStore((s) => s.mainView);
   const setMainView = useStore((s) => s.setMainView);
-  // Inbox badge: blocked sessions + unread finishes + failures.
+  // Inbox badge: blocked sessions + unread finishes + failures. A finish with
+  // advisors still reviewing is NOT one — it matches the Inbox's own filter,
+  // so the badge can never promise a card the list will not show.
   const inboxCount = Object.values(sessions).reduce(
     (n, v) =>
       n +
       (v.pendingInteractions > 0 || v.summary.runState === "waiting"
         ? 1
-        : v.summary.unread && v.summary.runState === "completed"
+        : v.summary.unread && v.summary.runState === "completed" && !advisorsReviewing(v)
           ? 1
           : v.summary.runState === "error" || v.summary.runState === "interrupted"
             ? 1

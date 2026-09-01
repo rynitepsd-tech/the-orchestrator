@@ -146,6 +146,14 @@ export interface SessionView {
   context?: ContextUsage;
   advisors: AdvisorConfig[];
   advisorStates: Record<string, AdvisorState>;
+  /**
+   * The worker's own post-turn review window: true between the turn ending
+   * and the advisors' backlog draining. Authoritative, unlike scanning
+   * `advisorStates` — an advisor whose runtime has not been enumerated yet
+   * emits no state at all, so an empty map is indistinguishable from "nobody
+   * is reviewing" during exactly the window that matters.
+   */
+  advisorReviewActive: boolean;
   /** Pending interactions (approvals + extension UI) awaiting the user. */
   pendingInteractions: number;
   /** The agent's live todo list (full snapshot from the todo tool). */
@@ -399,6 +407,7 @@ export const useStore = create<AppState>((set, get) => ({
             transcript: [],
             advisors,
             advisorStates: {},
+            advisorReviewActive: false,
             pendingInteractions: 0,
             // Resumed sessions remember which preset and approval mode
             // they run with.
@@ -633,20 +642,32 @@ export const useStore = create<AppState>((set, get) => ({
               return i;
             })
           : v.transcript;
+        // A dead worker never closes its review window either — left open it
+        // would hide the session from the inbox forever (the inverse bug).
+        const reviewOpen = advisorsReviewing(v);
+        let advisorStates = v.advisorStates;
+        if (reviewOpen) {
+          advisorStates = { ...v.advisorStates };
+          for (const [advisorId, st] of Object.entries(advisorStates)) {
+            if (st === "reviewing") advisorStates[advisorId] = "idle";
+          }
+        }
+        const patched =
+          reviewOpen || settled !== v.transcript
+            ? { ...v, transcript: settled, advisorStates, advisorReviewActive: false }
+            : v;
         sessions[id] = active
           ? {
-              ...v,
-              summary: { ...v.summary, runState: "interrupted" as RunState },
+              ...patched,
+              summary: { ...patched.summary, runState: "interrupted" as RunState },
               interrupted: true,
               pendingInteractions: 0,
               transcript: [
-                ...settled,
+                ...patched.transcript,
                 { kind: "system", id: nextId(), text: reason, tone: "error" },
               ],
             }
-          : settled !== v.transcript
-            ? { ...v, transcript: settled }
-            : v;
+          : patched;
       }
       return { sessions };
     }),
@@ -1029,29 +1050,13 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
       };
 
     case "advisor.state": {
-      const advisorStates = { ...v.advisorStates, [e.advisorId]: e.state };
-      // The last reviewer settling (done, failed, paused…) is what actually
-      // ends the turn: finalize any end-of-turn marker held back for review.
-      const reviewing = Object.values(advisorStates).some((st) => st === "reviewing");
-      let transcript = v.transcript;
-      if (!reviewing && transcript.some((i) => i.kind === "turn-end" && i.pending)) {
-        transcript = transcript.map((i) =>
-          i.kind === "turn-end" && i.pending ? { ...i, pending: false } : i,
-        );
-      } else if (reviewing && !isActive(v.summary.runState)) {
-        // A review can start a beat AFTER session.finished landed; a marker
-        // already announced as finished for the current turn goes back to
-        // pending (never one an earlier turn has moved past).
-        const idx = lastIndex(transcript, (i) => i.kind === "turn-end");
-        const cur =
-          idx >= 0 ? (transcript[idx] as Extract<TranscriptItem, { kind: "turn-end" }>) : null;
-        if (cur && !cur.pending && !transcript.slice(idx + 1).some((i) => i.kind === "user")) {
-          const copy = [...transcript];
-          copy[idx] = { ...cur, pending: true };
-          transcript = copy;
-        }
-      }
-      return { ...v, advisorStates, transcript };
+      const next = { ...v, advisorStates: { ...v.advisorStates, [e.advisorId]: e.state } };
+      return { ...next, transcript: syncTurnEnd(next) };
+    }
+
+    case "advisor.review": {
+      const next = { ...v, advisorReviewActive: e.active };
+      return { ...next, transcript: syncTurnEnd(next) };
     }
 
     case "advisor.failed":
@@ -1226,7 +1231,7 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
       // work at it, and it stays `pending` (not announced as finished) until
       // every advisor has stopped reviewing — "done" with a reviewer still
       // reading is not done yet.
-      const reviewing = Object.values(v.advisorStates).some((st) => st === "reviewing");
+      const reviewing = advisorsReviewing(v);
       const marker: TranscriptItem | null =
         e.runState === "completed"
           ? {
@@ -1351,9 +1356,43 @@ export function isActive(s: RunState): boolean {
   return !["idle", "completed", "interrupted", "error", "hibernated"].includes(s);
 }
 
-/** True while any advisor is still reviewing — the turn isn't finished yet. */
+/**
+ * True while a post-turn review is outstanding — the turn isn't finished yet.
+ *
+ * `advisorReviewActive` is the worker's own window flag and leads the
+ * per-advisor states: OMP can take a beat (or a whole 5-second poll) to
+ * report an advisor as `reviewing`, and until it does, scanning
+ * `advisorStates` alone answers "nobody is reviewing" for a turn that is
+ * demonstrably still under review. That gap is what surfaced finished-turn
+ * inbox cards and notifications that then vanished.
+ */
 export function advisorsReviewing(v: SessionView): boolean {
-  return Object.values(v.advisorStates).some((st) => st === "reviewing");
+  return v.advisorReviewActive || Object.values(v.advisorStates).some((st) => st === "reviewing");
+}
+
+/**
+ * Hold or release the current turn's end marker against the live review
+ * state. A review can also START a beat after `session.finished` landed, so
+ * a marker already announced as finished goes back to pending — but only the
+ * current turn's, never one an earlier turn has moved past.
+ */
+function syncTurnEnd(v: SessionView): TranscriptItem[] {
+  const transcript = v.transcript;
+  if (!advisorsReviewing(v)) {
+    if (!transcript.some((i) => i.kind === "turn-end" && i.pending)) return transcript;
+    return transcript.map((i) =>
+      i.kind === "turn-end" && i.pending ? { ...i, pending: false } : i,
+    );
+  }
+  if (isActive(v.summary.runState)) return transcript;
+  const idx = lastIndex(transcript, (i) => i.kind === "turn-end");
+  const cur = idx >= 0 ? (transcript[idx] as Extract<TranscriptItem, { kind: "turn-end" }>) : null;
+  if (!cur || cur.pending || transcript.slice(idx + 1).some((i) => i.kind === "user")) {
+    return transcript;
+  }
+  const copy = [...transcript];
+  copy[idx] = { ...cur, pending: true };
+  return copy;
 }
 
 /** Short display name for a provider-qualified model key. */
@@ -1361,4 +1400,38 @@ export function modelBasename(model?: string): string {
   if (!model) return "OMP default";
   const slash = model.indexOf("/");
   return slash >= 0 ? model.slice(slash + 1) : model;
+}
+
+const VENDOR_NAMES: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+  openrouter: "OpenRouter",
+  xai: "xAI",
+};
+const TRANSPORT_NAMES: Record<string, string> = {
+  codex: "ChatGPT",
+  responses: "Responses",
+  completions: "Completions",
+};
+
+/** Vendor half of an OMP provider id: `openai-codex` -> `openai`. */
+export function providerVendor(p: string): string {
+  const dash = p.indexOf("-");
+  return dash > 0 ? p.slice(0, dash) : p;
+}
+
+/**
+ * Display name for an OMP provider id.
+ *
+ * The ids name the TRANSPORT as much as the vendor — a ChatGPT subscription
+ * bills through `openai-codex` — so naive capitalization produced
+ * "Openai-codex" and made a user's main provider look like something foreign.
+ */
+export function providerLabel(p: string): string {
+  const vendor = providerVendor(p);
+  const name = VENDOR_NAMES[vendor] ?? vendor.charAt(0).toUpperCase() + vendor.slice(1);
+  if (vendor === p) return name;
+  const transport = p.slice(vendor.length + 1);
+  return `${name} (${TRANSPORT_NAMES[transport] ?? transport})`;
 }

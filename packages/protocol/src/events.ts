@@ -192,6 +192,21 @@ export interface AdvisorFailed extends EventBase {
   primaryUnaffected: boolean;
 }
 
+/**
+ * The post-turn advisor review window opened or closed.
+ *
+ * This is the worker's own authoritative flag, not an inference. Per-advisor
+ * `advisor.state` events cannot answer "is a review outstanding?": an advisor
+ * the runtime has not enumerated yet, or whose status has not flipped to
+ * `running`, emits nothing — so an empty state map reads identically to
+ * "nobody is reviewing". The window opens before `session.finished` goes out
+ * and closes when the advisors' backlog has drained.
+ */
+export interface AdvisorReviewWindow extends EventBase {
+  type: "advisor.review";
+  active: boolean;
+}
+
 // --- subagents -------------------------------------------------------------
 
 export interface SubagentStarted extends EventBase {
@@ -371,6 +386,7 @@ export type ProductEvent =
   | AdvisorStateChanged
   | AdvisorMessage
   | AdvisorFailed
+  | AdvisorReviewWindow
   | SubagentStarted
   | SubagentUpdated
   | SubagentCompleted

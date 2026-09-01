@@ -261,6 +261,11 @@ export interface ProviderQuota {
   provider: string;
   accountLabel?: string;
   windows: Array<{
+    /**
+     * Upstream's stable id for the limit. Codex reports several limits that
+     * share a label but differ by tier, so the label alone is not a key.
+     */
+    id: string;
     /** e.g. "5-hour", "weekly". Verbatim from upstream. */
     label: string;
     /** 0..1 when upstream reports a fraction. */

@@ -7,7 +7,8 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { readdir } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 // Same exact version as pi-coding-agent's own pi-ai dependency (both pinned),
 // so this resolves to the one shared registry instance.
@@ -301,6 +302,75 @@ export async function discoverSessions(projectPath?: string): Promise<Discovered
       cwdMissing: !checkCwd(cwd) || undefined,
     };
   });
+}
+
+/**
+ * Subagent and advisor transcripts nested under a session directory.
+ *
+ * OMP writes these one level BELOW the session files themselves —
+ * `<sessions>/<project>/<session>/<Actor>.jsonl`, with advisors prefixed
+ * `__advisor.` — while its own `listAllSessions()` globs exactly one level.
+ * Every session-level consumer is therefore blind to them, and their tokens
+ * are not folded into the parent either: a parent transcript's toolResult rows
+ * carry no usage at all. For a setup that runs its advisors and subagents on a
+ * different provider than the primary agent, that provider is simply missing
+ * from any ledger built from session files alone.
+ *
+ * Returned paths are absolute; `parentPath` is the sibling session file whose
+ * turn spent the tokens, so callers can attribute them to the right session.
+ */
+export interface NestedTranscript {
+  path: string;
+  parentPath: string;
+  actorType: "advisor" | "subagent";
+  actorId: string;
+  actorName: string;
+}
+
+const JSONL = ".jsonl";
+
+/** Classify one nested transcript path (absolute) under `parentPath`. */
+function nestedTranscript(path: string, parentPath: string): NestedTranscript {
+  const base = basename(path, JSONL);
+  // `__advisor.reviewer` -> reviewer; the bare `__advisor` predates named
+  // advisors. Anything else is a subagent named after its agent label.
+  const advisor = base === "__advisor" || base.startsWith("__advisor.");
+  const name = advisor ? base.slice("__advisor.".length) || "advisor" : base;
+  return {
+    path,
+    parentPath,
+    actorType: advisor ? "advisor" : "subagent",
+    // The id is what the filename actually says; the display name only
+    // capitalizes it, because OMP lowercases advisor filenames and the
+    // transcript's own title row is empty.
+    actorId: `${advisor ? "advisor" : "subagent"}:${name}`,
+    actorName: name.charAt(0).toUpperCase() + name.slice(1),
+  };
+}
+
+/**
+ * With `parentPath`, the transcripts belonging to that one session (a single
+ * directory read, cheap enough to run at every turn end). Without it, every
+ * nested transcript in the agent directory, for a full reindex.
+ */
+export async function discoverNestedTranscripts(parentPath?: string): Promise<NestedTranscript[]> {
+  if (parentPath) {
+    const dir = parentPath.endsWith(JSONL) ? parentPath.slice(0, -JSONL.length) : parentPath;
+    if (!existsSync(dir)) return [];
+    const names = await readdir(dir).catch(() => [] as string[]);
+    return names
+      .filter((n) => n.endsWith(JSONL))
+      .sort()
+      .map((n) => nestedTranscript(join(dir, n), parentPath));
+  }
+  const root = join(ompAgentDir(), "sessions");
+  if (!existsSync(root)) return [];
+  const out: NestedTranscript[] = [];
+  for await (const rel of new Bun.Glob(`*/*/*${JSONL}`).scan(root)) {
+    const cut = rel.lastIndexOf("/");
+    out.push(nestedTranscript(join(root, rel), join(root, `${rel.slice(0, cut)}${JSONL}`)));
+  }
+  return out;
 }
 
 /**

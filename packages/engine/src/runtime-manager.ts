@@ -9,8 +9,10 @@
  * session lifetime is tied to a worker process, not to what the UI is showing.
  * Switching sessions in the sidebar never pauses, disposes, or aborts anything.
  */
+import { resolve } from "node:path";
 import {
   discoverAdvisors,
+  discoverNestedTranscripts,
   discoverSessions,
   fetchProviderQuotas,
   forkSessionFile,
@@ -173,8 +175,13 @@ export class RuntimeManager {
         }
 
         const resetsMs = numOrUndef(w?.window?.resetsAt ?? w?.resetsAt);
+        const scope = (w?.scope ?? {}) as Record<string, unknown>;
+        const label = String(w?.label ?? w?.window?.label ?? w?.name ?? "usage");
         windows.push({
-          label: String(w?.label ?? w?.window?.label ?? w?.name ?? "usage"),
+          // Codex reports spark/primary/secondary buckets that all carry the
+          // same label; without upstream's id they collapse onto one row.
+          id: String(w?.id ?? (scope.tier ? `${label}:${String(scope.tier)}` : label)),
+          label,
           fraction,
           used,
           limit,
@@ -182,9 +189,16 @@ export class RuntimeManager {
         });
       }
       const fetchedMs = numOrUndef(r?.fetchedAt);
+      // pi-ai's UsageReport has no `accountLabel`: identity lives in the
+      // report metadata, or failing that on each limit's scope. Reading the
+      // field that does not exist left every report of a multi-account
+      // provider (Codex, precisely) labelled identically and keyed identically.
+      const meta = (r?.metadata ?? {}) as Record<string, unknown>;
+      const scopeAccount = candidates.find((w: any) => w?.scope?.accountId)?.scope?.accountId;
+      const account = meta.email ?? meta.accountId ?? scopeAccount;
       out.push({
         provider: String(r?.provider ?? r?.name ?? "unknown"),
-        accountLabel: r?.accountLabel ? String(r.accountLabel) : undefined,
+        accountLabel: account ? String(account) : undefined,
         windows,
         fetchedAt: fetchedMs !== undefined ? new Date(fetchedMs).toISOString() : now,
         unavailableReason:
@@ -480,24 +494,18 @@ export class RuntimeManager {
       // Reconcile this one session against its persisted file: upgrades the
       // live counters to omp-session authority without waiting for a manual
       // reindex. Single-file streaming read; failures never affect the turn.
-      const s = this.list().find((x) => x.sessionId === e.sessionId);
-      if (s?.ompSessionPath) {
-        const path = s.ompSessionPath;
-        const title = s.title;
-        void readSessionFileUsage(path)
-          .then((usage) => {
-            if (!usage) return;
-            const records = usage.records.map((r) => ({
-              ...r,
-              sessionTitle: usage.title ?? title,
-            }));
-            this.#usageIndex.ingest(records);
-          })
-          .catch(() => {});
-      }
+      this.#reconcileLater(e.sessionId);
+    }
+    if (e.type === "advisor.review" && !e.active) {
+      // The review window closing is when the advisors' transcripts are
+      // finally on disk. Reconciling only at `session.finished` missed them
+      // entirely on the common path: an advisor with no concern raises no
+      // continuation turn, so no second finish ever arrives to pick them up.
+      this.#reconcileLater(e.sessionId);
     }
     if (e.type === "usage.records") {
-      // Mirror worker records into the persistent engine-wide index.
+      // Mirror worker records into the persistent engine-wide index. It
+      // rejects cumulative advisor snapshots itself — see isSupersededSnapshot.
       this.#usageIndex.ingest(e.records);
     }
     this.#opts.emit(e);
@@ -541,25 +549,95 @@ export class RuntimeManager {
   }
 
   /**
+   * Reconcile a live session's persisted usage in the background. Never
+   * awaited by an event handler: a slow disk must not stall the event stream,
+   * and a failure here is a stale number, not a broken turn.
+   */
+  #reconcileLater(sessionId: string): void {
+    const s = this.list().find((x) => x.sessionId === sessionId);
+    if (!s?.ompSessionPath) return;
+    void this.#reconcileSessionFile(s.ompSessionPath, s.title).catch(() => {});
+  }
+
+  /**
+   * Bring one session's persisted usage into the index at `omp-session`
+   * authority: the parent transcript plus the advisor and subagent
+   * transcripts nested beside it. Streaming reads; failures never affect the
+   * turn that triggered them.
+   */
+  async #reconcileSessionFile(path: string, fallbackTitle?: string): Promise<number> {
+    const usage = await readSessionFileUsage(path);
+    if (!usage) return 0;
+    const title = usage.title ?? fallbackTitle;
+    let indexed = this.#usageIndex.ingest(
+      usage.records.map((r) => ({ ...r, sessionTitle: title })),
+    );
+    if (!usage.ompSessionId) return indexed;
+    for (const n of await discoverNestedTranscripts(path)) {
+      const nestedUsage = await readSessionFileUsage(n.path, {
+        actorType: n.actorType,
+        actorId: n.actorId,
+        actorName: n.actorName,
+        ompSessionId: usage.ompSessionId,
+        projectId: usage.cwd,
+      });
+      if (!nestedUsage) continue;
+      indexed += this.#usageIndex.ingest(
+        nestedUsage.records.map((r) => ({ ...r, sessionTitle: title })),
+      );
+    }
+    return indexed;
+  }
+
+  /**
    * Rebuild the usage index from OMP's persisted session files. Authoritative
    * (`omp-session` source outranks live counters); global responseId identity
    * makes re-running this idempotent and fork-safe.
+   *
+   * Walks the nested advisor and subagent transcripts too. They are the only
+   * record of what those actors spent — the parent transcript's toolResult
+   * rows carry no usage — and OMP's own session listing cannot see them.
    */
   async reindexUsage(): Promise<{ indexed: number; durationMs: number }> {
     const startedAt = Date.now();
     let indexed = 0;
+    /** Parent identity by session-file path, for attributing nested rows. */
+    const parents = new Map<string, { ompSessionId: string; cwd: string; title?: string }>();
     const sessions = await discoverSessions(undefined);
     for (const s of sessions) {
       const usage = await readSessionFileUsage(s.path);
       if (!usage) continue;
+      parents.set(resolve(s.path), usage);
       // Carry the parsed title so "By session" can show a name, not an id.
       const records = usage.title
         ? usage.records.map((r) => ({ ...r, sessionTitle: usage.title }))
         : usage.records;
       indexed += this.#usageIndex.ingest(records);
     }
+    const nested = await discoverNestedTranscripts();
+    for (const n of nested) {
+      const parent = parents.get(resolve(n.parentPath));
+      if (!parent?.ompSessionId) continue;
+      const usage = await readSessionFileUsage(n.path, {
+        actorType: n.actorType,
+        actorId: n.actorId,
+        actorName: n.actorName,
+        ompSessionId: parent.ompSessionId,
+        projectId: parent.cwd,
+      });
+      if (!usage) continue;
+      indexed += this.#usageIndex.ingest(
+        parent.title
+          ? usage.records.map((r) => ({ ...r, sessionTitle: parent.title }))
+          : usage.records,
+      );
+    }
     const durationMs = Date.now() - startedAt;
-    logger.info("usage-index", `reindexed ${sessions.length} sessions`, { indexed, durationMs });
+    logger.info("usage-index", `reindexed ${sessions.length} sessions`, {
+      indexed,
+      nested: nested.length,
+      durationMs,
+    });
     return { indexed, durationMs };
   }
 

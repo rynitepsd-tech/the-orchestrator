@@ -59,6 +59,21 @@ export function globalUsageKey(r: UsageRecord): string {
   return ["s", scope, r.actorId, messageId].join(SEP);
 }
 
+/**
+ * Cumulative advisor snapshots are no longer part of the engine-wide index.
+ *
+ * They were a stand-in for a ledger we could not read. Advisor transcripts are
+ * now indexed per response (see RuntimeManager#reconcileSessionFile), and a
+ * total keyed per session+advisor SUMS on top of those itemized rows instead
+ * of replacing them. Rejected on every path — live ingest, load, and the flush
+ * merge — so neither a running worker nor a file written by an older build can
+ * reintroduce them. The per-session Inspector still shows them, straight from
+ * the worker's own accumulator.
+ */
+function isSupersededSnapshot(r: UsageRecord): boolean {
+  return r?.source === "advisor-log";
+}
+
 export class UsageIndex {
   readonly #acc = new UsageAccumulator();
   readonly #path: string;
@@ -86,6 +101,7 @@ export class UsageIndex {
         if (!line.trim()) continue;
         try {
           const r = JSON.parse(line) as UsageRecord;
+          if (isSupersededSnapshot(r)) continue;
           if (typeof r?.key === "string" && typeof r?.actorId === "string") {
             this.#acc.ingest(r);
             loaded++;
@@ -107,6 +123,7 @@ export class UsageIndex {
     let changed = 0;
     const now = new Date().toISOString();
     for (const r of records) {
+      if (isSupersededSnapshot(r)) continue;
       const key = globalUsageKey(r);
       const existing = this.#acc.get(key);
       // Time-filterable even for snapshot records that carry no timestamp —
@@ -183,6 +200,7 @@ export class UsageIndex {
           if (!line.trim()) continue;
           try {
             const r = JSON.parse(line) as UsageRecord;
+            if (isSupersededSnapshot(r)) continue;
             if (typeof r?.key === "string" && typeof r?.actorId === "string") this.#acc.ingest(r);
           } catch {
             /* torn line from a crashed writer */

@@ -800,24 +800,52 @@ let advisorReviewGen = 0;
 let advisorReviewInFlight = false;
 const ADVISOR_CATCHUP_MS = 10 * 60_000;
 
+/**
+ * Open/close the review window, announcing every transition.
+ *
+ * The host cannot derive this from `advisor.state`: those are per-advisor and
+ * only emitted on change, so the window's opening is invisible until some
+ * advisor's runtime status happens to flip. This flag is the truth.
+ */
+function setAdvisorReview(active: boolean): void {
+  if (advisorReviewInFlight === active) return;
+  advisorReviewInFlight = active;
+  emit({ type: "advisor.review", sessionId: boot.sessionId, active });
+}
+
+/** The optional upstream surface this watch needs; probed, never assumed. */
+interface AdvisorReviewSession {
+  isAdvisorActive?: () => boolean;
+  waitForAdvisorCatchup?: (timeoutMs: number) => Promise<unknown>;
+}
+
 function beginAdvisorReviewWatch(): void {
-  const s: any = session;
-  if (advisors.size === 0 || !s.isAdvisorActive?.()) return;
-  if (typeof s.waitForAdvisorCatchup !== "function") return;
+  const s = session as unknown as AdvisorReviewSession;
+  const catchup = s.waitForAdvisorCatchup;
+  if (advisors.size === 0 || !s.isAdvisorActive?.() || typeof catchup !== "function") {
+    // No review is coming for this turn. Cancel any window a previous turn
+    // left open and close it now, so the turn is announced as settled instead
+    // of waiting on a catchup that will never be observed.
+    advisorReviewGen++;
+    setAdvisorReview(false);
+    return;
+  }
   const gen = ++advisorReviewGen;
-  advisorReviewInFlight = true;
+  setAdvisorReview(true);
   refreshAdvisors(); // "reviewing" goes out before session.finished does
   void (async () => {
     try {
       // Give the just-ended turn a beat to land in the advisors' queues, or
       // the catchup wait can resolve before the review it should cover starts.
-      await new Promise((r) => setTimeout(r, 1_000));
-      await s.waitForAdvisorCatchup(ADVISOR_CATCHUP_MS);
+      const settle = Promise.withResolvers<void>();
+      setTimeout(settle.resolve, 1_000);
+      await settle.promise;
+      await catchup.call(s, ADVISOR_CATCHUP_MS);
     } catch {
       /* the wait must never wedge the finished state */
     }
     if (gen !== advisorReviewGen) return; // a newer turn owns the window now
-    advisorReviewInFlight = false;
+    setAdvisorReview(false);
     refreshAdvisors();
   })();
 }
@@ -838,21 +866,23 @@ function refreshAdvisors(): void {
     if (!name) continue;
     const id = `advisor:${name}`;
     const cfg = advisors.get(id);
+    // Fault states win outright. Otherwise the REVIEW WINDOW decides, not
+    // `status === "running"`: an advisor that was just handed the turn can
+    // still report its pre-review status for a beat (or not be enumerated at
+    // all on cold spin-up), which used to publish a bogus "idle" mid-review.
     const state =
       cfg?.enabled === false
         ? "disabled"
-        : per?.status === "running"
-          ? advisorReviewInFlight
-            ? "reviewing"
-            : "idle"
-          : per?.status === "paused"
-            ? "paused"
-            : per?.status === "quota_exhausted"
-              ? "quota-exhausted"
-              : per?.status === "no_model"
-                ? "no-model"
-                : per?.status === "error"
-                  ? "failed"
+        : per?.status === "paused"
+          ? "paused"
+          : per?.status === "quota_exhausted"
+            ? "quota-exhausted"
+            : per?.status === "no_model"
+              ? "no-model"
+              : per?.status === "error"
+                ? "failed"
+                : advisorReviewInFlight
+                  ? "reviewing"
                   : "idle";
 
     // Polled on a timer while advisors review asynchronously; only state
@@ -995,15 +1025,18 @@ session.subscribe((ev: any) => {
   }
   if (ev?.type === "agent_end") {
     flush();
+    // The review window opens FIRST. Refreshing before it opened published a
+    // fresh "idle" for every advisor — and seeded the change-dedupe map with
+    // it — in the very instant the review was starting.
+    //
+    // For owned prompts this runs before the prompt resolves (so the host has
+    // the window open before `session.finished` lands), and it equally covers
+    // advisor-triggered continuation turns that never reach the prompt handler.
+    if (ev.isTerminal !== false) beginAdvisorReviewWatch();
     refreshAdvisors();
     emitUsage();
     emitContext();
     checkPersisted();
-    // A terminal turn end opens the advisor review window — for owned prompts
-    // this runs before the prompt resolves (so `session.finished` already sees
-    // "reviewing"), and it equally covers advisor-triggered continuation turns
-    // that never pass through the prompt handler.
-    if (ev.isTerminal !== false) beginAdvisorReviewWatch();
     // A continuation turn has no prompt handler to close it. Announce its end
     // here — exactly once, with the state that actually occurred — so the
     // host learns the revised answer is the real finish of the user's turn.

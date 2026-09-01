@@ -72,10 +72,12 @@ worker processes, one completed tool-running turn each):
 
 ## Usage index
 
-Reindexing **197 real session files → 1,967 usage records took 101 ms**
+Reindexing **1,768 real session files plus the 219 advisor/subagent
+transcripts nested beneath them → 28,658 usage records took 1.2 s**
 (`usage.reindex`). The index loads off the startup path, persists as a
 single JSONL snapshot with atomic writes, and re-running reindex is
-idempotent (global responseId identity).
+idempotent (global responseId identity): three consecutive passes produced
+byte-identical totals.
 
 ## Where the time is NOT spent
 

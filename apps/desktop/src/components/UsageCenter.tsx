@@ -13,7 +13,7 @@ import type { ModelInfo, TokenCounts, UsageRecord } from "@orchestrator/protocol
 import type { JSX } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { engine } from "../engine-client";
-import { fmtCost, fmtCount, fmtTokens, useStore } from "../store";
+import { fmtCost, fmtCount, fmtTokens, providerLabel, providerVendor, useStore } from "../store";
 import { QuotaSection } from "./Inspector";
 
 type Range = "today" | "7d" | "30d" | "all";
@@ -34,7 +34,12 @@ function sinceFor(range: Range): string | undefined {
   }
 }
 
-/** Stable accent per provider; unknown providers cycle the tail palette. */
+/**
+ * Stable accent per provider. Keyed by VENDOR, because OMP provider ids name
+ * the transport too — a ChatGPT subscription reports `openai-codex`, never
+ * `openai`, and cycling the fallback palette gave OpenAI a different colour
+ * every time the share ranking changed.
+ */
 const PROVIDER_COLORS: Record<string, string> = {
   anthropic: "#ff8f66",
   openai: "#e8e8e8",
@@ -45,12 +50,11 @@ const PROVIDER_COLORS: Record<string, string> = {
 const FALLBACK_COLORS = ["#b28dff", "#6fc1ff", "#8be59a", "#f2a0c0", "#c9c9c9"];
 
 function providerColor(provider: string, index: number): string {
-  return PROVIDER_COLORS[provider] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length];
-}
-
-function providerLabel(p: string): string {
-  if (p === "openai") return "OpenAI";
-  return p.charAt(0).toUpperCase() + p.slice(1);
+  return (
+    PROVIDER_COLORS[provider] ??
+    PROVIDER_COLORS[providerVendor(provider)] ??
+    FALLBACK_COLORS[index % FALLBACK_COLORS.length]
+  );
 }
 
 function fmtDay(iso: string): string {
@@ -87,7 +91,16 @@ export function UsageCenter(): JSX.Element {
   const [providerFilter, setProviderFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
   const projects = useStore((s) => s.projects);
-  const providers = useStore((s) => s.providers);
+  /**
+   * Providers the index actually holds, captured from the UNFILTERED query.
+   *
+   * The menu used to list the model catalogue's provider ids, which are not
+   * the ids records carry: a ChatGPT subscription indexes every response under
+   * `openai-codex` while the catalogue also advertises a plain `openai`, so
+   * picking the option that read "OpenAI" filtered every row away and the tab
+   * reported no usage at all.
+   */
+  const [seenProviders, setSeenProviders] = useState<string[]>([]);
 
   const refresh = async (r: Range) => {
     try {
@@ -127,6 +140,13 @@ export function UsageCenter(): JSX.Element {
 
   const records = globalUsage?.records ?? [];
   const agg = useMemo(() => aggregate(records, models), [records, models]);
+  useEffect(() => {
+    if (providerFilter) return; // a filtered query only ever sees one provider
+    const found = agg.byProvider.map((p) => p.provider).sort();
+    setSeenProviders((prev) =>
+      prev.length === found.length && prev.every((p, i) => p === found[i]) ? prev : found,
+    );
+  }, [agg, providerFilter]);
 
   const rangeLabel =
     agg.firstDay && agg.lastDay
@@ -170,9 +190,9 @@ export function UsageCenter(): JSX.Element {
           onChange={(e) => setProviderFilter(e.target.value)}
         >
           <option value="">All providers</option>
-          {providers.map((p) => (
-            <option key={p.name} value={p.name}>
-              {providerLabel(p.name)}
+          {seenProviders.map((p) => (
+            <option key={p} value={p}>
+              {providerLabel(p)}
             </option>
           ))}
         </select>
@@ -364,13 +384,23 @@ export function UsageCenter(): JSX.Element {
             <section>
               <div className="section-label">By session</div>
               <table className="usage-table">
+                <thead>
+                  <tr>
+                    <th>Session</th>
+                    <th className="col-project">Project</th>
+                    <th className="num">Tokens</th>
+                    <th className="num">Cost</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {agg.bySession.slice(0, 20).map((s) => (
                     <tr key={s.key}>
                       <td className={s.title ? undefined : "mono"} title={s.key}>
                         {s.title ?? s.key.slice(0, 8)}
                       </td>
-                      <td title={s.project}>{s.project.split("/").pop() || "—"}</td>
+                      <td className="col-project" title={s.project}>
+                        {s.project.split("/").pop() || "—"}
+                      </td>
                       <td className="num">{fmtTokens(s.total)}</td>
                       <td className="num">{fmtCost(s.cost) ?? ""}</td>
                     </tr>
@@ -387,6 +417,13 @@ export function UsageCenter(): JSX.Element {
             <section>
               <div className="section-label">By project</div>
               <table className="usage-table">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th className="num">Tokens</th>
+                    <th className="num">Cost</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {agg.byProject.slice(0, 20).map((p) => (
                     <tr key={p.key}>
@@ -408,6 +445,13 @@ export function UsageCenter(): JSX.Element {
               <section>
                 <div className="section-label">Advisors</div>
                 <table className="usage-table">
+                  <thead>
+                    <tr>
+                      <th>Advisor</th>
+                      <th className="num">Tokens</th>
+                      <th className="num">Cost</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {agg.advisors.map((a) => (
                       <tr key={a.name}>

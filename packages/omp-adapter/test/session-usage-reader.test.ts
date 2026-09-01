@@ -3,9 +3,10 @@
  * usage records. Fixture lines mirror the real on-disk shape (OMP 17.3.1).
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { discoverNestedTranscripts } from "../src/discovery";
 import { readSessionFileUsage } from "../src/session-usage-reader";
 
 const dirs: string[] = [];
@@ -85,6 +86,62 @@ describe("readSessionFileUsage", () => {
     const p = fixture([header, assistantMsg("resp-A", 500), '{"type":"message","id":"tor']);
     const res = await readSessionFileUsage(p);
     expect(res!.records.length).toBe(1);
+  });
+
+  test("a nested transcript is attributed to the parent session and its actor", async () => {
+    // Advisor and subagent transcripts are separate files with their own
+    // session headers, but the tokens were spent on the parent's behalf.
+    const p = fixture([
+      { type: "title", title: "" },
+      { type: "session", version: 3, id: "advisor-own-id", cwd: "/proj" },
+      assistantMsg("resp-adv", 700),
+    ]);
+    const res = await readSessionFileUsage(p, {
+      actorType: "advisor",
+      actorId: "advisor:reviewer",
+      actorName: "Reviewer",
+      ompSessionId: "omp-123",
+      projectId: "/proj",
+    });
+    const [r] = res!.records;
+    expect(r.actorType).toBe("advisor");
+    expect(r.actorId).toBe("advisor:reviewer");
+    expect(r.actorName).toBe("Reviewer");
+    expect(r.sessionId).toBe("omp-123");
+    expect(r.ompSessionId).toBe("omp-123");
+    expect(r.source).toBe("omp-session");
+    // Identity stays the provider response, so the same response observed
+    // live as a subagent and here as a file row collapses to one record.
+    expect(r.key).toContain("resp-adv");
+  });
+
+  test("discovers and classifies the transcripts nested beneath one session", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "orch-reader-nested-"));
+    dirs.push(dir);
+    const parent = join(dir, "turn.jsonl");
+    const nested = join(dir, "turn");
+    mkdirSync(nested);
+    writeFileSync(parent, `${JSON.stringify(header)}\n`);
+    writeFileSync(join(nested, "__advisor.reviewer.jsonl"), "");
+    writeFileSync(join(nested, "ArchitectureAudit.jsonl"), "");
+
+    const rows = await discoverNestedTranscripts(parent);
+    expect(rows).toEqual([
+      {
+        path: join(nested, "ArchitectureAudit.jsonl"),
+        parentPath: parent,
+        actorType: "subagent",
+        actorId: "subagent:ArchitectureAudit",
+        actorName: "ArchitectureAudit",
+      },
+      {
+        path: join(nested, "__advisor.reviewer.jsonl"),
+        parentPath: parent,
+        actorType: "advisor",
+        actorId: "advisor:reviewer",
+        actorName: "Reviewer",
+      },
+    ]);
   });
 
   test("missing file returns null instead of throwing", async () => {

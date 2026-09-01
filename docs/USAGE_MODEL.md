@@ -46,21 +46,44 @@ Implementation: `packages/usage/src/accumulator.ts`.
 |---|---|---|
 | **Primary tokens** | `turn_end.message.usage` | `{input, output, cacheRead, cacheWrite, totalTokens, cost{…}}`, keyed by `responseId` |
 | **Primary cost** | `usage.cost.total` | Computed by OMP. Absent ≠ zero |
-| **Advisor tokens & cost** | `session.getAdvisorStats().advisors[]` | Cumulative snapshot per named advisor; each poll **replaces** |
-| **Subagent** | task tool result usage | Keyed by tool call id |
+| **Advisor tokens & cost** | the advisor's own `__advisor.<name>.jsonl` transcript | One record per provider response, keyed by `responseId` |
+| **Subagent** | the subagent's own `<Agent>.jsonl` transcript, plus live `task:subagent:event` | Keyed by `responseId` |
 | **Context window** | `session.getContextUsage()` | `usedTokens` / `contextWindow` |
 | **Provider quota** | `authStorage.fetchUsageReports()` | Only providers with a usage endpoint |
 
 ### Advisor caveat
 
-`PerAdvisorStat.cost` **is** cumulative and survives resume. `PerAdvisorStat.tokens` is
-**live-context only** and resets when the advisor compacts. Advisor rows therefore show cost as the
-durable number; token counts are a current-window figure.
+`session.getAdvisorStats()` reports a **cumulative** snapshot per advisor: `PerAdvisorStat.cost` is
+durable and survives resume, while `PerAdvisorStat.tokens` is live-context only and resets when the
+advisor compacts. That snapshot drives the per-session Inspector panel, and *only* that — the
+engine-wide index rejects it (`isSupersededSnapshot`), because a per-session total would **sum** on
+top of the itemized rows read from the advisor's transcript instead of replacing them.
+
+### Nested transcripts
+
+Advisors and subagents write their own transcripts one directory level *below* the session file:
+
+```
+<agent-dir>/sessions/<project>/<session>.jsonl          ← the primary agent
+<agent-dir>/sessions/<project>/<session>/Scout.jsonl    ← a subagent
+<agent-dir>/sessions/<project>/<session>/__advisor.reviewer.jsonl
+```
+
+OMP's own `listAllSessions()` globs exactly one level, so every session-level consumer is blind to
+them — and their tokens are **not** folded into the parent: a parent transcript's `toolResult` rows
+carry no `usage` at all. A setup that runs its primary agent on one provider and its advisors on
+another therefore saw the second provider almost entirely missing from the usage centre.
+
+`discoverNestedTranscripts()` enumerates them, and they are read through the same
+`readSessionFileUsage()` with an actor attribution that files the rows under the **parent** session.
+Identity is still the provider `responseId`, so this is additive, not double counting: measured on a
+real environment, 219 nested transcripts share **zero** response ids with the 1,768 top-level files.
 
 ### What is deliberately *not* summed
 
-- Subagent transcripts are **not** added on top of the primary ledger where OMP already folds task
-  `toolResult` usage into it — doing both double-counts every blocking subagent turn.
+- Cumulative advisor snapshots are **not** added to the itemized advisor rows read from the
+  advisor's own transcript — they describe the same tokens through a per-session total instead of
+  per-response identity, so only the itemized rows reach the engine-wide index.
 - `getSessionStats()` is **not** added to per-response records. It measures the same scope through a
   different window (it is not cumulative and *drops* after compaction), so it is used as a
   reconciliation cross-check only.
@@ -135,14 +158,18 @@ cross-session question:
 - **Provider retries are not deduplicated away** — a retry gets a fresh `responseId` from the
   provider, so it accumulates as genuinely new usage, which is correct: a retried call really did
   spend tokens.
-- **Cumulative advisor snapshots stay scoped per `ompSessionId` + actor.** Unlike primary usage,
-  `PerAdvisorStat.cost` is a cumulative counter reported by OMP itself (see
-  [OMP_COMPATIBILITY.md](./OMP_COMPATIBILITY.md)), not a set of individually-keyed responses, so it
-  is tracked per session-and-advisor rather than deduplicated by response identity.
-- **`usage.reindex`** parses OMP's own session `.jsonl` files directly and treats them as the
-  authoritative `"omp-session"` source — the same authority ranking as R2, at the top. Reindexing is
-  idempotent: running it twice does not change the totals, because record identity is deterministic.
-  Measured on a real environment: **197 session files reindexed into 1,967 records in 101 ms**. See
+- **Cumulative advisor snapshots are not in this index at all.** They are a per-session total, not a
+  set of individually-keyed responses, so they cannot dedup against the itemized advisor rows the
+  reindex reads — they would sum on top of them. `UsageIndex` rejects `source: "advisor-log"` on
+  every path (live ingest, load, and the flush merge that re-reads the file), so neither a running
+  worker nor a file written by an older build can reintroduce them. The per-session Inspector still
+  shows them, straight from the worker's own accumulator.
+- **`usage.reindex`** parses OMP's own session `.jsonl` files directly — the top-level session files
+  *and* the advisor/subagent transcripts nested beneath them — and treats them as the authoritative
+  `"omp-session"` source, the same authority ranking as R2, at the top. Reindexing is idempotent:
+  running it twice does not change the totals, because record identity is deterministic. Measured on
+  a real environment: **1,768 session files plus 219 nested transcripts into 28,658 records in
+  1.2 s**, with totals byte-identical across three consecutive passes. See
   [PERFORMANCE.md](./PERFORMANCE.md) for the full measurement.
 
 ## Tests

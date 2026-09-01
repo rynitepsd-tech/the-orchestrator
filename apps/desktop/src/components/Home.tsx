@@ -13,7 +13,7 @@ import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useMemo, useRef, useState } from "react";
 import { type Attachment, attachmentKind, storeBlob } from "../lib/attachments";
-import type { SessionPreset } from "../lib/prefs";
+import { projectParent, type SessionPreset } from "../lib/prefs";
 import { modelBasename, useStore } from "../store";
 import { FolderIcon } from "./icons";
 import { PresetForm } from "./PresetForm";
@@ -264,33 +264,49 @@ export function Home({
           </select>
 
           {/* Project: last-worked first, with the rest one click away. */}
-          <div className="home-project-picker" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="home-project-picker"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setProjectMenu(false);
+            }}
+          >
             <button
-              className="input home-select"
+              className="input home-select home-project-trigger"
               onClick={() => setProjectMenu((v) => !v)}
               title={projectPath || "Choose a project folder"}
+              aria-haspopup="menu"
+              aria-expanded={projectMenu}
             >
-              <FolderIcon /> {folder ?? "Choose folder…"}
+              <FolderIcon />
+              <span className="home-project-trigger-name">{folder ?? "Choose folder…"}</span>
             </button>
             {projectMenu && (
-              <div className="home-project-menu">
+              <div className="home-project-menu" role="menu" aria-label="Project folder">
                 {projects.map((p) => (
                   <button
                     key={p}
-                    className={`menu-item home-menu-item${p === projectPath ? " selected" : ""}`}
+                    className={`home-menu-item${p === projectPath ? " selected" : ""}`}
+                    role="menuitemradio"
+                    aria-checked={p === projectPath}
                     title={p}
                     onClick={() => {
                       setProjectPath(p);
                       setProjectMenu(false);
                     }}
                   >
-                    {alias(p)}
-                    <span className="hint home-menu-path">{p}</span>
+                    <span className="home-menu-head">
+                      <span className="home-menu-name">{alias(p)}</span>
+                      {/* Pinned folders keep their place in the recents order —
+                          the tag is what makes them findable, not a reshuffle. */}
+                      {prefs.pinnedProjects.includes(p) && <span className="pin-tag">pinned</span>}
+                    </span>
+                    <span className="home-menu-path">{projectParent(p)}</span>
                   </button>
                 ))}
-                <hr />
-                <button className="menu-item" onClick={pickFolder}>
-                  Browse…
+                {projects.length > 0 && <hr />}
+                <button className="menu-item home-menu-browse" role="menuitem" onClick={pickFolder}>
+                  <FolderIcon /> Browse…
                 </button>
               </div>
             )}

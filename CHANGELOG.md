@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.8
+
+- **Finished-turn alerts now wait for advisors.** The worker now publishes an
+  authoritative post-turn review window instead of asking the UI to infer it
+  from per-advisor states that can lag by five seconds. Inbox cards, the
+  sidebar badge, transcript markers and completion notifications stay quiet
+  until that window closes; advisor continuations no longer cause a second
+  notification.
+- **Usage now includes advisor and subagent transcripts.** OMP stores those
+  one directory below the primary session files, outside its normal session
+  listing, so reindexing missed most usage from providers assigned to review
+  work — especially `openai-codex`. Reindex and turn settlement now read the
+  nested transcripts per response, retire the overlapping cumulative advisor
+  snapshots from the global ledger, label ChatGPT-backed OpenAI records
+  correctly, and keep multi-account quota reports distinct.
+- **Session setup and usage breakdowns are easier to scan.** Folder choices
+  now separate the project name from its containing path, mark pinned folders
+  and give remembered projects real spacing in both launch surfaces. The
+  By-session table now gets the wider grid span its four columns require,
+  with headers, stable numeric widths, ellipsis and responsive single-column
+  fallback instead of crushed titles and glued-together numbers.
+
 ## 0.6.7
 
 - **Closed sessions no longer resurface when their folder is gone.** 0.6.6's

@@ -11,10 +11,10 @@ import type { AdvisorConfig, ModelInfo, SessionLaunchConfig } from "@orchestrato
 import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionPreset } from "../lib/prefs";
+import { projectParent, type SessionPreset } from "../lib/prefs";
 import { useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
-import { BoltIcon } from "./icons";
+import { BoltIcon, FolderIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 
 export function NewSession({
@@ -193,7 +193,9 @@ export function NewSession({
           </div>
         )}
 
-        <label className="field">
+        {/* A div, not a label: the field holds buttons, and a wrapping label
+            hands their clicks to the path input. */}
+        <div className="field project-field">
           <span>Project</span>
           <div className="row">
             <input
@@ -202,6 +204,7 @@ export function NewSession({
               onChange={(e) => setProjectPath(e.target.value)}
               placeholder="/path/to/project"
               spellCheck={false}
+              aria-label="Project folder path"
             />
             <button
               className="btn"
@@ -211,24 +214,35 @@ export function NewSession({
                 })
               }
             >
-              Browse…
+              <FolderIcon /> Browse…
             </button>
           </div>
           {recentProjects.length > 0 && (
-            <div className="recent-projects">
-              {recentProjects.slice(0, 6).map((p) => (
-                <button
-                  key={p}
-                  className="chip chip-btn"
-                  title={p}
-                  onClick={() => setProjectPath(p)}
-                >
-                  {p.split("/").pop()}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="section-label">Remembered folders</div>
+              <div className="recent-projects">
+                {recentProjects.slice(0, 6).map((p) => (
+                  <button
+                    key={p}
+                    className="project-recent"
+                    title={p}
+                    onClick={() => setProjectPath(p)}
+                  >
+                    <span className="project-recent-head">
+                      <span className="project-recent-name">
+                        {prefs.projectAliases[p] ?? (p.split("/").pop() || p)}
+                      </span>
+                      {prefs.pinnedProjects.includes(p) && <span className="pin-tag">pinned</span>}
+                    </span>
+                    {/* Tighter budget than the default: these cards are half a
+                        modal wide, and CSS clipping cuts the wrong end. */}
+                    <span className="project-recent-path">{projectParent(p, 34)}</span>
+                  </button>
+                ))}
+              </div>
+            </>
           )}
-        </label>
+        </div>
 
         <label className="field">
           <span>Session title (optional)</span>

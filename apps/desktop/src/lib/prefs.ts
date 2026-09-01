@@ -64,6 +64,26 @@ export interface Prefs {
   sessionApprovalByPath: Record<string, string>;
 }
 
+/**
+ * The containing directory, for the secondary line under a project's name.
+ * Over budget it loses LEADING segments, never trailing ones: the folders
+ * nearest the project are what tell one "web" or "api" from another, and a
+ * tail-clipped path answers nothing. Callers keep the whole path in a title.
+ */
+export function projectParent(path: string, budget = 42): string {
+  const clean = path.replace(/\/+$/, "");
+  const cut = clean.lastIndexOf("/");
+  if (cut < 1) return cut === 0 ? "/" : "";
+  const dir = clean.slice(0, cut);
+  if (dir.length <= budget) return dir;
+  const segs = dir.split("/").filter(Boolean);
+  // Grow from the tail while it fits; two segments always survive, so the line
+  // never degrades into a lone ellipsis.
+  let keep = Math.min(segs.length, 2);
+  while (keep < segs.length && segs.slice(-(keep + 1)).join("/").length + 2 <= budget) keep += 1;
+  return keep < segs.length ? `…/${segs.slice(-keep).join("/")}` : dir;
+}
+
 const KEY = "orchestrator.prefs.v1";
 
 export const DEFAULT_PREFS: Prefs = {
