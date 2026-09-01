@@ -109,9 +109,39 @@ export class RuntimeManager {
       }
     }
     if (!this.#modelsCache) {
-      this.#modelsCache = listModels(this.#modelRegistry as never, this.#authStorage as never);
+      // Let boot-time discovery settle FIRST. `refreshInBackground()` in
+      // init() is fire-and-forget, and the UI asks for the catalogue the
+      // instant the engine reports ready — so this used to snapshot the
+      // bundled catalogue mid-flight and then cache it forever. Every model
+      // the provider announced after the pinned OMP release (a new GPT or
+      // Claude, or the account-scoped Codex list) stayed invisible until the
+      // app was restarted into a luckier race.
+      //
+      // Bounded, because discovery talks to every configured provider: one
+      // unreachable endpoint must not hold the model picker empty. On timeout
+      // the bundled catalogue is served but NOT cached, so the next call
+      // retries instead of freezing the incomplete list in place.
+      const settled = await this.#awaitDiscovery();
+      const models = listModels(this.#modelRegistry as never, this.#authStorage as never);
+      if (!settled) return models;
+      this.#modelsCache = models;
     }
     return this.#modelsCache;
+  }
+
+  /** True when discovery finished; false when it outran its budget. */
+  async #awaitDiscovery(timeoutMs = 8_000): Promise<boolean> {
+    const pending = (this.#modelRegistry as any)?.awaitBackgroundRefresh?.();
+    if (!pending) return true;
+    const timer = Promise.withResolvers<false>();
+    const handle = setTimeout(() => timer.resolve(false), timeoutMs);
+    try {
+      return await Promise.race([pending.then(() => true), timer.promise]);
+    } catch {
+      return true; // discovery failed outright; the bundled catalogue stands
+    } finally {
+      clearTimeout(handle);
+    }
   }
 
   async providers(): Promise<ProviderInfo[]> {

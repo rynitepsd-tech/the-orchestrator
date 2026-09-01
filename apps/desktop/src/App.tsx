@@ -273,10 +273,16 @@ export function App(): JSX.Element {
     return () => engine.dispose();
   }, [notify]);
 
-  const loadCatalogue = async () => {
+  /**
+   * `rediscover` re-runs OMP's provider model discovery instead of serving the
+   * engine's cached catalogue. Boot passes false (discovery is already settling
+   * behind the first `models.list`); the periodic reload passes true, so a
+   * model the provider released while the app was open appears on its own.
+   */
+  const loadCatalogue = async (rediscover = false) => {
     try {
       const [m, p] = await Promise.all([
-        engine.request("models.list", {}),
+        engine.request("models.list", rediscover ? { refresh: true } : {}),
         engine.request("providers.list", {}),
       ]);
       useStore.getState().setCatalogue(m.models, p.providers);
@@ -306,8 +312,9 @@ export function App(): JSX.Element {
     const t = setInterval(() => {
       // Full catalogue refresh (models + providers + quotas) so a credential
       // that dies mid-session (expired OAuth grant) surfaces as a banner
-      // without an app restart.
-      if (useStore.getState().engineStage === "ready") void loadCatalogue();
+      // without an app restart, and a newly released model becomes selectable
+      // without one either.
+      if (useStore.getState().engineStage === "ready") void loadCatalogue(true);
     }, 600_000);
     return () => clearInterval(t);
   }, []);

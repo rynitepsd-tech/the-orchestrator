@@ -21,6 +21,15 @@
   By-session table now gets the wider grid span its four columns require,
   with headers, stable numeric widths, ellipsis and responsive single-column
   fallback instead of crushed titles and glued-together numbers.
+- **Newly released models now appear without reinstalling.** OMP discovers
+  models from each provider's own endpoint, but the engine asked for the
+  catalogue the instant it reported ready — snapshotting the bundled list
+  mid-discovery and caching it for the life of the process, and the ten-minute
+  catalogue reload never re-ran discovery either. A new GPT or Claude, or a
+  change to the account-scoped Codex list, stayed invisible until a restart
+  happened to win the race. The first catalogue read now waits for discovery
+  (bounded, so one unreachable provider cannot empty the model picker) and the
+  periodic reload re-runs it.
 
 ## 0.6.7
 
