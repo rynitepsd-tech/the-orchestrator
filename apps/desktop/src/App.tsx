@@ -276,8 +276,13 @@ export function App(): JSX.Element {
   /**
    * `rediscover` re-runs OMP's provider model discovery instead of serving the
    * engine's cached catalogue. Boot passes false (discovery is already settling
-   * behind the first `models.list`); the periodic reload passes true, so a
-   * model the provider released while the app was open appears on its own.
+   * behind the first `models.list`); the periodic reload passes true.
+   *
+   * That request is cache-aware upstream: OMP's built-in discovery holds a
+   * two-hour TTL, so this asks every ten minutes but only reaches the provider
+   * once the TTL lapses. Deliberate — polling every configured provider's model
+   * endpoint six times an hour would cost real requests and risk rate limits to
+   * learn something that changes a few times a year.
    */
   const loadCatalogue = async (rediscover = false) => {
     try {
@@ -313,7 +318,7 @@ export function App(): JSX.Element {
       // Full catalogue refresh (models + providers + quotas) so a credential
       // that dies mid-session (expired OAuth grant) surfaces as a banner
       // without an app restart, and a newly released model becomes selectable
-      // without one either.
+      // without one either (within OMP's two-hour discovery TTL).
       if (useStore.getState().engineStage === "ready") void loadCatalogue(true);
     }, 600_000);
     return () => clearInterval(t);

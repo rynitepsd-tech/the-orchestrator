@@ -28,8 +28,10 @@
   catalogue reload never re-ran discovery either. A new GPT or Claude, or a
   change to the account-scoped Codex list, stayed invisible until a restart
   happened to win the race. The first catalogue read now waits for discovery
-  (bounded, so one unreachable provider cannot empty the model picker) and the
-  periodic reload re-runs it.
+  (bounded, so one unreachable provider cannot empty the model picker), and the
+  periodic reload asks for it again — subject to OMP's own two-hour discovery
+  cache, so a model released while the app is open lands within that window
+  rather than on the ten-minute tick.
 - **A model your build cannot run now says so.** Because discovery lists models
   the pinned OMP may not support yet, picking one could fail with a raw HTTP
   400 carrying the provider's own advice to "run `claude update`" — a different

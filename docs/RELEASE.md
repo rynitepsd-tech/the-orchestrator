@@ -87,9 +87,9 @@ What each step is for:
 | `bun install` | Restore the workspace from `bun.lock`, including the native addon package. | Clean install, no lockfile churn. |
 | `bun run typecheck` | `tsc --build --force` across the workspace. | No errors. |
 | `bun test` | Usage de-duplication, concurrency, adapter, and protocol suites. The concurrency suite drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | All passing, zero failures. |
-| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~89 MB) and `pi_natives.darwin-arm64.node` (~143 MB) in `resources/engine/`. |
+| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~85 MB) and `pi_natives.darwin-arm64.node` (~140 MB) in `resources/engine/`. |
 | `bunx tauri build` | Builds the Vite frontend, compiles the Rust binary, and bundles `resources/engine` into the app as `Contents/Resources/engine`. | `The Orchestrator.app` and `The Orchestrator_<version>_aarch64.dmg` under `apps/desktop/src-tauri/target/release/bundle/`. |
-| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 24/24 checks passed. |
+| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 25/25 checks passed. |
 
 The engine build must run before `tauri build`. `tauri.conf.json` declares
 `"resources": { "../../../resources/engine": "engine" }`, so the bundler copies whatever is in that
@@ -105,7 +105,7 @@ and cannot resolve at bundle time; removing the flags breaks the compile.
 `scripts/smoke-packaged.ts` is the only test that exercises the shipping artifact. It catches the
 class of failure that does not exist in a source checkout: a missing native addon, an architecture
 mismatch, a bundler-stripped dynamic import, or config discovery that only worked from the repo. Its
-24 checks cover engine architecture against the host, addon presence beside the binary, boot to
+25 checks cover engine architecture against the host, addon presence beside the binary, boot to
 `engine.ready`, the reported OMP version, OMP agent-directory discovery, model registry load,
 provider resolution from existing credentials, project open, session discovery, the approval bridge
 (a gated tool call actually stops and waits for `approval.respond`), transcript replay on resume,
@@ -467,7 +467,7 @@ Constraints that must hold:
 - [ ] `bun run build:engine` — engine plus matching `.node` present in `resources/engine/`.
 - [ ] `bunx tauri build` — `.app` and `.dmg` produced.
 - [ ] `file -b` agrees on architecture for the Rust binary and the engine sidecar.
-- [ ] `bun run scripts/smoke-packaged.ts` — 24/24, run against the DMG-installed app.
+- [ ] `bun run scripts/smoke-packaged.ts` — 25/25, run against the DMG-installed app.
 - [ ] `bun run validate:live` — live validation passes against configured providers (optional but
       recommended before a release: primary/advisor/multi-advisor/subagent/resume/concurrent/fork).
 - [ ] `shasum -a 256` computed; `SHA256SUMS.txt` written.
