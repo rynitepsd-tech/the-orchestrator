@@ -50,8 +50,8 @@ builds and then fails at runtime inside the packaged bundle.
 
 Check, in order:
 
-1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`17.3.4` at
-   time of writing — the exact string is in `packages/engine/package.json` and
+1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`17.3.8` as
+   of 0.6.8 — the exact string is in `packages/engine/package.json` and
    `packages/omp-adapter/package.json`, which must agree).
 2. `OMP_VERSION` in `scripts/build-engine.ts` matches that version exactly. The constant is what the
    build prints and what the smoke test asserts against.
@@ -146,7 +146,7 @@ bun run build:engine -- --target=both
 | `x64` | `bun-darwin-x64` | `pi_natives.darwin-x64-baseline.node` |
 
 Cross-target builds need the matching addon package installed at **the pinned OMP version**, for
-example `bun add -d @oh-my-pi/pi-natives-darwin-x64@17.3.4`. The script fails loudly with that
+example `bun add -d @oh-my-pi/pi-natives-darwin-x64@17.3.8`. The script fails loudly with that
 exact hint when the addon is missing. The version in that command must match the pin everywhere it
 appears in the repo — `@oh-my-pi/pi-coding-agent` in `packages/engine/package.json` and
 `packages/omp-adapter/package.json`, the `OMP_VERSION` constant in `scripts/build-engine.ts`, and

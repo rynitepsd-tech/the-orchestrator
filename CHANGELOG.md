@@ -36,6 +36,12 @@
   product, and useless here. That rejection is now classified as
   model-unavailable and reads "This model needs a newer OMP than the one this
   build embeds", with the provider's original text kept under disclosure.
+- **Corrected what the build says it embeds.** `THIRD_PARTY_NOTICES.md` — the
+  redistribution notice shipped inside the `.app` — still named OMP `17.3.1`,
+  and the compatibility and release docs still said `17.3.4`, while the build
+  has embedded `17.3.8` since 0.6.6. All three now state the shipped version,
+  and a test pins every reference to the engine package's declared dependency
+  so they cannot drift apart again.
 
 ## 0.6.7
 
