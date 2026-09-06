@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.10
+
+- **Updated the embedded OMP from 18.1.1 to 18.1.11** — every upstream patch
+  release from 18.1.2 through 18.1.11. Typecheck, the full test suite, the
+  packaged smoke test and the vendored tool-view bundle were re-verified
+  against the new SDK. Upstream fixes arriving with it include prompt-cache
+  reuse after Codex remote compaction, credit-exhaustion automatically
+  switching to a sibling account, streaming tool-argument updates, and a
+  `retry.waitForUsageReset` setting that sleeps until a provider's quota
+  window resets instead of failing.
+- **`anthropic/claude-fable-5-1` now runs.** The previous two releases listed
+  and priced it and then failed at inference with `claude_code_version_too_old`,
+  because the client version OMP advertised (`2.1.246`) was below Anthropic's
+  `2.1.251` floor. `18.1.11` advertises `2.1.257`; a real one-prompt turn on
+  Fable 5.1 through the engine completed normally. Measured on this build, not
+  assumed. The `model-unavailable` classification stays in place for the day
+  the floor moves again.
+
 ## 0.6.9
 
 - **Updated the embedded OMP from 17.3.8 to 18.1.1** — sixteen upstream releases,

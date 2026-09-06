@@ -9,8 +9,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@oh-my-pi/pi-ai": "18.1.1",
-    "@oh-my-pi/pi-coding-agent": "18.1.1",
+    "@oh-my-pi/pi-ai": "18.1.11",
+    "@oh-my-pi/pi-coding-agent": "18.1.11",
     "@orchestrator/protocol": "workspace:*",
     "@orchestrator/usage": "workspace:*"
   }
