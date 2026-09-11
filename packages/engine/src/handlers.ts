@@ -4,13 +4,27 @@
  * One exhaustive switch over the protocol's request union, so adding a request
  * type without handling it is a type error rather than a runtime surprise.
  */
-import { realpathSync } from "node:fs";
 import {
-  discoverSlashCommandsIn,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import {
   gitChanges,
   gitDiff,
   inspectProject,
+  isInsideRoot,
+  listProjectFiles,
   projectIdFor,
+  readProjectFile,
+  realParentPath,
+  shipChanges,
 } from "@orchestrator/omp-adapter";
 import type {
   EngineRequest,
@@ -18,6 +32,7 @@ import type {
   ResponsePayloads,
   UsageRecord,
 } from "@orchestrator/protocol";
+import { appSupportDir, engineLogPath } from "./logging";
 import type { EngineServer } from "./server";
 
 /** Symlink-resolved project roots of live sessions — the read allowlist. */
@@ -31,10 +46,6 @@ function liveProjectRoots(m: EngineServer["manager"]): string[] {
     }
   }
   return [...roots];
-}
-
-function insideAny(roots: string[], realPath: string): boolean {
-  return roots.some((r) => realPath === r || realPath.startsWith(`${r}/`));
 }
 
 export async function handleRequest(
@@ -74,7 +85,6 @@ export async function handleRequest(
     }
 
     case "engine.diagnostics": {
-      const { engineLogPath } = await import("./logging");
       const warnings: string[] = [];
       if (server.testMode) {
         warnings.push(
@@ -92,10 +102,8 @@ export async function handleRequest(
     }
 
     // --- catalogue ---------------------------------------------------------
-    case "models.list": {
-      const models = await m.models(p?.refresh === true);
-      return { models, defaultModel: undefined, roles: {} };
-    }
+    case "models.list":
+      return { models: await m.models(p?.refresh === true) };
 
     case "providers.list":
       return { providers: await m.providers() };
@@ -126,21 +134,8 @@ export async function handleRequest(
     case "project.open":
       return { project: await inspectProject(String(p.path)) };
 
-    case "project.environment": {
-      const path = String(p.path);
-      const advisors = await m.projectAdvisors(path);
-      const slashCommands = await discoverSlashCommandsIn(path);
-      return {
-        contextFiles: [],
-        // Deliberately absent: the engine does not count skills, and a
-        // fabricated 0 reads as "none" rather than "unknown".
-        advisors,
-        mcpServers: [],
-        slashCommands,
-        extensions: [],
-        hasWatchdogConfig: advisors.length > 0,
-      };
-    }
+    case "project.environment":
+      return { advisors: await m.projectAdvisors(String(p.path)) };
 
     case "project.changes":
       return gitChanges(requireOpenProject(p.path));
@@ -150,15 +145,8 @@ export async function handleRequest(
       // `file` must be contained the same way readProjectFile contains its
       // target — the boundary is engine-enforced, not a UI courtesy.
       const root = requireOpenProject(p.path);
-      const { resolve, dirname, basename, join } = await import("node:path");
-      const lexical = resolve(root, String(p.file));
-      let real = lexical;
-      try {
-        real = join(realpathSync(dirname(lexical)), basename(lexical));
-      } catch {
-        /* parent missing — the lexical path is all there is to check */
-      }
-      if (!insideAny([root], real)) {
+      const real = realParentPath(resolve(root, String(p.file)));
+      if (!isInsideRoot(real, root)) {
         throw Object.assign(new Error("File is outside the project folder."), {
           kind: "filesystem-permission",
         });
@@ -166,32 +154,23 @@ export async function handleRequest(
       return gitDiff(root, String(p.file));
     }
 
-    case "project.files": {
-      const { listProjectFiles } = await import("@orchestrator/omp-adapter");
+    case "project.files":
       return listProjectFiles(
         requireOpenProject(p.path),
         p.query ? String(p.query) : undefined,
         p.limit,
       );
-    }
 
-    case "project.readFile": {
-      const { readProjectFile } = await import("@orchestrator/omp-adapter");
+    case "project.readFile":
       return readProjectFile(requireOpenProject(p.path), String(p.file));
-    }
 
-    case "project.ship": {
-      const { shipChanges } = await import("@orchestrator/omp-adapter");
+    case "project.ship":
       return shipChanges(requireOpenProject(p.path), {
         title: String(p.title),
         body: p.body ? String(p.body) : undefined,
       });
-    }
 
     case "attachments.store": {
-      const { mkdirSync, writeFileSync } = await import("node:fs");
-      const { tmpdir } = await import("node:os");
-      const { join } = await import("node:path");
       const b64 = String(p.base64 ?? "");
       // ~32MB of base64 ≈ 24MB of bytes — above every provider's image cap.
       if (b64.length > 32 * 1024 * 1024) {
@@ -213,9 +192,6 @@ export async function handleRequest(
       // Preview of a clicked file link — confined to the open projects'
       // real (symlink-resolved) roots. "Click-gated" is a UI property, not a
       // protocol one; the engine enforces the boundary itself.
-      const { existsSync, statSync } = await import("node:fs");
-      const { homedir } = await import("node:os");
-      const { resolve, dirname, basename, join } = await import("node:path");
       let target = String(p.path);
       if (target.startsWith("~")) target = target.replace(/^~(?=$|\/)/, homedir());
       const roots = liveProjectRoots(m);
@@ -223,20 +199,16 @@ export async function handleRequest(
         // Missing files report as missing ONLY when they'd be in bounds —
         // the UI's locate-by-name fallback depends on that signal. The parent
         // is realpath'd so /var vs /private/var style aliases still match.
-        let probe = resolve(target);
-        try {
-          probe = join(realpathSync(dirname(probe)), basename(probe));
-        } catch {
-          /* parent missing too — the lexical path is all there is */
-        }
-        return insideAny(roots, probe) ? { kind: "missing" } : { kind: "denied" };
+        const probe = realParentPath(resolve(target));
+        const inBounds = roots.some((r) => isInsideRoot(probe, r));
+        return inBounds ? { kind: "missing" } : { kind: "denied" };
       }
       try {
         target = realpathSync(target);
       } catch {
         return { kind: "missing" };
       }
-      if (!insideAny(roots, target)) return { kind: "denied" };
+      if (!roots.some((r) => isInsideRoot(target, r))) return { kind: "denied" };
       const stat = statSync(target);
       if (stat.isDirectory()) return { kind: "directory" };
       const ext = target.split(".").pop()?.toLowerCase() ?? "";
@@ -281,7 +253,6 @@ export async function handleRequest(
     case "path.open": {
       // Only user clicks reach here; the engine still refuses paths that don't
       // exist so a hallucinated path can't launch apps with garbage input.
-      const { existsSync } = await import("node:fs");
       const target = String(p.path);
       if (!existsSync(target)) {
         throw Object.assign(new Error(`No such file: ${target}`), { kind: "configuration" });
@@ -304,7 +275,6 @@ export async function handleRequest(
       // real directory; the source must actually be gone — when the recorded
       // folder still exists the sessions are resumable and "relocation" would
       // be a rename feature this request deliberately does not implement.
-      const { existsSync, statSync } = await import("node:fs");
       const fromCwd = String(p.fromCwd);
       const toCwd = String(p.toCwd);
       if (!existsSync(toCwd) || !statSync(toCwd).isDirectory()) {
@@ -325,7 +295,7 @@ export async function handleRequest(
       return { session: await m.create(p) };
 
     case "sessions.close":
-      await m.close(String(p.sessionId), p.dispose !== false);
+      await m.close(String(p.sessionId));
       return { closed: true };
 
     case "sessions.list":
@@ -429,25 +399,18 @@ export async function handleRequest(
       return { breakdown: await m.sessionUsage(String(p.sessionId)) };
 
     case "usage.query": {
+      const pid = p?.projectPath ? projectIdFor(String(p.projectPath)) : undefined;
+      const since = p?.since ? String(p.since) : undefined;
+      const until = p?.until ? String(p.until) : undefined;
+      const matches = (r: UsageRecord): boolean =>
+        (pid === undefined || r.projectId === pid) &&
+        (!p?.provider || r.provider === p.provider) &&
+        (!p?.model || r.model === p.model) &&
+        (!p?.actorType || r.actorType === p.actorType) &&
+        (since === undefined || (r.completedAt ?? "") >= since) &&
+        (until === undefined || (r.completedAt ?? "") <= until);
       const index = m.usageIndex();
-      let records = index.records();
-      if (p?.projectPath) {
-        const pid = projectIdFor(String(p.projectPath));
-        records = records.filter((r) => r.projectId === pid);
-      }
-      if (p?.provider) records = records.filter((r) => r.provider === p.provider);
-      if (p?.model) records = records.filter((r) => r.model === p.model);
-      if (p?.actorType) records = records.filter((r) => r.actorType === p.actorType);
-      if (p?.since) {
-        const since = String(p.since);
-        records = records.filter((r) => (r.completedAt ?? "") >= since);
-      }
-      if (p?.until) {
-        const until = String(p.until);
-        records = records.filter((r) => (r.completedAt ?? "") <= until);
-      }
-      const { summarize } = await import("@orchestrator/usage");
-      return { records: records as UsageRecord[], breakdown: summarize(records) };
+      return { records: index.records().filter(matches), breakdown: index.breakdown(matches) };
     }
 
     case "usage.reindex":
@@ -458,9 +421,6 @@ export async function handleRequest(
     // live in a file under Application Support instead of only WKWebView
     // localStorage, which the OS can wipe without warning.
     case "prefs.load": {
-      const { readFileSync, existsSync } = await import("node:fs");
-      const { join } = await import("node:path");
-      const { appSupportDir } = await import("./logging");
       const path = join(appSupportDir(), "prefs.json");
       if (!existsSync(path)) return {};
       try {
@@ -471,9 +431,6 @@ export async function handleRequest(
     }
 
     case "prefs.save": {
-      const { mkdirSync, writeFileSync, renameSync } = await import("node:fs");
-      const { join } = await import("node:path");
-      const { appSupportDir } = await import("./logging");
       const dir = appSupportDir();
       mkdirSync(dir, { recursive: true });
       const path = join(dir, "prefs.json");

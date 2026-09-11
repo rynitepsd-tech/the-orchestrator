@@ -2,8 +2,9 @@
  * Wire protocol between the native host (Tauri) and the engine sidecar.
  *
  * Transport: newline-delimited JSON over the engine's stdin/stdout.
- * stdout carries ONLY protocol frames. Diagnostics go to stderr and log files,
- * so a stray console.log can never corrupt the stream.
+ * stdout carries ONLY protocol frames. Diagnostics go to stderr and log files;
+ * the guarantee is that console output is routed to stderr, not that nothing
+ * ever calls console.*, so a stray console.log can never corrupt the stream.
  */
 import type {
   AdvisorConfig,
@@ -33,14 +34,14 @@ export interface EngineRequest<T extends RequestType = RequestType> {
   payload: RequestPayloads[T];
 }
 
-export interface EngineResponseOk<T extends RequestType = RequestType> {
+interface EngineResponseOk<T extends RequestType = RequestType> {
   protocolVersion: number;
   requestId: string;
   ok: true;
   result: ResponsePayloads[T];
 }
 
-export interface EngineResponseErr {
+interface EngineResponseErr {
   protocolVersion: number;
   requestId: string;
   ok: false;
@@ -64,12 +65,6 @@ export type EngineLifecycleEvent =
   | { type: "engine.status"; stage: EngineStage; message?: string }
   | { type: "engine.ready"; info: EngineInfo }
   | { type: "engine.error"; error: EngineErrorPayload }
-  | {
-      type: "engine.log";
-      level: "debug" | "info" | "warn" | "error";
-      subsystem: string;
-      message: string;
-    }
   /**
    * Provider OAuth flow progress. `url` must be opened in the user's browser
    * by the host; the engine never opens anything itself.
@@ -93,9 +88,7 @@ export const ENGINE_STAGES = [
   "starting",
   "loading-config",
   "loading-models",
-  "loading-extensions",
   "ready",
-  "degraded",
   "stopping",
 ] as const;
 export type EngineStage = (typeof ENGINE_STAGES)[number];
@@ -110,8 +103,6 @@ export interface EngineInfo {
   platform: string;
   agentDir: string;
 }
-
-export type EngineFrame = EngineResponse | EngineEventFrame;
 
 // ---------------------------------------------------------------------------
 // Requests
@@ -161,7 +152,7 @@ export interface RequestPayloads {
    */
   "sessions.relocate": { fromCwd: string; toCwd: string };
   "sessions.create": SessionLaunchConfig;
-  "sessions.close": { sessionId: SessionId; dispose: boolean };
+  "sessions.close": { sessionId: SessionId };
   "sessions.list": Record<string, never>;
 
   "session.prompt": {
@@ -261,7 +252,7 @@ export interface ResponsePayloads {
     }>;
   };
 
-  "models.list": { models: ModelInfo[]; defaultModel?: string; roles: Record<string, string> };
+  "models.list": { models: ModelInfo[] };
   "providers.list": { providers: ProviderInfo[] };
   "providers.quota": { quotas: ProviderQuota[] };
   "providers.login": { ok: boolean; message?: string; requiresBrowser?: string };

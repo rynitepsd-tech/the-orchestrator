@@ -31,14 +31,11 @@ import { RuntimeManager } from "./runtime-manager";
 export interface EngineServerOptions {
   agentDir?: string;
   testMode?: boolean;
-  /** Defaults to process.stdout.write. */
-  write?: (chunk: string) => void;
 }
 
 export class EngineServer {
   #sequence = 0;
   readonly #decoder = new FrameDecoder();
-  readonly #write: (chunk: string) => void;
   readonly #opts: EngineServerOptions;
   manager!: RuntimeManager;
   #shuttingDown = false;
@@ -48,7 +45,6 @@ export class EngineServer {
 
   constructor(opts: EngineServerOptions) {
     this.#opts = opts;
-    this.#write = opts.write ?? ((c) => process.stdout.write(c));
   }
 
   info(): EngineInfo {
@@ -77,10 +73,9 @@ export class EngineServer {
     this.emitLifecycle({ type: "engine.status", stage: "loading-config" });
     await this.manager.init();
 
+    // A progress marker only: models are listed on demand, but surfacing the
+    // stage keeps startup legible rather than showing an opaque spinner.
     this.emitLifecycle({ type: "engine.status", stage: "loading-models" });
-    // Model listing is lazy; surfacing the stage keeps startup legible rather
-    // than showing an opaque spinner.
-
     this.emitLifecycle({ type: "engine.status", stage: "ready" });
     this.emitLifecycle({ type: "engine.ready", info: this.info() });
   }
@@ -174,6 +169,10 @@ export class EngineServer {
     this.#write(encodeFrame(frame));
   }
 
+  #write(chunk: string): void {
+    process.stdout.write(chunk);
+  }
+
   get shuttingDown(): boolean {
     return this.#shuttingDown;
   }
@@ -194,7 +193,7 @@ export class EngineServer {
   }
 }
 
-export function toEngineError(e: unknown): EngineErrorPayload {
+function toEngineError(e: unknown): EngineErrorPayload {
   const err = e as { message?: string; kind?: string; stack?: string };
   const message = String(err?.message ?? e);
   return {

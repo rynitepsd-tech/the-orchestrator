@@ -38,7 +38,7 @@ export const RUN_STATES = [
 export type RunState = (typeof RUN_STATES)[number];
 
 /** States in which the engine is actively doing work for a session. */
-export const ACTIVE_RUN_STATES: readonly RunState[] = [
+const ACTIVE_RUN_STATES: readonly RunState[] = [
   "queued",
   "starting",
   "thinking",
@@ -117,8 +117,6 @@ export interface ModelInfo {
   };
   /** True when credentials for this provider are configured and usable. */
   authenticated: boolean;
-  /** Role bindings pointing at this model, e.g. ["main", "smol"]. */
-  roles?: string[];
 }
 
 export interface ProviderInfo {
@@ -135,8 +133,6 @@ export interface ProviderInfo {
    */
   disabledCause?: string;
   modelCount: number;
-  /** Account labels when the provider has OAuth accounts attached. */
-  accounts?: Array<{ id: string; label?: string }>;
   /**
    * How this provider connects: "subscription" is a real OAuth sign-in billed
    * to an existing plan; "interactive" runs OMP's login flow but it is
@@ -189,7 +185,6 @@ export interface UsageRecord extends TokenCounts {
   /** Only present when OMP reports cost. Never estimated by this app. */
   cost?: number;
 
-  startedAt?: string;
   completedAt?: string;
 
   source: UsageSource;
@@ -342,8 +337,6 @@ export interface SessionLaunchConfig {
   fastMode?: boolean;
   /** Resume an existing OMP session file instead of creating a new one. */
   resumeSessionPath?: string;
-  /** Fork from an existing OMP session file. */
-  forkFromSessionPath?: string;
 }
 
 export const APPROVAL_MODES = ["always-ask", "write", "yolo"] as const;
@@ -385,7 +378,6 @@ export interface DiscoveredSession {
   modified?: string;
   messageCount: number;
   sizeBytes: number;
-  parentSessionPath?: string;
   /** True when this app currently has the session open in a runtime. */
   openInThisApp: boolean;
   /** Set when the session's working directory no longer exists on disk. */
@@ -427,14 +419,7 @@ export interface GitDiff {
 }
 
 export interface ProjectEnvironment {
-  contextFiles: string[];
-  /** Absent when the engine cannot count them — never a fabricated zero. */
-  skills?: number;
   advisors: AdvisorConfig[];
-  mcpServers: Array<{ name: string; status: "connected" | "failed" | "unknown"; error?: string }>;
-  slashCommands: string[];
-  extensions: string[];
-  hasWatchdogConfig: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -8,19 +8,13 @@
  * pretends to be the runtime.
  */
 
-import type { ToolDetail } from "@orchestrator/protocol";
+import { isActiveRunState, type ToolDetail } from "@orchestrator/protocol";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import {
-  fmtCount,
-  fmtDuration,
-  fmtTokens,
-  isActive,
-  type TranscriptItem,
-  useStore,
-} from "../store";
+import { basename } from "../lib/prefs";
+import { fmtCount, fmtDuration, fmtTokens, type TranscriptItem, useStore } from "../store";
 import type { OmpToolViewData, OmpToolViewElement } from "../types/omp-tool-view";
 import { Markdown } from "./Markdown";
 
@@ -77,7 +71,7 @@ export function Transcript({
   const projectPath = useStore((s) => s.sessions[sessionId]?.summary.projectPath);
   const runState = useStore((s) => s.sessions[sessionId]?.summary.runState);
   // Rewind is only offered at rest — mid-run history surgery is a footgun.
-  const canRewind = runState !== undefined && !isActive(runState);
+  const canRewind = runState !== undefined && !isActiveRunState(runState);
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   /**
@@ -107,7 +101,7 @@ export function Transcript({
   const hidden = Math.max(0, items.length - shown);
   const visible = useMemo(() => (hidden > 0 ? items.slice(hidden) : items), [items, hidden]);
 
-  const active = runState !== undefined && isActive(runState);
+  const active = runState !== undefined && isActiveRunState(runState);
   // toNodes ran on EVERY render (any store change re-renders the app shell);
   // memoized it only re-derives when the transcript actually changed.
   const nodes = useMemo(() => toNodes(visible, active), [visible, active]);
@@ -577,8 +571,6 @@ function toBodyNodes(items: TranscriptItem[]): BodyNode[] {
   return nodes;
 }
 
-const base = (p: string) => p.split("/").pop() || p;
-
 /** "Ran 6 commands, read 2 files, edited store.ts +12 -1" */
 function toolRunSummary(tools: ToolItem[]): string {
   type Cat = "cmd" | "read" | "edit" | "search" | "other";
@@ -620,14 +612,14 @@ function toolRunSummary(tools: ToolItem[]): string {
       case "read": {
         const files = readPaths.size || n.read;
         return files === 1
-          ? `read ${readPaths.size === 1 ? base([...readPaths][0]) : "a file"}`
+          ? `read ${readPaths.size === 1 ? basename([...readPaths][0]) : "a file"}`
           : `read ${files} files`;
       }
       case "edit": {
         const files = editPaths.size || n.edit;
         const what =
           files === 1
-            ? `edited ${editPaths.size === 1 ? base([...editPaths][0]) : "a file"}`
+            ? `edited ${editPaths.size === 1 ? basename([...editPaths][0]) : "a file"}`
             : `edited ${files} files`;
         return additions > 0 || deletions > 0 ? `${what} +${additions} -${deletions}` : what;
       }

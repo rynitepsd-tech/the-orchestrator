@@ -13,6 +13,7 @@ import type { ModelInfo, TokenCounts, UsageRecord } from "@orchestrator/protocol
 import type { JSX } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { engine } from "../engine-client";
+import { basename } from "../lib/prefs";
 import { fmtCost, fmtCount, fmtTokens, providerLabel, providerVendor, useStore } from "../store";
 import { QuotaSection } from "./Inspector";
 
@@ -206,7 +207,7 @@ export function UsageCenter(): JSX.Element {
             <option value="">All projects</option>
             {projects.map((p) => (
               <option key={p.projectId} value={p.path}>
-                {p.path.split("/").pop() || p.path}
+                {basename(p.path)}
               </option>
             ))}
           </select>
@@ -412,7 +413,7 @@ export function UsageCenter(): JSX.Element {
                         {s.title ?? s.key.slice(0, 8)}
                       </td>
                       <td className="col-project" title={s.project}>
-                        {s.project.split("/").pop() || "—"}
+                        {basename(s.project) || "—"}
                       </td>
                       <td className="num">{fmtTokens(s.total)}</td>
                       <td className="num">{fmtCost(s.cost) ?? ""}</td>
@@ -440,7 +441,7 @@ export function UsageCenter(): JSX.Element {
                 <tbody>
                   {agg.byProject.slice(0, 20).map((p) => (
                     <tr key={p.key}>
-                      <td title={p.key}>{p.key.split("/").pop() || p.key}</td>
+                      <td title={p.key}>{basename(p.key)}</td>
                       <td className="num">{fmtTokens(p.total)}</td>
                       <td className="num">{fmtCost(p.cost) ?? ""}</td>
                     </tr>
@@ -672,7 +673,7 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
     }
     modelAgg.set(mk, mv);
 
-    const day = localDay(r.completedAt ?? r.startedAt ?? "");
+    const day = localDay(r.completedAt ?? "");
     if (day) {
       const dv = dayAgg.get(day) ?? { tokens: 0, cost: 0, hasCost: false };
       dv.tokens += t;

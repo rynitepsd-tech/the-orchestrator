@@ -7,10 +7,11 @@
  * mean no chip.
  */
 
+import { isActiveRunState } from "@orchestrator/protocol";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { isActive, useStore } from "../store";
+import { useStore } from "../store";
 
 let pending: Update | null = null;
 
@@ -81,7 +82,7 @@ export async function installUpdate(): Promise<void> {
     // Count running sessions NOW — the download took a while and the
     // function-start snapshot is stale.
     const running = Object.values(useStore.getState().sessions).filter((v) =>
-      isActive(v.summary.runState),
+      isActiveRunState(v.summary.runState),
     ).length;
     const restart = await ask(
       running > 0

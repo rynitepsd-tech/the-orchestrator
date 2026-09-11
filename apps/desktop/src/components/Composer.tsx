@@ -7,20 +7,23 @@
  * MCP prompts) — never a hardcoded list.
  */
 
-import type { AdvisorConfig, ApprovalMode, RunState } from "@orchestrator/protocol";
-import { ask, open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import {
+  type AdvisorConfig,
+  type ApprovalMode,
+  isActiveRunState,
+  type RunState,
+} from "@orchestrator/protocol";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { type Attachment, attachmentKind, storeBlob } from "../lib/attachments";
+import { type Attachment, pickFileAttachments, storeBlob } from "../lib/attachments";
 import type { SessionPreset } from "../lib/prefs";
-import { isActive, modelBasename, useStore } from "../store";
+import { modelBasename, useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
 import { BoltIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 import { PromptDialog } from "./PromptDialog";
-
-export type { Attachment } from "../lib/attachments";
 
 interface SlashCommand {
   name: string;
@@ -52,7 +55,7 @@ export function Composer({
   /** ↑-history recall state; null while typing normally. */
   const historyRef = useRef<{ items: string[]; idx: number } | null>(null);
 
-  const busy = isActive(runState);
+  const busy = isActiveRunState(runState);
 
   const fastMode = useStore((s) =>
     sessionId ? Boolean(s.sessions[sessionId]?.summary.fastMode) : false,
@@ -259,18 +262,8 @@ export function Composer({
   }, [prefill, sessionId]);
 
   const pickFiles = async () => {
-    const picked = await openFileDialog({ multiple: true, title: "Attach files" }).catch(
-      () => null,
-    );
-    if (!picked) return;
-    const paths = Array.isArray(picked) ? picked : [picked];
-    setAttachments((prev) => [
-      ...prev,
-      ...paths.map((p) => {
-        const name = p.split("/").pop() ?? p;
-        return { kind: attachmentKind(name), name, path: p };
-      }),
-    ]);
+    const picked = await pickFileAttachments();
+    if (picked.length) setAttachments((prev) => [...prev, ...picked]);
   };
 
   const addBlobs = async (files: File[]) => {

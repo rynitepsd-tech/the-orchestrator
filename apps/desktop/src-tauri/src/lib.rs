@@ -22,12 +22,6 @@ fn engine_send(state: tauri::State<'_, EngineSupervisor>, frame: String) -> Resu
     state.send(&frame)
 }
 
-/// Start the engine if it is not already running.
-#[tauri::command]
-fn engine_start(state: tauri::State<'_, EngineSupervisor>) -> Result<(), String> {
-    state.spawn()
-}
-
 /// Restart the engine after a crash, or from Settings → Advanced.
 #[tauri::command]
 fn engine_restart(state: tauri::State<'_, EngineSupervisor>) -> Result<(), String> {
@@ -35,28 +29,11 @@ fn engine_restart(state: tauri::State<'_, EngineSupervisor>) -> Result<(), Strin
     state.spawn()
 }
 
-#[tauri::command]
-fn engine_running(state: tauri::State<'_, EngineSupervisor>) -> bool {
-    state.is_running()
-}
-
 /// Quit for real, after the UI has confirmed (or found nothing running).
 #[tauri::command]
 fn app_quit(app: tauri::AppHandle) {
     QUIT_CONFIRMED.store(true, Ordering::SeqCst);
     app.exit(0);
-}
-
-/// Sanitized environment summary for the About window and Copy Diagnostics.
-/// Deliberately contains no credentials, paths to secrets, or env values.
-#[tauri::command]
-fn app_diagnostics(app: tauri::AppHandle) -> serde_json::Value {
-    serde_json::json!({
-        "appVersion": app.package_info().version.to_string(),
-        "arch": std::env::consts::ARCH,
-        "os": std::env::consts::OS,
-        "tauri": tauri::VERSION,
-    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -82,14 +59,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![
-            engine_send,
-            engine_start,
-            engine_restart,
-            engine_running,
-            app_diagnostics,
-            app_quit,
-        ])
+        .invoke_handler(tauri::generate_handler![engine_send, engine_restart, app_quit])
         .setup(|app| {
             let supervisor = EngineSupervisor::new(app.handle().clone());
             app.manage(supervisor.clone());

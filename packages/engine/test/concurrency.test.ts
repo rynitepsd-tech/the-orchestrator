@@ -17,121 +17,58 @@
  * cross, aborting one leaves the other running, disposing one leaves the other
  * running.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ompAgentDir } from "@orchestrator/omp-adapter";
-import type { ProductEvent, RunState } from "@orchestrator/protocol";
-import { RuntimeManager } from "../src/runtime-manager";
-import { type MockServer, startMockProvider } from "./mock-provider";
-
-let mock: MockServer;
-let manager: RuntimeManager;
-const roots: string[] = [];
-
-const MOCK_MODELS = [
-  "mock-alpha",
-  "mock-bravo",
-  "mock-one",
-  "mock-two",
-  "mock-three",
-  "mock-slow",
-  "mock-error",
-];
+import { describe, expect, test } from "bun:test";
+import type { RunState } from "@orchestrator/protocol";
+import { useHarness, waitFor } from "./harness";
 
 /** Last known run state per session, tracked from emitted events. */
 const runStates = new Map<string, RunState>();
 
+const h = useHarness({
+  prefix: "orch",
+  modelIds: [
+    "mock-alpha",
+    "mock-bravo",
+    "mock-one",
+    "mock-two",
+    "mock-three",
+    "mock-slow",
+    "mock-error",
+  ],
+  onEvent: (e) => {
+    if (e.type === "session.state" || e.type === "session.finished") {
+      runStates.set(e.sessionId, e.runState);
+    }
+  },
+});
+const { eventsFor, eventsOfType, textFor, makeProject } = h;
+
 /** Send a prompt through the supervisor to the owning worker process. */
 function prompt(sessionId: string, text: string, whenBusy = "steer") {
-  return manager.route(sessionId, "session.prompt", { sessionId, text, whenBusy });
+  return h.manager.route(sessionId, "session.prompt", { sessionId, text, whenBusy });
 }
 function abort(sessionId: string) {
-  return manager.route(sessionId, "session.abort", { sessionId });
-}
-
-/** Per-session event capture, so we can prove nothing crosses. */
-const captured = new Map<string, ProductEvent[]>();
-
-function eventsFor(sessionId: string): ProductEvent[] {
-  return captured.get(sessionId) ?? [];
-}
-
-function textFor(sessionId: string): string {
-  return eventsFor(sessionId)
-    .filter(
-      (e): e is Extract<ProductEvent, { type: "assistant.text" }> => e.type === "assistant.text",
-    )
-    .map((e) => e.delta)
-    .join("");
+  return h.manager.route(sessionId, "session.abort", { sessionId });
 }
 
 function toolOutputFor(sessionId: string): string {
-  return eventsFor(sessionId)
-    .filter((e): e is Extract<ProductEvent, { type: "tool.end" }> => e.type === "tool.end")
+  return eventsOfType(sessionId, "tool.end")
     .map((e) => e.output ?? "")
     .join("\n");
 }
-
-function makeProject(tag: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `orch-${tag}-`));
-  writeFileSync(join(dir, "MARKER.txt"), `${tag}\n`);
-  roots.push(dir);
-  return dir;
-}
-
-async function waitFor(pred: () => boolean, timeoutMs = 20_000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  return false;
-}
-
-beforeAll(async () => {
-  mock = startMockProvider();
-
-  manager = new RuntimeManager({
-    agentDir: ompAgentDir(),
-    testMode: true,
-    // Each worker process registers the mock provider for itself.
-    workerEnv: {
-      testProviders: [
-        { name: "mockprov", baseUrl: mock.url, apiKey: "mock-key", modelIds: MOCK_MODELS },
-      ],
-    },
-    emit: (e) => {
-      const list = captured.get(e.sessionId);
-      if (list) list.push(e);
-      else captured.set(e.sessionId, [e]);
-      if (e.type === "session.state" || e.type === "session.finished") {
-        runStates.set(e.sessionId, e.runState);
-      }
-    },
-  });
-  await manager.init();
-});
-
-afterAll(async () => {
-  await manager?.shutdown();
-  mock?.stop();
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
-});
 
 describe("two concurrent top-level sessions", () => {
   test("both stream, both run tools, and nothing crosses between them", async () => {
     const projA = makeProject("A");
     const projB = makeProject("B");
 
-    const a = await manager.create({
+    const a = await h.manager.create({
       projectPath: projA,
       title: "Alpha",
       model: "mockprov/mock-alpha",
       advisors: [],
     });
-    const b = await manager.create({
+    const b = await h.manager.create({
       projectPath: projB,
       title: "Bravo",
       model: "mockprov/mock-bravo",
@@ -178,14 +115,14 @@ describe("two concurrent top-level sessions", () => {
   }, 60_000);
 
   test("usage is attributed per session and never shared", async () => {
-    const sessions = manager.list();
+    const sessions = h.manager.list();
     const a = sessions.find((s) => s.title === "Alpha");
     const b = sessions.find((s) => s.title === "Bravo");
     expect(a).toBeDefined();
     expect(b).toBeDefined();
 
-    const ua = await manager.sessionUsage(a!.sessionId);
-    const ub = await manager.sessionUsage(b!.sessionId);
+    const ua = await h.manager.sessionUsage(a!.sessionId);
+    const ub = await h.manager.sessionUsage(b!.sessionId);
 
     // Two turns each: 1000+1500 input, 100+50 output.
     expect(ua.total.inputTokens).toBe(2500);
@@ -212,13 +149,13 @@ describe("abort isolation", () => {
     const projC = makeProject("C");
     const projD = makeProject("D");
 
-    const c = await manager.create({
+    const c = await h.manager.create({
       projectPath: projC,
       title: "Charlie",
       model: "mockprov/mock-slow",
       advisors: [],
     });
-    const d = await manager.create({
+    const d = await h.manager.create({
       projectPath: projD,
       title: "Delta",
       model: "mockprov/mock-slow",
@@ -248,14 +185,14 @@ describe("abort isolation", () => {
   }, 60_000);
 
   test("disposing one session leaves the other streaming", async () => {
-    const sessions = manager.list();
+    const sessions = h.manager.list();
     const c = sessions.find((s) => s.title === "Charlie");
     const d = sessions.find((s) => s.title === "Delta");
     expect(c && d).toBeTruthy();
 
-    await manager.close(c!.sessionId, true);
-    expect(manager.has(c!.sessionId)).toBe(false);
-    expect(manager.has(d!.sessionId)).toBe(true);
+    await h.manager.close(c!.sessionId);
+    expect(h.manager.has(c!.sessionId)).toBe(false);
+    expect(h.manager.has(d!.sessionId)).toBe(true);
 
     const dBefore = textFor(d!.sessionId).length;
     const dGrew = await waitFor(() => textFor(d!.sessionId).length > dBefore, 8_000);
@@ -270,19 +207,19 @@ describe("three simultaneous sessions across two projects", () => {
     const p1 = makeProject("P1");
     const p2 = makeProject("P2");
 
-    const s1 = await manager.create({
+    const s1 = await h.manager.create({
       projectPath: p1,
       title: "S1",
       model: "mockprov/mock-one",
       advisors: [],
     });
-    const s2 = await manager.create({
+    const s2 = await h.manager.create({
       projectPath: p1,
       title: "S2",
       model: "mockprov/mock-two",
       advisors: [],
     });
-    const s3 = await manager.create({
+    const s3 = await h.manager.create({
       projectPath: p2,
       title: "S3",
       model: "mockprov/mock-three",
@@ -318,10 +255,10 @@ describe("three simultaneous sessions across two projects", () => {
 
 describe("process isolation invariant", () => {
   test("every live session is backed by its own worker process", () => {
-    const sessions = manager.list();
+    const sessions = h.manager.list();
     expect(sessions.length).toBeGreaterThan(1);
     // Distinct ids, and each is independently addressable through the supervisor.
     expect(new Set(sessions.map((s) => s.sessionId)).size).toBe(sessions.length);
-    for (const s of sessions) expect(manager.has(s.sessionId)).toBe(true);
+    for (const s of sessions) expect(h.manager.has(s.sessionId)).toBe(true);
   });
 });

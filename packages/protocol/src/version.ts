@@ -8,7 +8,7 @@
 export const PROTOCOL_VERSION = 1 as const;
 
 /** Oldest protocol version this build can still talk to. */
-export const MIN_SUPPORTED_PROTOCOL_VERSION = 1 as const;
+const MIN_SUPPORTED_PROTOCOL_VERSION = 1 as const;
 
 export function isProtocolCompatible(remote: number): boolean {
   return (

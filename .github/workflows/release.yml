@@ -94,47 +94,8 @@ jobs:
       - name: Test
         run: bun test
 
-      # ---------------------------------------------------------------------
-      # Signing and notarization (NOT USED TODAY — kept as documentation)
-      #
-      # Builds are currently ad-hoc signed (`codesign --sign -`) because the
-      # maintainer has no paid Apple Developer account. No secrets are required
-      # for the release below to succeed; users will see the standard Gatekeeper
-      # warning for an unnotarized app.
-      #
-      # To sign with a Developer ID later, add the secrets and uncomment. The
-      # engine build already honours MACOS_SIGN_IDENTITY (see
-      # scripts/build-engine.ts) and needs no other change; Tauri reads
-      # APPLE_* itself.
-      #
-      # - name: Import Developer ID certificate
-      #   env:
-      #     MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}          # base64 .p12
-      #     MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}  # .p12 password
-      #     KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      #   run: |
-      #     echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/cert.p12
-      #     security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-      #     security default-keychain -s build.keychain
-      #     security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-      #     security import /tmp/cert.p12 -k build.keychain \
-      #       -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
-      #     security set-key-partition-list -S apple-tool:,apple:,codesign: \
-      #       -s -k "$KEYCHAIN_PASSWORD" build.keychain
-      #     rm -f /tmp/cert.p12
-      #
-      # Then set these on the engine and app build steps below:
-      #     MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}   # "Developer ID Application: Name (TEAMID)"
-      #     APPLE_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-      #     APPLE_ID: ${{ secrets.APPLE_ID }}
-      #     APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }} # app-specific password
-      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      #
-      # Notarization additionally requires hardened runtime with entitlements,
-      # including com.apple.security.cs.disable-library-validation. That one is
-      # MANDATORY: the app dlopens a .node signed under a different Team ID and
-      # without it the kernel refuses to map the addon.
-      # ---------------------------------------------------------------------
+      # Builds are ad-hoc signed (`codesign --sign -`); no signing secrets are
+      # required. Developer ID signing/notarization: docs/RELEASE.md §8.
 
       - name: Build engine (host arch)
         # Host arch only. See the architecture invariant at the top of this file.

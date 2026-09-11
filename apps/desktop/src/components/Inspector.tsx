@@ -7,19 +7,19 @@
  * labelled as such, because concurrent sessions share it.
  */
 
-import type { GitDiff, ProviderQuota } from "@orchestrator/protocol";
+import { type GitDiff, isActiveRunState, type ProviderQuota } from "@orchestrator/protocol";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { engine } from "../engine-client";
+import { basename } from "../lib/prefs";
 import {
   type FilePreview,
   fmtCost,
   fmtCount,
   fmtTokens,
   type InspectorTab,
-  isActive,
   providerLabel,
   type SessionView,
   useStore,
@@ -109,7 +109,7 @@ function UsageTab({ view }: { view: SessionView }): JSX.Element {
       <table className="usage-table">
         <tbody>
           <Row
-            label={`Primary${view.summary.model ? ` · ${view.summary.model.split("/").pop()}` : ""}`}
+            label={`Primary${view.summary.model ? ` · ${basename(view.summary.model)}` : ""}`}
             tokens={sumT(u.primary)}
             cost={u.primary.cost}
           />
@@ -273,7 +273,7 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
   };
 
   const activeHere = Object.values(sessions).filter(
-    (v) => v.summary.projectId === view.summary.projectId && isActive(v.summary.runState),
+    (v) => v.summary.projectId === view.summary.projectId && isActiveRunState(v.summary.runState),
   ).length;
 
   // One confirm, then the whole exit ramp: branch if needed, commit, push, PR.
@@ -590,7 +590,7 @@ function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
     lineRef.current?.scrollIntoView({ block: "center" });
   }, [data, viewSource]);
 
-  const name = preview.path.split("/").pop() ?? preview.path;
+  const name = basename(preview.path);
   const dir = preview.path.slice(0, preview.path.lastIndexOf("/")) || "/";
   const isMarkdown = MARKDOWN_EXT_RX.test(name);
 
@@ -598,7 +598,7 @@ function FilePreviewTab({ preview }: { preview: FilePreview }): JSX.Element {
   const crumbs = (() => {
     const pp = preview.projectPath;
     if (pp && preview.path.startsWith(`${pp}/`)) {
-      const projectName = pp.split("/").pop() ?? pp;
+      const projectName = basename(pp);
       return [projectName, ...preview.path.slice(pp.length + 1).split("/")];
     }
     return preview.path.replace(/^\//, "").split("/");

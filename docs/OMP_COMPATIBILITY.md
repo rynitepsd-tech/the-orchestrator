@@ -208,8 +208,9 @@ actually changes.
 
 Version bumps are deliberate, never floating.
 
-1. Bump the pin in `package.json`, `packages/*/package.json`, and `OMP_VERSION` in
-   `scripts/build-engine.ts`.
+1. Bump the pin in `packages/engine/package.json` and `packages/omp-adapter/package.json`, and
+   `OMP_VERSION` in `scripts/build-engine.ts` (`packages/engine/test/omp-pin.test.ts` fails if they
+   disagree).
 2. `bun install`
 3. Re-vendor **both** native addons in the same commit — the loader requires the addon to export a
    version-matched symbol, so a mismatch fails at runtime, not build time.

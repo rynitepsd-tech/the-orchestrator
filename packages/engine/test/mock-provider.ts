@@ -10,8 +10,6 @@
  *   mock-slow    long slow stream, for abort/concurrency tests
  *   mock-error   immediate provider error
  */
-import { AgentRegistry, ModelRegistry, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
-
 const enc = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -48,8 +46,6 @@ function usageChunk(model: string, responseId: string, input: number, output: nu
 
 export interface MockServer {
   url: string;
-  /** Number of chat completions served, for assertions. */
-  requests: () => number;
   stop: () => void;
 }
 
@@ -151,31 +147,6 @@ export function startMockProvider(): MockServer {
 
   return {
     url: `${server.url.origin}/v1`,
-    requests: () => requests,
     stop: () => server.stop(true),
   };
 }
-
-/** Register the mock models on a registry. */
-export function registerMockModels(registry: ModelRegistry, baseUrl: string, ids: string[]): void {
-  registry.registerProvider("mockprov", {
-    baseUrl,
-    apiKey: "mock-key",
-    api: "openai-completions" as never,
-    models: ids.map((id) => ({
-      id,
-      name: id,
-      api: "openai-completions",
-      baseUrl,
-      reasoning: false,
-      input: ["text"],
-      supportsTools: true,
-      // Non-zero so cost assertions exercise OMP's own cost computation.
-      cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128_000,
-      maxTokens: 8_192,
-    })) as never,
-  } as never);
-}
-
-export { AgentRegistry, ModelRegistry, SessionManager, Settings };

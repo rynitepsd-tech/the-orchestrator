@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { totalTokens, type UsageBreakdown, type UsageRecord } from "@orchestrator/protocol";
-import { summarize, UsageAccumulator } from "@orchestrator/usage";
+import { parseUsageKey, summarize, UsageAccumulator } from "@orchestrator/usage";
 import { appSupportDir, logger } from "./logging";
 
 /** Cumulative/synthetic message ids that are only unique within one session. */
@@ -39,8 +39,7 @@ function isSessionScopedMessageId(messageId: string): boolean {
 export function globalUsageKey(r: UsageRecord): string {
   // usageKey() joins with NUL — the one character ids can never contain.
   const SEP = "\0";
-  const parts = r.key.split(SEP);
-  const messageId = parts.length >= 3 ? parts.slice(2).join(SEP) : r.key;
+  const messageId = parseUsageKey(r.key)?.messageId ?? r.key;
   if (!isSessionScopedMessageId(messageId)) {
     // Provider response ids are globally unique per billable response.
     // Deliberately NOT keyed by actorType: a reindex labels every file row
@@ -165,10 +164,6 @@ export class UsageIndex {
 
   size(): number {
     return this.#acc.size();
-  }
-
-  totalTokensAll(): number {
-    return this.records().reduce((n, r) => n + totalTokens(r), 0);
   }
 
   #scheduleSave(): void {

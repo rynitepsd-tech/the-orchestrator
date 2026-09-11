@@ -6,7 +6,7 @@
  * happened before this process existed. Synthesized events mirror what the
  * live mapper would have emitted for the same turns.
  *
- * Entry shapes (verified on-disk, OMP 17.3.1):
+ * Entry shapes (verified on-disk against the pinned OMP version):
  *   { type: "message", message: { role: "user" | "assistant", content: [...] } }
  *   { type: "message", message: { role: "toolResult", toolCallId, toolName,
  *       content, isError, details } }
@@ -14,8 +14,8 @@
  *       details: { notes: [...] } } }
  *   assistant content parts: { type: "text" | "thinking" | "toolCall", ... }
  */
-import { type ProductEvent, redactValue, sanitizeOutput } from "@orchestrator/protocol";
-import { textOf, thinkingOf, toolDetail } from "./event-mapper";
+import { type ProductEvent, redactValue } from "@orchestrator/protocol";
+import { advisorEventsFromCard, textOf, thinkingOf, toolEndEvent } from "./event-mapper";
 
 export function replayEventsFromEntries(sessionId: string, entries: any[]): ProductEvent[] {
   const out: ProductEvent[] = [];
@@ -91,24 +91,14 @@ export function replayEventsFromEntries(sessionId: string, entries: any[]): Prod
 
     if (msg.role === "toolResult") {
       const callId = String(msg.toolCallId ?? "");
-      const raw = textOf(msg);
-      const { output, truncated } = sanitizeOutput(raw);
       const isError = msg.isError === true;
       const toolName = toolNames.get(callId) ?? String(msg.toolName ?? "unknown");
-      out.push({
-        type: "tool.end",
-        sessionId,
-        callId,
-        ok: !isError,
-        output,
-        truncated,
-        error: isError ? output.slice(0, 2000) : undefined,
-        durationMs:
-          typeof msg.details?.wallTimeMs === "number" ? msg.details.wallTimeMs : undefined,
-        // Same structured detail as the live mapper — the diff, exit code,
-        // and match count are sitting right there in the persisted details.
-        detail: toolDetail(toolName, { result: { details: msg.details } }, toolArgs.get(callId)),
+      // Same output and structured detail as the live mapper — the diff, exit
+      // code, and match count are sitting right there in the persisted row.
+      const end = toolEndEvent(sessionId, callId, toolName, { result: msg }, isError, {
+        rememberedArgs: toolArgs.get(callId),
       });
+      out.push(end);
       if (toolName === "task") {
         out.push({
           type: "subagent.end",
@@ -117,7 +107,7 @@ export function replayEventsFromEntries(sessionId: string, entries: any[]): Prod
           ok: !isError,
           durationMs: typeof msg.details?.wallTimeMs === "number" ? msg.details.wallTimeMs : 0,
           toolCalls: 0,
-          error: isError ? output.slice(0, 500) : undefined,
+          error: isError ? end.output?.slice(0, 500) : undefined,
         });
       }
       // Mirror the live mapper: replayed todo results restore the checklist.
@@ -134,29 +124,7 @@ export function replayEventsFromEntries(sessionId: string, entries: any[]): Prod
     }
 
     if (msg.role === "custom" && msg.customType === "advisor") {
-      const notes: any[] = Array.isArray(msg.details?.notes) ? msg.details.notes : [];
-      const at =
-        typeof msg.timestamp === "number"
-          ? new Date(msg.timestamp).toISOString()
-          : new Date().toISOString();
-      for (const n of notes) {
-        const text = typeof n?.note === "string" ? n.note : "";
-        if (!text) continue;
-        const name = typeof n?.advisor === "string" && n.advisor ? n.advisor : "Advisor";
-        out.push({
-          type: "advisor.message",
-          sessionId,
-          advisorId: `advisor:${name}`,
-          advisorName: name,
-          severity:
-            n?.severity === "nit" || n?.severity === "concern" || n?.severity === "blocker"
-              ? n.severity
-              : "unknown",
-          text,
-          messageId: `${sessionId}:ra${++seq}`,
-          at,
-        });
-      }
+      out.push(...advisorEventsFromCard(sessionId, msg, () => `${sessionId}:ra${++seq}`));
     }
   }
   return out;

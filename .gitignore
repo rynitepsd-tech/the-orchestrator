@@ -1,7 +1,5 @@
 # Dependencies
 node_modules/
-.pnp
-.pnp.js
 
 # Build output
 dist/
@@ -12,7 +10,6 @@ target/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 resources/engine/
-resources/bun
 
 # Tauri bundles
 *.dmg
@@ -41,13 +38,13 @@ secrets.json
 .omp/
 **/WATCHDOG.local.*
 *.jsonl
-!test/fixtures/**/*.jsonl
 
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-Icon[]
+# Finder custom-folder icon; the file is literally `Icon\r`
+Icon?
 ._*
 .Spotlight-V100
 .Trashes

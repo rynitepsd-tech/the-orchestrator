@@ -4,7 +4,8 @@
  * Why a process per session
  * -------------------------
  * The preferred design was many sessions in one process, isolated by a private
- * AgentRegistry. Upstream inspection of OMP 17.3.1 showed four hazards an
+ * AgentRegistry. Upstream inspection of OMP (the version pinned in
+ * packages/engine/package.json, enforced by test/omp-pin.test.ts) showed four hazards an
  * embedder cannot fix from outside, so that design is unsafe in the envelope
  * this product needs (subagents, async bash, MCP, extensions):
  *
@@ -26,12 +27,14 @@
  * protocol either way. That is what the adapter boundary bought us.
  */
 import { realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   advisorUsageFromStats,
   contextUsageOf,
   EventMapper,
+  isInsideRoot,
   primaryUsageFromTurn,
+  realParentPath,
   replayEventsFromEntries,
   subagentUsageFromMessage,
   toOmpAdvisor,
@@ -49,6 +52,7 @@ import {
 } from "@orchestrator/protocol";
 import { UsageAccumulator } from "@orchestrator/usage";
 import { classifyError } from "./classify-error";
+import type { TestProvider } from "./supervisor";
 
 // ---------------------------------------------------------------------------
 // Worker boot contract
@@ -72,7 +76,7 @@ interface WorkerBoot {
   enableLsp: boolean;
   autoApprove: boolean;
   /** Provider registrations injected by tests (mock provider). */
-  testProviders?: Array<{ name: string; baseUrl: string; apiKey: string; modelIds: string[] }>;
+  testProviders?: TestProvider[];
 }
 
 const out = (o: unknown) => process.stdout.write(encodeFrame(redactValue(o)));
@@ -81,7 +85,9 @@ const err = (m: string, extra?: Record<string, unknown>) =>
     `${JSON.stringify({ ts: new Date().toISOString(), level: "error", subsystem: "worker", message: m, ...extra })}\n`,
   );
 
-// stdout is protocol-only.
+// stdout is protocol-only. Same discipline as protectStdout() in ../logging.ts;
+// the worker keeps its own copy because its stderr lines are bare text, not
+// structured log records — keep the two in step if either changes.
 for (const k of ["log", "info", "warn", "error", "debug"] as const) {
   console[k] = (...args: unknown[]) =>
     process.stderr.write(
@@ -462,16 +468,10 @@ function pathsOutsideProject(rawInput: unknown): string[] {
   for (const k of PATHY_INPUT_KEYS) {
     const v = (rawInput as Record<string, unknown>)[k];
     if (typeof v !== "string" || !v) continue;
-    const lexical = resolve(boot.projectPath, v);
     // Symlink-resolve the nearest existing ancestor so a link inside the
     // project cannot smuggle a write outside it.
-    let real = lexical;
-    try {
-      real = join(realpathSync(dirname(lexical)), basename(lexical));
-    } catch {
-      /* parent missing — the lexical path is all there is to check */
-    }
-    if (real !== projectRootReal && !real.startsWith(`${projectRootReal}/`)) out.push(v);
+    const real = realParentPath(resolve(boot.projectPath, v));
+    if (!isInsideRoot(real, projectRootReal)) out.push(v);
   }
   return out;
 }
@@ -979,8 +979,8 @@ function refreshAdvisors(): void {
 // --- advisor cards delivered without events ----------------------------------
 // OMP surfaces advisor advisories two ways. Idle ("preserved") cards arrive as
 // message_start/message_end events the mapper handles. Mid-turn ("steered")
-// cards — the normal path for blocker-driven revision cascades since OMP
-// 17.3.5 — are appended straight into agent state with NO event at all. If
+// cards — the normal path for blocker-driven revision cascades in the pinned
+// OMP version — are appended straight into agent state with NO event at all. If
 // they never reach the transcript, the fold that collapses superseded drafts
 // has no advisor note to key on, and every revision renders as a full
 // duplicate answer. Sweep agent state before mapping each event and surface
@@ -1024,7 +1024,7 @@ function sweepAdvisorCards(): void {
 const PREVIEW_URL_RE = /(https?):\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{2,5})/i;
 let lastPreviewUrl: string | undefined;
 function scanForPreviewUrl(text: string | undefined): void {
-  if (!text || !text.includes("://")) return;
+  if (!text?.includes("://")) return;
   const m = PREVIEW_URL_RE.exec(text);
   if (!m) return;
   const url = `${m[1].toLowerCase()}://localhost:${m[2]}/`;
@@ -1133,6 +1133,21 @@ setInterval(() => {
 // and resumes from the persisted file on the next prompt) and exits cleanly.
 // ---------------------------------------------------------------------------
 
+/**
+ * Dispose the session, then exit. The deadline guarantees we exit even if
+ * dispose hangs on a wedged MCP server — an orphaned worker at ~350MB holding
+ * the session file open is worse than a bounded exit.
+ */
+async function disposeAndExit(): Promise<void> {
+  setTimeout(() => process.exit(0), 3_000).unref?.();
+  try {
+    await session.dispose();
+  } catch {
+    /* exiting anyway */
+  }
+  process.exit(0);
+}
+
 function maybeHibernate(): void {
   if (hibernating || IDLE_HIBERNATE_MS === 0) return;
   const parked =
@@ -1150,15 +1165,7 @@ function maybeHibernate(): void {
     sessionId: boot.sessionId,
     ompSessionPath: String(sessionFile),
   });
-  setTimeout(() => process.exit(0), 3_000).unref?.();
-  void (async () => {
-    try {
-      await session.dispose();
-    } catch {
-      /* exiting anyway */
-    }
-    process.exit(0);
-  })();
+  void disposeAndExit();
 }
 setInterval(maybeHibernate, 60_000).unref?.();
 
@@ -1676,9 +1683,6 @@ async function handle(req: any): Promise<unknown> {
     case "usage.session":
       return { breakdown: usage.breakdown(boot.sessionId) };
 
-    case "session.thinkingLevels":
-      return { levels: s.getAvailableThinkingLevels?.() ?? [] };
-
     case "worker.ping":
       return {
         pid: process.pid,
@@ -1710,18 +1714,9 @@ const reader = Bun.stdin.stream().getReader();
 // Crash handlers are registered at the top of this file, before boot awaits.
 
 // A supervisor kill() lands here as SIGTERM. Dispose the session so MCP/LSP
-// child processes are torn down with us instead of being orphaned; the
-// deadline guarantees we exit even if dispose hangs.
+// child processes are torn down with us instead of being orphaned.
 process.on("SIGTERM", () => {
-  setTimeout(() => process.exit(0), 3_000).unref?.();
-  void (async () => {
-    try {
-      await (session as any).dispose?.();
-    } catch {
-      /* exiting anyway */
-    }
-    process.exit(0);
-  })();
+  void disposeAndExit();
 });
 
 // Requests run CONCURRENTLY: responses correlate by requestId, and awaiting
@@ -1754,9 +1749,5 @@ while (true) {
   for (const f of frames) dispatch(f);
 }
 
-// stdin EOF: the supervisor went away. The same escape hatch as the SIGTERM
-// path — dispose can hang on a wedged MCP server, and an orphaned worker at
-// ~350MB holding the session file open is worse than a bounded exit.
-setTimeout(() => process.exit(0), 3_000).unref?.();
-await session.dispose().catch(() => {});
-process.exit(0);
+// stdin EOF: the supervisor went away.
+await disposeAndExit();

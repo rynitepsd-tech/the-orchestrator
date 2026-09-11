@@ -4,11 +4,13 @@
  * One component, two modes. Commands are registered centrally here; every
  * entry performs a real action — no dead rows.
  */
+import { isActiveRunState } from "@orchestrator/protocol";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { engine } from "../engine-client";
-import { advisorsReviewing, isActive, modelBasename, runStateLabel, useStore } from "../store";
+import { basename } from "../lib/prefs";
+import { advisorsReviewing, modelBasename, runStateLabel, useStore } from "../store";
 
 interface Command {
   id: string;
@@ -88,7 +90,7 @@ export function CommandPalette(): JSX.Element {
     ];
     if (view) {
       const id = view.summary.sessionId;
-      if (isActive(view.summary.runState)) {
+      if (isActiveRunState(view.summary.runState)) {
         cmds.push({
           id: "abort",
           label: "Abort Session",
@@ -152,7 +154,7 @@ export function CommandPalette(): JSX.Element {
       return views.map((v) => ({
         id: v.summary.sessionId,
         label: v.summary.title,
-        hint: `${v.summary.projectPath.split("/").pop()} · ${modelBasename(v.summary.model)} · ${
+        hint: `${basename(v.summary.projectPath)} · ${modelBasename(v.summary.model)} · ${
           v.summary.runState === "completed" && advisorsReviewing(v)
             ? "Advisors reviewing"
             : runStateLabel(v.summary.runState)

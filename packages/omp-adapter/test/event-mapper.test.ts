@@ -2,8 +2,9 @@
  * EventMapper unit tests.
  *
  * The mapper is the single most upstream-fragile file in the adapter: every
- * fixture below was captured from a live OMP 17.3.1 session, so an upstream
- * shape change surfaces here as a failing fixture rather than a blank UI.
+ * fixture below was captured from a live session of the pinned OMP version, so
+ * an upstream shape change surfaces here as a failing fixture rather than a
+ * blank UI.
  */
 import { describe, expect, test } from "bun:test";
 import type { ProductEvent } from "@orchestrator/protocol";

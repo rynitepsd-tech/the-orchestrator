@@ -30,6 +30,7 @@ import type {
   UsageBreakdown,
   UsageRecord,
 } from "@orchestrator/protocol";
+import { isActiveRunState } from "@orchestrator/protocol";
 import { create } from "zustand";
 import { loadPrefs, type Prefs, type SessionPreset, savePrefs } from "./lib/prefs";
 
@@ -202,7 +203,6 @@ export interface GlobalUsageState {
 interface AppState {
   // engine
   engineStage: EngineStage | "offline";
-  engineMessage?: string;
   engineError?: EngineErrorPayload;
   /** Live sign-in guidance from the engine (device codes, browser hand-off). */
   authNotice?: string;
@@ -273,7 +273,7 @@ interface AppState {
   updateBusy: boolean;
 
   // actions
-  setEngineStage(stage: EngineStage | "offline", message?: string): void;
+  setEngineStage(stage: EngineStage | "offline"): void;
   setEngineError(e?: EngineErrorPayload): void;
   setAuthNotice(notice?: string): void;
   setAuthPrompt(prompt?: AppState["authPrompt"]): void;
@@ -364,7 +364,7 @@ export const useStore = create<AppState>((set, get) => ({
   newSessionOpen: false,
   updateBusy: false,
 
-  setEngineStage: (engineStage, engineMessage) => set({ engineStage, engineMessage }),
+  setEngineStage: (engineStage) => set({ engineStage }),
   setEngineError: (engineError) => set({ engineError }),
   setAuthNotice: (authNotice) => set({ authNotice }),
   setAuthPrompt: (authPrompt) => set({ authPrompt }),
@@ -638,7 +638,7 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       const sessions: Record<string, SessionView> = {};
       for (const [id, v] of Object.entries(s.sessions)) {
-        const active = isActive(v.summary.runState);
+        const active = isActiveRunState(v.summary.runState);
         // A dead worker sends no more events — settle EVERYTHING still
         // spinning: pending turn-end markers, running tool cards, running
         // subagents. No tool.end will ever arrive for them.
@@ -855,7 +855,7 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
             // that's a fresh session's first message, not a mid-turn send.
             pickup:
               /^u\d+$/.test(e.messageId) &&
-              isActive(v.summary.runState) &&
+              isActiveRunState(v.summary.runState) &&
               v.summary.runState !== "starting"
                 ? "unread"
                 : undefined,
@@ -922,7 +922,8 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
         kind: "assistant",
         id: e.messageId,
         text: e.text,
-        thinking: e.thinking ?? (t[idx] as any).thinking ?? "",
+        thinking:
+          e.thinking ?? (t[idx] as Extract<TranscriptItem, { kind: "assistant" }>).thinking ?? "",
         streaming: false,
       };
       return { ...v, transcript: copy };
@@ -1146,9 +1147,6 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
     case "usage.update":
       return { ...v, usage: e.breakdown };
 
-    case "usage.records":
-      return v; // engine-side index concern; sessions render breakdowns
-
     case "context.update":
       return { ...v, context: e.context };
 
@@ -1370,10 +1368,6 @@ export function runStateLabel(s: RunState, activity?: string): string {
   }
 }
 
-export function isActive(s: RunState): boolean {
-  return !["idle", "completed", "interrupted", "error", "hibernated"].includes(s);
-}
-
 /**
  * True while a post-turn review is outstanding — the turn isn't finished yet.
  *
@@ -1402,7 +1396,7 @@ function syncTurnEnd(v: SessionView): TranscriptItem[] {
       i.kind === "turn-end" && i.pending ? { ...i, pending: false } : i,
     );
   }
-  if (isActive(v.summary.runState)) return transcript;
+  if (isActiveRunState(v.summary.runState)) return transcript;
   const idx = lastIndex(transcript, (i) => i.kind === "turn-end");
   const cur = idx >= 0 ? (transcript[idx] as Extract<TranscriptItem, { kind: "turn-end" }>) : null;
   if (!cur || cur.pending || transcript.slice(idx + 1).some((i) => i.kind === "user")) {

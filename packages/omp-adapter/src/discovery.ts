@@ -6,7 +6,7 @@
  * models, sessions, advisors, MCP, skills — and never creates a competing store.
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -19,7 +19,6 @@ import {
   discoverAuthStorage,
   ModelRegistry,
   SessionManager,
-  Settings,
 } from "@oh-my-pi/pi-coding-agent";
 import {
   type AdvisorConfig,
@@ -30,7 +29,9 @@ import {
   type ModelInfo,
   type ProjectInfo,
   type ProviderInfo,
+  toOmpAdvisorSelector,
 } from "@orchestrator/protocol";
+import { isInsideRoot } from "./paths";
 
 const exec = promisify(execFile);
 
@@ -59,6 +60,10 @@ export async function openAuthStorage(agentDir = ompAgentDir()): Promise<AuthSto
 // ---------------------------------------------------------------------------
 // Models & providers
 // ---------------------------------------------------------------------------
+
+export function newModelRegistry(auth: AuthStorage): ModelRegistry {
+  return new ModelRegistry(auth as any);
+}
 
 /**
  * Normalize OMP's model catalogue.
@@ -142,13 +147,6 @@ export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderI
     else byProvider.set(m.provider, [m]);
   }
 
-  let configured: string[] = [];
-  try {
-    configured = ((auth as any).list?.() ?? []).map(String);
-  } catch {
-    configured = [];
-  }
-
   const out: ProviderInfo[] = [];
   for (const [name, list] of byProvider) {
     let credentialSource: string | undefined;
@@ -166,7 +164,7 @@ export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderI
     }
     out.push({
       name,
-      authenticated: list[0]?.authenticated ?? configured.includes(name),
+      authenticated: list[0].authenticated,
       credentialSource: credentialSource || undefined,
       modelCount: list.length,
       connect: providerConnectKind(name),
@@ -295,7 +293,6 @@ export async function discoverSessions(projectPath?: string): Promise<Discovered
       modified: toIso(s.modified),
       messageCount: Number(s.messageCount ?? 0),
       sizeBytes: Number(s.size ?? 0),
-      parentSessionPath: s.parentSessionPath ? String(s.parentSessionPath) : undefined,
       openInThisApp: false,
       // A session whose project folder is gone (deleted checkout, temp dir)
       // cannot be resumed; the UI hides it rather than offering a dead Resume.
@@ -458,7 +455,7 @@ export async function inspectProject(path: string): Promise<ProjectInfo> {
  * Lightweight git detection. Read-only by design — this app never mutates git
  * state; the agent does that through OMP's own tools when asked.
  */
-export async function gitInfo(
+async function gitInfo(
   cwd: string,
 ): Promise<{ branch?: string; dirty: boolean; detached?: boolean } | undefined> {
   if (!existsSync(cwd)) return undefined;
@@ -620,27 +617,6 @@ export async function gitDiff(cwd: string, path: string): Promise<GitDiff> {
 }
 
 // ---------------------------------------------------------------------------
-// Slash commands (project-level discovery, no live session required)
-// ---------------------------------------------------------------------------
-
-/**
- * File-based slash commands visible for a project. The live per-session list
- * (builtins, skills, extensions, MCP prompts) comes from the session worker's
- * `slash.list`; this is the cheap superset the project environment can show
- * before any session exists.
- */
-export async function discoverSlashCommandsIn(cwd: string): Promise<string[]> {
-  try {
-    const discover = (OMP as any).discoverSlashCommands;
-    if (typeof discover !== "function") return [];
-    const cmds = await discover(cwd);
-    return (Array.isArray(cmds) ? cmds : []).map((c: any) => String(c.name)).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Advisors
 // ---------------------------------------------------------------------------
 
@@ -673,11 +649,7 @@ export async function discoverAdvisors(cwd: string, agentDir: string): Promise<A
 }
 
 /** Convert an upstream `AdvisorConfig` into the product shape. */
-export function normalizeAdvisor(
-  a: any,
-  index: number,
-  origin: AdvisorConfig["origin"],
-): AdvisorConfig {
+function normalizeAdvisor(a: any, index: number, origin: AdvisorConfig["origin"]): AdvisorConfig {
   const name = String(a?.name ?? `Advisor ${index + 1}`);
   const { model, thinkingLevel } = fromOmpAdvisorSelector(
     typeof a?.model === "string" ? a.model : undefined,
@@ -696,11 +668,7 @@ export function normalizeAdvisor(
 
 /** Convert the product shape back into what OMP's advisor runtime expects. */
 export function toOmpAdvisor(a: AdvisorConfig): Record<string, unknown> {
-  const selector = a.model
-    ? a.thinkingLevel
-      ? `${a.model}:${a.thinkingLevel}`
-      : a.model
-    : undefined;
+  const selector = toOmpAdvisorSelector(a.model, a.thinkingLevel);
   return {
     name: a.name,
     ...(selector ? { model: selector } : {}),
@@ -708,18 +676,6 @@ export function toOmpAdvisor(a: AdvisorConfig): Record<string, unknown> {
     ...(a.instructions ? { instructions: a.instructions } : {}),
     enabled: a.enabled,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Settings
-// ---------------------------------------------------------------------------
-
-export async function loadSettings(cwd: string, agentDir: string): Promise<Settings> {
-  return Settings.init({ cwd, agentDir });
-}
-
-export function newModelRegistry(auth: AuthStorage): ModelRegistry {
-  return new ModelRegistry(auth as any);
 }
 
 // ---------------------------------------------------------------------------
@@ -778,13 +734,10 @@ export async function readProjectFile(
   // symlinks, and the caller-supplied cwd itself must resolve cleanly. The
   // engine additionally requires cwd to be an open project's root.
   const abs = resolve(cwd, file);
-  let rootReal: string;
   try {
-    const { realpathSync } = await import("node:fs");
-    rootReal = realpathSync(resolve(cwd));
+    const rootReal = realpathSync(resolve(cwd));
     if (!existsSync(abs)) return empty;
-    const absReal = realpathSync(abs);
-    if (absReal !== rootReal && !absReal.startsWith(`${rootReal}/`)) return empty;
+    if (!isInsideRoot(realpathSync(abs), rootReal)) return empty;
   } catch {
     return empty;
   }

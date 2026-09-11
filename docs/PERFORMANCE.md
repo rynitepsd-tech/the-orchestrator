@@ -1,9 +1,9 @@
 # Performance
 
-Measured on an Apple Silicon Mac (arm64), macOS 15, OMP 17.3.1, app version
-0.2.0. Every number below was produced by `bun run scripts/stress-matrix.ts`
-(dev-mode workers) or the packaged-engine probe (compiled binary inside the
-built `.app`), not estimated.
+Measured on an Apple Silicon Mac (arm64), macOS 15, at app version 0.2.0 against OMP 17.3.1;
+the numbers have not been re-measured since. Every number below was produced by
+`bun run stress` (`scripts/stress-matrix.ts`, dev-mode workers) or the packaged-engine probe
+(compiled binary inside the built `.app`), not estimated.
 
 ## Startup
 

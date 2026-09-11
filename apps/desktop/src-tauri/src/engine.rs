@@ -27,14 +27,11 @@ pub const EVENT_SUPERVISOR: &str = "engine://supervisor";
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SupervisorEvent {
-    Spawning {
-        attempt: u32,
-    },
+    Spawning,
     Ready,
     /// The engine exited. `code` is None when killed by a signal.
     Exited {
         code: Option<i32>,
-        restarting: bool,
     },
     /// The engine could not be located or launched at all.
     LaunchFailed {
@@ -57,7 +54,6 @@ pub struct EngineHandle {
 pub struct EngineSupervisor {
     inner: Arc<Mutex<EngineHandle>>,
     app: AppHandle,
-    restarts: Arc<Mutex<u32>>,
 }
 
 /// Where the engine lives, in priority order.
@@ -71,19 +67,9 @@ fn resolve_engine(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
         if packaged.is_file() {
             return Ok((packaged, vec![]));
         }
-
-        // 2. Packaged fallback: bundled Bun runtime + engine sources.
-        let bun = resource_dir.join("engine").join("bun");
-        let entry = resource_dir.join("engine").join("main.js");
-        if bun.is_file() && entry.is_file() {
-            return Ok((
-                bun,
-                vec!["run".into(), entry.to_string_lossy().into_owned()],
-            ));
-        }
     }
 
-    // 3. Development: run the TypeScript entry with whatever bun is on PATH.
+    // 2. Development: run the TypeScript entry with whatever bun is on PATH.
     if let Ok(dev_entry) = std::env::var("ORCHESTRATOR_ENGINE_ENTRY") {
         let bun = which_bun().unwrap_or_else(|| PathBuf::from("bun"));
         return Ok((bun, vec!["run".into(), dev_entry]));
@@ -152,7 +138,6 @@ impl EngineSupervisor {
                 stdin: None,
             })),
             app,
-            restarts: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -167,14 +152,7 @@ impl EngineSupervisor {
             return Ok(());
         }
 
-        let attempt = {
-            let mut r = self.restarts.lock();
-            *r += 1;
-            *r
-        };
-        let _ = self
-            .app
-            .emit(EVENT_SUPERVISOR, SupervisorEvent::Spawning { attempt });
+        let _ = self.app.emit(EVENT_SUPERVISOR, SupervisorEvent::Spawning);
 
         let (program, args) = match resolve_engine(&self.app) {
             Ok(v) => v,
@@ -307,13 +285,7 @@ impl EngineSupervisor {
                     }
                 };
                 if let Some(code) = exited {
-                    let _ = app.emit(
-                        EVENT_SUPERVISOR,
-                        SupervisorEvent::Exited {
-                            code,
-                            restarting: false,
-                        },
-                    );
+                    let _ = app.emit(EVENT_SUPERVISOR, SupervisorEvent::Exited { code });
                     return;
                 }
             });

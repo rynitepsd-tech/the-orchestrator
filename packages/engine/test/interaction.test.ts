@@ -7,83 +7,20 @@
  * routes back to the right worker. Two sessions prompting concurrently must
  * hold two independent approvals.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ompAgentDir } from "@orchestrator/omp-adapter";
+import { describe, expect, test } from "bun:test";
 import type { ProductEvent } from "@orchestrator/protocol";
-import { RuntimeManager } from "../src/runtime-manager";
-import { type MockServer, startMockProvider } from "./mock-provider";
+import { useHarness, waitFor } from "./harness";
 
-let mock: MockServer;
-let manager: RuntimeManager;
-const roots: string[] = [];
-const captured = new Map<string, ProductEvent[]>();
+const h = useHarness({ prefix: "orch-appr", modelIds: ["mock-alpha", "mock-bravo", "mock-appr"] });
+const { eventsFor, eventsOfType, finishedFor, makeProject } = h;
 
-function eventsFor(sessionId: string): ProductEvent[] {
-  return captured.get(sessionId) ?? [];
-}
 function approvalsFor(sessionId: string) {
-  return eventsFor(sessionId).filter(
-    (e): e is Extract<ProductEvent, { type: "approval.request" }> => e.type === "approval.request",
-  );
+  return eventsOfType(sessionId, "approval.request");
 }
-function finishedFor(sessionId: string) {
-  return eventsFor(sessionId).filter(
-    (e): e is Extract<ProductEvent, { type: "session.finished" }> => e.type === "session.finished",
-  );
-}
-
-function makeProject(tag: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `orch-appr-${tag}-`));
-  writeFileSync(join(dir, "MARKER.txt"), `${tag}\n`);
-  roots.push(dir);
-  return dir;
-}
-
-async function waitFor(pred: () => boolean, timeoutMs = 30_000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  return false;
-}
-
-beforeAll(async () => {
-  mock = startMockProvider();
-  manager = new RuntimeManager({
-    agentDir: ompAgentDir(),
-    testMode: true,
-    workerEnv: {
-      testProviders: [
-        {
-          name: "mockprov",
-          baseUrl: mock.url,
-          apiKey: "mock-key",
-          modelIds: ["mock-alpha", "mock-bravo", "mock-appr"],
-        },
-      ],
-    },
-    emit: (e) => {
-      const list = captured.get(e.sessionId);
-      if (list) list.push(e);
-      else captured.set(e.sessionId, [e]);
-    },
-  });
-  await manager.init();
-});
-
-afterAll(async () => {
-  await manager?.shutdown();
-  mock?.stop();
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
-});
 
 describe("approval bridge", () => {
   test("a gated bash call blocks on approval.request and Allow executes it", async () => {
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: makeProject("allow"),
       title: "Approve me",
       model: "mockprov/mock-alpha",
@@ -91,7 +28,7 @@ describe("approval bridge", () => {
       approvalMode: "always-ask",
     });
 
-    await manager.route(s.sessionId, "session.prompt", {
+    await h.manager.route(s.sessionId, "session.prompt", {
       sessionId: s.sessionId,
       text: "run the tool",
     });
@@ -112,7 +49,7 @@ describe("approval bridge", () => {
     // No tool result may exist before the decision.
     expect(eventsFor(s.sessionId).some((e) => e.type === "tool.end")).toBe(false);
 
-    const res = await manager.route<{ ok: boolean }>(s.sessionId, "approval.respond", {
+    const res = await h.manager.route<{ ok: boolean }>(s.sessionId, "approval.respond", {
       sessionId: s.sessionId,
       approvalId: req.approvalId,
       optionId: "allow_once",
@@ -129,21 +66,21 @@ describe("approval bridge", () => {
   }, 60_000);
 
   test("Reject blocks the tool without killing the session", async () => {
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: makeProject("deny"),
       title: "Deny me",
       model: "mockprov/mock-bravo",
       advisors: [],
       approvalMode: "always-ask",
     });
-    await manager.route(s.sessionId, "session.prompt", {
+    await h.manager.route(s.sessionId, "session.prompt", {
       sessionId: s.sessionId,
       text: "run the tool",
     });
 
     expect(await waitFor(() => approvalsFor(s.sessionId).length > 0)).toBe(true);
     const req = approvalsFor(s.sessionId)[0];
-    await manager.route(s.sessionId, "approval.respond", {
+    await h.manager.route(s.sessionId, "approval.respond", {
       sessionId: s.sessionId,
       approvalId: req.approvalId,
       optionId: "reject_once",
@@ -161,14 +98,14 @@ describe("approval bridge", () => {
   }, 60_000);
 
   test("two sessions hold two independent approvals; answering one releases only it", async () => {
-    const a = await manager.create({
+    const a = await h.manager.create({
       projectPath: makeProject("conA"),
       title: "A",
       model: "mockprov/mock-alpha",
       advisors: [],
       approvalMode: "always-ask",
     });
-    const b = await manager.create({
+    const b = await h.manager.create({
       projectPath: makeProject("conB"),
       title: "B",
       model: "mockprov/mock-bravo",
@@ -176,8 +113,8 @@ describe("approval bridge", () => {
       approvalMode: "always-ask",
     });
 
-    await manager.route(a.sessionId, "session.prompt", { sessionId: a.sessionId, text: "go" });
-    await manager.route(b.sessionId, "session.prompt", { sessionId: b.sessionId, text: "go" });
+    await h.manager.route(a.sessionId, "session.prompt", { sessionId: a.sessionId, text: "go" });
+    await h.manager.route(b.sessionId, "session.prompt", { sessionId: b.sessionId, text: "go" });
 
     expect(
       await waitFor(
@@ -190,7 +127,7 @@ describe("approval bridge", () => {
     expect(reqA.approvalId).not.toBe(reqB.approvalId);
 
     // Approve A only.
-    await manager.route(a.sessionId, "approval.respond", {
+    await h.manager.route(a.sessionId, "approval.respond", {
       sessionId: a.sessionId,
       approvalId: reqA.approvalId,
       optionId: "allow_once",
@@ -202,7 +139,7 @@ describe("approval bridge", () => {
     expect(eventsFor(b.sessionId).some((e) => e.type === "tool.end")).toBe(false);
 
     // Now release B too.
-    await manager.route(b.sessionId, "approval.respond", {
+    await h.manager.route(b.sessionId, "approval.respond", {
       sessionId: b.sessionId,
       approvalId: reqB.approvalId,
       optionId: "allow_once",
@@ -213,20 +150,20 @@ describe("approval bridge", () => {
   }, 90_000);
 
   test("setApprovalMode yolo stops prompting for later turns", async () => {
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: makeProject("yolo"),
       title: "Yolo",
       model: "mockprov/mock-appr",
       advisors: [],
       approvalMode: "always-ask",
     });
-    const set = await manager.route<{ ok: boolean }>(s.sessionId, "session.setApprovalMode", {
+    const set = await h.manager.route<{ ok: boolean }>(s.sessionId, "session.setApprovalMode", {
       sessionId: s.sessionId,
       mode: "yolo",
     });
     expect(set.ok).toBe(true);
 
-    await manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
+    await h.manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
     expect(await waitFor(() => finishedFor(s.sessionId).length > 0)).toBe(true);
     expect(approvalsFor(s.sessionId).length).toBe(0);
     const toolEnd = eventsFor(s.sessionId).find((e) => e.type === "tool.end") as any;
@@ -236,16 +173,16 @@ describe("approval bridge", () => {
 
 describe("transcript replay", () => {
   test("session.transcript rebuilds the full event history, incrementally", async () => {
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: makeProject("replay"),
       title: "Replay",
       model: "mockprov/mock-alpha",
       advisors: [],
     });
-    await manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "hello" });
+    await h.manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "hello" });
     expect(await waitFor(() => finishedFor(s.sessionId).length > 0)).toBe(true);
 
-    const full = await manager.route<{ events: ProductEvent[]; sequence: number }>(
+    const full = await h.manager.route<{ events: ProductEvent[]; sequence: number }>(
       s.sessionId,
       "session.transcript",
       { sessionId: s.sessionId },
@@ -258,7 +195,7 @@ describe("transcript replay", () => {
     expect(full.sequence).toBe(full.events.length);
 
     // Incremental fetch from the tip returns nothing new.
-    const tail = await manager.route<{ events: ProductEvent[]; sequence: number }>(
+    const tail = await h.manager.route<{ events: ProductEvent[]; sequence: number }>(
       s.sessionId,
       "session.transcript",
       { sessionId: s.sessionId, sinceSequence: full.sequence },

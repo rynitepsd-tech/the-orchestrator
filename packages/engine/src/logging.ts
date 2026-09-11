@@ -18,7 +18,7 @@ export function appSupportDir(): string {
   return join(homedir(), "Library", "Application Support", "The Orchestrator");
 }
 
-export function logDir(): string {
+function logDir(): string {
   return join(appSupportDir(), "logs");
 }
 
@@ -29,10 +29,6 @@ export function engineLogPath(): string {
 class Logger {
   #min: LogLevel = (process.env.ORCHESTRATOR_LOG_LEVEL as LogLevel) ?? "info";
   #fileReady = false;
-
-  setLevel(l: LogLevel): void {
-    this.#min = l;
-  }
 
   #ensureFile(): boolean {
     if (this.#fileReady) return true;

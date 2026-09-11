@@ -84,6 +84,16 @@ export function projectParent(path: string, budget = 42): string {
   return keep < segs.length ? `…/${segs.slice(-keep).join("/")}` : dir;
 }
 
+/** Last path segment; the whole path when there is none (e.g. `/`). */
+export function basename(path: string): string {
+  return path.split("/").pop() || path;
+}
+
+/** The user's alias for a project folder, else its folder name. */
+export function projectDisplayName(path: string, aliases: Record<string, string>): string {
+  return aliases[path] ?? basename(path);
+}
+
 const KEY = "orchestrator.prefs.v1";
 
 export const DEFAULT_PREFS: Prefs = {

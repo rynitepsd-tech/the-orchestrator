@@ -14,12 +14,12 @@
  * Scenarios: primary | advisor | late-advisory | multi-advisor | subagent |
  *            resume | concurrent | fork
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { RuntimeManager } from "../packages/engine/src/runtime-manager";
 import { ompAgentDir } from "../packages/omp-adapter/src";
 import type { ProductEvent } from "../packages/protocol/src";
+import { checker, makeProject, removeProjects, waitFor } from "./lib";
 
 const ONLY = process.argv[2];
 
@@ -41,35 +41,13 @@ const textFor = (id: string) =>
     .map((e) => e.delta)
     .join("");
 
-let pass = 0;
-let fail = 0;
-function check(label: string, ok: boolean, detail?: string): void {
-  if (ok) {
-    pass++;
-    console.log(`  ✓ ${label}${detail ? ` — ${detail}` : ""}`);
-  } else {
-    fail++;
-    console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`);
-  }
-}
+const { results, check } = checker("  ");
 
-async function waitFor(pred: () => boolean, timeoutMs = 180_000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  return false;
-}
-
-const roots: string[] = [];
-function makeProject(tag: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `orch-live-${tag}-`));
-  writeFileSync(join(dir, "README.md"), `# live validation ${tag}\n`);
-  writeFileSync(join(dir, "notes.txt"), "alpha\nbravo\ncharlie\n");
-  roots.push(dir);
-  return dir;
-}
+const makeLiveProject = (tag: string) =>
+  makeProject(`orch-live-${tag}-`, {
+    "README.md": `# live validation ${tag}\n`,
+    "notes.txt": "alpha\nbravo\ncharlie\n",
+  });
 
 const manager = new RuntimeManager({
   agentDir: ompAgentDir(),
@@ -119,8 +97,7 @@ const run = async (name: string, fn: () => Promise<void>) => {
   try {
     await fn();
   } catch (e) {
-    fail++;
-    console.log(`  ✗ scenario threw: ${String((e as Error)?.message ?? e)}`);
+    check("scenario threw", false, String((e as Error)?.message ?? e));
   }
 };
 
@@ -128,7 +105,7 @@ const run = async (name: string, fn: () => Promise<void>) => {
 // 1. PRIMARY — real streaming, tools, persistence, usage
 // ---------------------------------------------------------------------------
 await run("primary", async () => {
-  const project = makeProject("primary");
+  const project = makeLiveProject("primary");
   const s = await manager.create({
     projectPath: project,
     title: "Live primary",
@@ -140,7 +117,7 @@ await run("primary", async () => {
     sessionId: s.sessionId,
     text: "Read notes.txt in this project, then append a line 'delta' to it using a shell command, and confirm with one short sentence.",
   });
-  check("turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0));
+  check("turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0, 180_000));
   check("streamed real text", textFor(s.sessionId).length > 0);
   const tools = eventsFor(s.sessionId).filter((e) => e.type === "tool.end") as any[];
   check("executed tools", tools.length > 0, `${tools.length} tool calls`);
@@ -163,7 +140,7 @@ await run("primary", async () => {
 // 2. ADVISOR — one live advisor on a different model
 // ---------------------------------------------------------------------------
 await run("advisor", async () => {
-  const project = makeProject("advisor");
+  const project = makeLiveProject("advisor");
   const s = await manager.create({
     projectPath: project,
     title: "Live advisor",
@@ -238,7 +215,7 @@ await run("advisor", async () => {
 // 2b. LATE ADVISORY — a concern raised after the turn ends is acted on now
 // ---------------------------------------------------------------------------
 await run("late-advisory", async () => {
-  const project = makeProject("late");
+  const project = makeLiveProject("late");
   const s = await manager.create({
     projectPath: project,
     title: "Live late advisory",
@@ -323,7 +300,7 @@ await run("late-advisory", async () => {
 // 3. MULTI-ADVISOR — two simultaneous advisors keep their identities
 // ---------------------------------------------------------------------------
 await run("multi-advisor", async () => {
-  const project = makeProject("multi");
+  const project = makeLiveProject("multi");
   const mk = (name: string, model: string) => ({
     id: `advisor:${name}`,
     name,
@@ -380,7 +357,7 @@ await run("multi-advisor", async () => {
 // 4. SUBAGENT — a real task-tool spawn inside the worker topology
 // ---------------------------------------------------------------------------
 await run("subagent", async () => {
-  const project = makeProject("subagent");
+  const project = makeLiveProject("subagent");
   const s = await manager.create({
     projectPath: project,
     title: "Live subagent",
@@ -422,7 +399,7 @@ await run("subagent", async () => {
 // 5. RESUME — full stop/restart/rediscover/continue cycle
 // ---------------------------------------------------------------------------
 await run("resume", async () => {
-  const project = makeProject("resume");
+  const project = makeLiveProject("resume");
   const s = await manager.create({
     projectPath: project,
     title: "Live resume",
@@ -434,13 +411,13 @@ await run("resume", async () => {
     sessionId: s.sessionId,
     text: "Remember the codeword 'PERSIMMON-42'. Reply only: noted.",
   });
-  check("first turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0));
+  check("first turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0, 180_000));
   const path = manager.list().find((x) => x.sessionId === s.sessionId)?.ompSessionPath;
   check("persisted path known", Boolean(path));
   const usageBefore = await manager.sessionUsage(s.sessionId);
 
   // Shut the worker down like an app quit would.
-  await manager.close(s.sessionId, true);
+  await manager.close(s.sessionId);
   check("worker closed", !manager.has(s.sessionId));
 
   // Rediscover and resume into a NEW worker.
@@ -472,7 +449,10 @@ await run("resume", async () => {
     sessionId: resumed.sessionId,
     text: "What is the codeword I gave you earlier? Answer with just the codeword.",
   });
-  check("second turn completed", await waitFor(() => finishedFor(resumed.sessionId).length > 0));
+  check(
+    "second turn completed",
+    await waitFor(() => finishedFor(resumed.sessionId).length > 0, 180_000),
+  );
   check(
     "model continuity: remembered across restart",
     textFor(resumed.sessionId).includes("PERSIMMON"),
@@ -497,14 +477,14 @@ await run("resume", async () => {
 // ---------------------------------------------------------------------------
 await run("concurrent", async () => {
   const a = await manager.create({
-    projectPath: makeProject("conA"),
+    projectPath: makeLiveProject("conA"),
     title: "Live A",
     model: PRIMARY,
     advisors: [],
     approvalMode: "yolo",
   });
   const b = await manager.create({
-    projectPath: makeProject("conB"),
+    projectPath: makeLiveProject("conB"),
     title: "Live B",
     model: ADVISOR_MODEL,
     advisors: [],
@@ -565,7 +545,7 @@ await run("concurrent", async () => {
 // 7. FORK — live fork continues on a different model
 // ---------------------------------------------------------------------------
 await run("fork", async () => {
-  const project = makeProject("fork");
+  const project = makeLiveProject("fork");
   const s = await manager.create({
     projectPath: project,
     title: "Live fork source",
@@ -577,7 +557,7 @@ await run("fork", async () => {
     sessionId: s.sessionId,
     text: "Remember the codeword 'QUINCE-7'. Reply only: noted.",
   });
-  check("source turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0));
+  check("source turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0, 180_000));
   const sourcePath = manager.list().find((x) => x.sessionId === s.sessionId)?.ompSessionPath;
 
   const fork = await manager.fork({
@@ -622,7 +602,8 @@ await run("fork", async () => {
 
 // ---------------------------------------------------------------------------
 
-console.log(`\n${pass + fail} checks: ${pass} passed, ${fail} failed`);
+const failed = results.filter((r) => !r.ok).length;
+console.log(`\n${results.length} checks: ${results.length - failed} passed, ${failed} failed`);
 await manager.shutdown();
-for (const r of roots) rmSync(r, { recursive: true, force: true });
-process.exit(fail > 0 ? 1 : 0);
+removeProjects();
+process.exit(failed > 0 ? 1 : 0);

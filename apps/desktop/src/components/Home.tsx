@@ -12,8 +12,8 @@ import type { ApprovalMode, SessionLaunchConfig } from "@orchestrator/protocol";
 import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useMemo, useRef, useState } from "react";
-import { type Attachment, attachmentKind, storeBlob } from "../lib/attachments";
-import { projectParent, type SessionPreset } from "../lib/prefs";
+import { type Attachment, pickFileAttachments, storeBlob } from "../lib/attachments";
+import { projectDisplayName, projectParent, type SessionPreset } from "../lib/prefs";
 import { defaultProjectPath, modelBasename, useStore } from "../store";
 import { FolderIcon } from "./icons";
 import { PresetForm } from "./PresetForm";
@@ -57,16 +57,8 @@ export function Home({
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   const pickFiles = async () => {
-    const picked = await openDialog({ multiple: true, title: "Attach files" }).catch(() => null);
-    if (!picked) return;
-    const paths = Array.isArray(picked) ? picked : [picked];
-    setAttachments((prev) => [
-      ...prev,
-      ...paths.map((p) => {
-        const name = p.split("/").pop() ?? p;
-        return { kind: attachmentKind(name), name, path: p };
-      }),
-    ]);
+    const picked = await pickFileAttachments();
+    if (picked.length) setAttachments((prev) => [...prev, ...picked]);
   };
 
   const addBlobs = async (files: File[]) => {
@@ -111,8 +103,7 @@ export function Home({
   const preset: SessionPreset | undefined =
     prefs.presets.find((p) => p.name === prefs.defaultPreset) ?? prefs.presets[0];
 
-  const alias = (p: string) => prefs.projectAliases[p] ?? (p.split("/").pop() || p);
-  const folder = projectPath ? alias(projectPath) : undefined;
+  const folder = projectPath ? projectDisplayName(projectPath, prefs.projectAliases) : undefined;
   // Attachments alone are a valid first message (a screenshot IS the prompt).
   const canLaunch = Boolean(
     (text.trim() || attachments.length) && projectPath && !busy && !disabled,
@@ -300,7 +291,9 @@ export function Home({
                     }}
                   >
                     <span className="home-menu-head">
-                      <span className="home-menu-name">{alias(p)}</span>
+                      <span className="home-menu-name">
+                        {projectDisplayName(p, prefs.projectAliases)}
+                      </span>
                       {/* Pinned folders keep their place in the recents order —
                           the tag is what makes them findable, not a reshuffle. */}
                       {prefs.pinnedProjects.includes(p) && <span className="pin-tag">pinned</span>}

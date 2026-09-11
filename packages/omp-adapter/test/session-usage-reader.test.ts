@@ -1,6 +1,7 @@
 /**
  * Session-file usage reader: parses OMP's persisted JSONL into authoritative
- * usage records. Fixture lines mirror the real on-disk shape (OMP 17.3.1).
+ * usage records. Fixture lines mirror the real on-disk shape of the pinned
+ * OMP version.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

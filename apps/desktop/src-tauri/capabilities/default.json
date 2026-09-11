@@ -5,13 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:event:default",
     "core:window:allow-start-dragging",
-    "core:window:allow-set-title",
     "core:webview:allow-internal-toggle-devtools",
     "dialog:allow-open",
     "dialog:allow-message",
-    "dialog:allow-confirm",
     "dialog:allow-ask",
     "notification:default",
     "opener:allow-open-url",

@@ -7,17 +7,14 @@
  *
  * Usage: bun run scripts/stress-matrix.ts [maxSessions=8]
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { RuntimeManager } from "../packages/engine/src/runtime-manager";
 import { startMockProvider } from "../packages/engine/test/mock-provider";
 import { ompAgentDir } from "../packages/omp-adapter/src";
 import type { ProductEvent } from "../packages/protocol/src";
+import { makeProject, removeProjects, waitFor } from "./lib";
 
 const MAX = Number(process.argv[2] ?? 8);
 const mock = startMockProvider();
-const roots: string[] = [];
 const finished = new Set<string>();
 
 const manager = new RuntimeManager({
@@ -39,22 +36,6 @@ const manager = new RuntimeManager({
 });
 await manager.init();
 
-function makeProject(tag: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `orch-stress-${tag}-`));
-  writeFileSync(join(dir, "M.txt"), tag);
-  roots.push(dir);
-  return dir;
-}
-
-async function waitFor(pred: () => boolean, ms = 60_000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  return false;
-}
-
 interface Row {
   n: number;
   spawnMs: number;
@@ -72,7 +53,7 @@ console.log("---------|----------|---------|-----------------|---------------|--
 for (let n = 1; n <= MAX; n++) {
   const t0 = performance.now();
   const s = await manager.create({
-    projectPath: makeProject(`s${n}`),
+    projectPath: makeProject(`orch-stress-s${n}-`, { "M.txt": `s${n}` }),
     title: `Stress ${n}`,
     model: "mockprov/mock-a",
     advisors: [],
@@ -82,7 +63,7 @@ for (let n = 1; n <= MAX; n++) {
 
   // One completed turn per session so workers hold realistic state.
   await manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
-  await waitFor(() => finished.has(s.sessionId));
+  await waitFor(() => finished.has(s.sessionId), 60_000);
 
   // Round-trip latency to a busy-ish supervisor (simulates a session switch).
   const t1 = performance.now();
@@ -124,7 +105,7 @@ console.log(
 
 await manager.shutdown();
 mock.stop();
-for (const r of roots) rmSync(r, { recursive: true, force: true });
+removeProjects();
 
 console.log("\nJSON:", JSON.stringify(rows));
 process.exit(0);

@@ -18,9 +18,10 @@
  *                  counters, because live usage arrives cumulatively during a
  *                  stream and the final value supersedes every earlier one.
  *
- * Verified against OMP 17.3.1: usage on a streaming message accumulates
- * (0 -> partial -> final) rather than arriving as deltas, so within a single
- * source the LAST value for a key is authoritative, never the sum.
+ * Verified against the pinned OMP version (packages/engine/package.json):
+ * usage on a streaming message accumulates (0 -> partial -> final) rather
+ * than arriving as deltas, so within a single source the LAST value for a key
+ * is authoritative, never the sum.
  */
 import {
   addTokens,
@@ -53,6 +54,17 @@ export function usageKey(parts: {
   messageId: string;
 }): string {
   return `${parts.sessionId}\u0000${parts.actorId}\u0000${parts.messageId}`;
+}
+
+/** Split a key built by `usageKey`; undefined when it was built some other way. */
+export function parseUsageKey(
+  key: string,
+): { sessionId: string; actorId: string; messageId: string } | undefined {
+  const parts = key.split("\u0000");
+  if (parts.length < 3) return undefined;
+  // Session and actor ids never contain NUL; everything after the second
+  // separator is the message id.
+  return { sessionId: parts[0], actorId: parts[1], messageId: parts.slice(2).join("\u0000") };
 }
 
 /**

@@ -9,7 +9,6 @@
     "tauri": "tauri",
     "vite:dev": "bun run sync:toolviews && vite",
     "vite:build": "bun run sync:toolviews && tsc --noEmit && vite build",
-    "preview": "vite preview",
     "sync:toolviews": "bun ../../scripts/sync-tool-views.ts"
   },
   "dependencies": {

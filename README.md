@@ -22,11 +22,6 @@ project exists to expose OMP well on the desktop:
 Switching the visible session in the sidebar is a pure UI change. It never pauses, aborts, or
 disposes anything: session lifetime is tied to a worker process, not to what React is rendering.
 
-## Screenshots
-
-None are committed yet. This section is a placeholder; screenshots of the session view, the
-new-session sheet, and the usage inspector will be added here.
-
 ## Features
 
 **Concurrency**
@@ -153,7 +148,7 @@ Packaging and verification:
 ```bash
 bun run release:check                 # check + build:engine + app build + packaged smoke, end to end
 cd apps/desktop && bunx tauri build   # produces the .app and .dmg, if run standalone
-bun run scripts/smoke-packaged.ts     # packaged smoke test: 24 checks
+bun run smoke                         # packaged smoke test: 25 checks
 bun run validate:live                 # live validation against real providers (primary, advisor,
                                        # multi-advisor, subagent, resume, concurrent, fork)
 ```
@@ -186,16 +181,11 @@ Session worker × N — exactly one OMP AgentSession each
 OhMyPi SDK — providers, tools, advisors, subagents
 ```
 
-Process-per-session is deliberate. The preferred design — many `AgentSession`s in one process behind
-a private registry — was abandoned after inspecting upstream source revealed four hazards an embedder
-cannot fix from outside: subagents always register into `AgentRegistry.global()`; `AsyncJobManager`
-is a first-session-only process singleton, so later sessions silently lose `bash --async` and
-parallel `task`; `AgentLifecycleManager.global().dispose()` reaps across sessions; and
-`Settings.init()` is memoized and ignores later callers' `cwd`/`agentDir`. Giving each session its
-own process makes every session "first" and every process-global private.
-
-The frontend cannot tell which topology is in use — the supervisor speaks the same protocol either
-way. Full reasoning, the protocol frames, the persistence model, and the security boundary are in
+Process-per-session is deliberate: several OMP process-global singletons (the agent registry,
+the async job manager, lifecycle disposal, memoized settings) make many `AgentSession`s in one
+process unsafe for an embedder, so each session gets its own process. The frontend cannot tell
+which topology is in use — the supervisor speaks the same protocol either way. The full reasoning,
+the protocol frames, the persistence model, and the security boundary are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Relationship to OhMyPi
@@ -222,8 +212,8 @@ session format. Orchestrator-only UI metadata lives in
   metadata only.
 - Redaction is applied at the protocol boundary and in the logger, so secrets reach neither the UI
   nor the log files.
-- The webview has a restrictive CSP and a narrow Tauri capability set; it cannot touch the
-  filesystem or spawn processes directly.
+- The webview cannot touch the filesystem or spawn processes; the boundary is described in
+  [docs/ARCHITECTURE.md § Security boundary](docs/ARCHITECTURE.md#security-boundary).
 
 ## Current limitations
 
@@ -243,10 +233,9 @@ The following are not implemented in the current build:
 Each unimplemented protocol request returns an explicit error or an empty result rather than a silent
 no-op.
 
-Accepted costs of process-per-session: roughly 300–470 MB RSS per live session packaged, depending
-on load (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the full measured breakdown), and MCP
-servers and LSP pools are per-session rather than shared — each worker starts its own, enabled in
-normal operation and disabled only in test mode; there is no per-session UI toggle for them.
+Accepted costs of process-per-session — per-worker memory and per-session MCP/LSP pools — are
+listed in [docs/ARCHITECTURE.md § Costs accepted](docs/ARCHITECTURE.md#costs-accepted), with the
+measured numbers in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Contributing
 

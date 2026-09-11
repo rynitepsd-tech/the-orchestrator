@@ -20,36 +20,32 @@
  *      Identity: the advisor name. Each poll REPLACES the previous snapshot,
  *      which is exactly the accumulator's replacement semantics.
  *
- * 3. SUBAGENTS — task tool results carry their own usage; identity is the
- *      task/tool call id.
+ * 3. SUBAGENTS — the subagent's own assistant messages, observed on the
+ *      `task:subagent:event` bus channel, carry the same `usage` shape as the
+ *      primary path. Identity: the provider `responseId`, exactly like primary.
  *
  * Because advisor and subagent totals are reported separately from the primary
  * message usage, summing all three actor types does not double count.
+ *
+ * Persisted session files carry the same message shape; session-usage-reader
+ * builds its records through the same helpers with source "omp-session".
  */
 
 import type { ContextUsage, UsageRecord, UsageSource } from "@orchestrator/protocol";
-import { usageKey } from "@orchestrator/usage";
+import { reportedCost, usageKey } from "@orchestrator/usage";
 
 interface ExtractContext {
   sessionId: string;
   projectId: string;
 }
 
-/** OMP's usage object as it appears on a message. */
+/** The fields of OMP's message `usage` object that records are built from. */
 interface OmpUsage {
   input?: number;
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
-  reasoning?: number;
-  totalTokens?: number;
-  cost?: {
-    input?: number;
-    output?: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-    total?: number;
-  };
+  cost?: { total?: number };
 }
 
 function num(v: unknown): number {
@@ -57,52 +53,79 @@ function num(v: unknown): number {
 }
 
 /**
- * Cost is only reported when OMP actually computed it. A zero total from a
- * zero-cost model is real; a missing cost object is not zero, it is unknown.
+ * Message identity ladder: the provider's own response id (stable across live
+ * and persisted observations of the same response), else the provider
+ * timestamp, else the caller's fallback.
  */
-function costOf(u: OmpUsage | undefined): number | undefined {
-  const total = u?.cost?.total;
-  return typeof total === "number" && Number.isFinite(total) ? total : undefined;
+export function usageMessageId(message: any, fallback = "unknown"): string {
+  return (
+    (typeof message?.responseId === "string" && message.responseId) ||
+    (typeof message?.timestamp === "number" && `ts:${message.timestamp}`) ||
+    fallback
+  );
+}
+
+export interface UsageRecordAttribution {
+  sessionId: string;
+  projectId: string;
+  actorType: UsageRecord["actorType"];
+  actorId: string;
+  actorName?: string;
+  messageId: string;
+  source: UsageSource;
+  ompSessionId?: string;
 }
 
 /**
- * Build the primary-agent usage record for a completed turn.
+ * Build one usage record from an OMP assistant message carrying `usage`.
  *
  * Returns null when the message carries no usage (e.g. a synthetic message),
- * so callers never fabricate a zero-token record.
+ * so callers never fabricate a zero-token record. Cost goes through
+ * `reportedCost`, so an unpriced zero on a response that spent tokens is
+ * stored as unknown, not free.
  */
-export function primaryUsageFromTurn(
-  ctx: ExtractContext,
+export function usageRecordFromMessage(
   message: any,
-  source: UsageSource = "live-event",
+  r: UsageRecordAttribution,
 ): UsageRecord | null {
   const u: OmpUsage | undefined = message?.usage;
   if (!u) return null;
-
-  // Prefer the provider's own response id; it is stable across live and
-  // persisted observations of the same response.
-  const messageId =
-    (typeof message.responseId === "string" && message.responseId) ||
-    (typeof message.timestamp === "number" && `ts:${message.timestamp}`) ||
-    "unknown";
-
-  return {
-    key: usageKey({ sessionId: ctx.sessionId, actorId: "primary", messageId }),
-    sessionId: ctx.sessionId,
-    projectId: ctx.projectId,
-    actorType: "primary",
-    actorId: "primary",
+  const record: UsageRecord = {
+    key: usageKey({ sessionId: r.sessionId, actorId: r.actorId, messageId: r.messageId }),
+    sessionId: r.sessionId,
+    projectId: r.projectId,
+    actorType: r.actorType,
+    actorId: r.actorId,
+    ...(r.actorName ? { actorName: r.actorName } : {}),
     provider: String(message.provider ?? "unknown"),
     model: String(message.model ?? "unknown"),
     inputTokens: num(u.input),
     outputTokens: num(u.output),
     cacheReadTokens: num(u.cacheRead),
     cacheWriteTokens: num(u.cacheWrite),
-    cost: costOf(u),
+    cost: u.cost?.total,
     completedAt:
       typeof message.timestamp === "number" ? new Date(message.timestamp).toISOString() : undefined,
-    source,
+    source: r.source,
+    ...(r.ompSessionId ? { ompSessionId: r.ompSessionId } : {}),
   };
+  record.cost = reportedCost(record);
+  return record;
+}
+
+/** Build the primary-agent usage record for a completed turn. */
+export function primaryUsageFromTurn(
+  ctx: ExtractContext,
+  message: any,
+  source: UsageSource = "live-event",
+): UsageRecord | null {
+  return usageRecordFromMessage(message, {
+    ...ctx,
+    actorType: "primary",
+    actorId: "primary",
+    messageId: usageMessageId(message),
+    source,
+  });
 }
 
 /**
@@ -150,42 +173,23 @@ export function advisorUsageFromStats(ctx: ExtractContext, stats: any): UsageRec
 
 /**
  * Build a subagent usage record from one of the subagent's own assistant
- * messages (observed on the `task:subagent:event` bus channel).
- *
- * Identity is the provider responseId, exactly like the primary path, so
- * repeated observation of the same response collapses to one record and each
- * distinct provider response accumulates. This is authoritative attribution
- * with full token splits — better than the task tool's summary totals.
+ * messages. Identity is the provider responseId, exactly like the primary
+ * path, so repeated observation of the same response collapses to one record
+ * and each distinct provider response accumulates — authoritative attribution
+ * with full token splits, better than the task tool's summary totals.
  */
 export function subagentUsageFromMessage(
   ctx: ExtractContext,
   subagentId: string,
   message: any,
 ): UsageRecord | null {
-  const u: OmpUsage | undefined = message?.usage;
-  if (!u) return null;
-  const actorId = `subagent:${subagentId}`;
-  const messageId =
-    (typeof message.responseId === "string" && message.responseId) ||
-    (typeof message.timestamp === "number" && `ts:${message.timestamp}`) ||
-    "unknown";
-  return {
-    key: usageKey({ sessionId: ctx.sessionId, actorId, messageId }),
-    sessionId: ctx.sessionId,
-    projectId: ctx.projectId,
+  return usageRecordFromMessage(message, {
+    ...ctx,
     actorType: "subagent",
-    actorId,
-    provider: String(message.provider ?? "unknown"),
-    model: String(message.model ?? "unknown"),
-    inputTokens: num(u.input),
-    outputTokens: num(u.output),
-    cacheReadTokens: num(u.cacheRead),
-    cacheWriteTokens: num(u.cacheWrite),
-    cost: costOf(u),
-    completedAt:
-      typeof message.timestamp === "number" ? new Date(message.timestamp).toISOString() : undefined,
+    actorId: `subagent:${subagentId}`,
+    messageId: usageMessageId(message),
     source: "subagent-log",
-  };
+  });
 }
 
 /**
@@ -199,7 +203,7 @@ export function contextUsageOf(session: any): ContextUsage | null {
   try {
     const raw = session?.getContextUsage?.();
     if (!raw) return null;
-    // Measured shape (OMP 17.3.1):
+    // Measured shape (pinned OMP version):
     //   { contextWindow, anchored, usedTokens, systemPromptTokens,
     //     systemToolsTokens, systemContextTokens, skillsTokens, messagesTokens }
     // The `tokens`/`total` fallbacks cover getSessionStats().contextUsage,

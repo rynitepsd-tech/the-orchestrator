@@ -11,7 +11,7 @@ import type { AdvisorConfig, ModelInfo, SessionLaunchConfig } from "@orchestrato
 import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { projectParent, type SessionPreset } from "../lib/prefs";
+import { projectDisplayName, projectParent, type SessionPreset } from "../lib/prefs";
 import { defaultProjectPath, useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
 import { BoltIcon, FolderIcon } from "./icons";
@@ -230,7 +230,7 @@ export function NewSession({
                   >
                     <span className="project-recent-head">
                       <span className="project-recent-name">
-                        {prefs.projectAliases[p] ?? (p.split("/").pop() || p)}
+                        {projectDisplayName(p, prefs.projectAliases)}
                       </span>
                       {prefs.pinnedProjects.includes(p) && <span className="pin-tag">pinned</span>}
                     </span>

@@ -6,15 +6,15 @@
  * hides locally and never touches OMP's files.
  */
 
-import type { DiscoveredSession } from "@orchestrator/protocol";
+import { type DiscoveredSession, isActiveRunState } from "@orchestrator/protocol";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { DragEvent, JSX } from "react";
 import { useMemo, useState } from "react";
 import { engine } from "../engine-client";
+import { basename, projectDisplayName } from "../lib/prefs";
 import {
   advisorsReviewing,
-  isActive,
   modelBasename,
   runStateLabel,
   type SessionView,
@@ -259,9 +259,6 @@ export function Sidebar({
   /** Closed-session row armed by double-click, showing its Reopen button. */
   const [armedClosed, setArmedClosed] = useState<string | null>(null);
 
-  const projectName = (path: string) =>
-    prefs.projectAliases[path] ?? (path.split("/").pop() || path);
-
   // Persist the group's new visible sequence as session paths (survives
   // relaunches); rows from other projects keep their entries untouched.
   const persistRowOrder = (rows: GroupRow[], seq: GroupRow[]) => {
@@ -335,7 +332,7 @@ export function Sidebar({
 
       <div className="sidebar-scroll">
         {byProject.map(([projectPath, g]) => {
-          const shared = g.views.filter((v) => isActive(v.summary.runState)).length;
+          const shared = g.views.filter((v) => isActiveRunState(v.summary.runState)).length;
           const collapsed = isCollapsed(projectPath);
           const count = g.views.length + g.open.length;
           const rows = sortedRows(g, prefs.sessionOrder);
@@ -380,15 +377,16 @@ export function Sidebar({
                 }}
                 aria-expanded={!collapsed}
               >
-                {/* The affordance that groups collapse at all — the CSS for
-                    this chevron existed for months with nothing rendering it. */}
+                {/* The affordance that groups collapse at all. */}
                 <span className="group-chevron" aria-hidden>
                   {collapsed ? "▸" : "▾"}
                 </span>
                 <span className="group-folder">
                   <FolderIcon />
                 </span>
-                <span className="project-name">{projectName(projectPath)}</span>
+                <span className="project-name">
+                  {projectDisplayName(projectPath, prefs.projectAliases)}
+                </span>
                 {prefs.pinnedProjects.includes(projectPath) && <span className="hint">pinned</span>}
                 {collapsed && <span className="hint">{count}</span>}
                 {shared > 1 && (
@@ -467,18 +465,15 @@ export function Sidebar({
               <span className="group-folder">
                 <FolderIcon />
               </span>
-              <span className="project-name">{projectName(cwd)}</span>
+              <span className="project-name">{projectDisplayName(cwd, prefs.projectAliases)}</span>
               <span className="hint missing-hint">folder not found</span>
             </div>
             {list.map((d) => (
-              <div key={d.path} className="session-row missing-row" title={`${d.path}\n${cwd}`}>
+              <div key={d.path} className="session-row" title={`${d.path}\n${cwd}`}>
                 <span className="dot idle" aria-hidden />
-                <span className="session-col">
+                <span className="session-text">
                   <span className="session-title">{d.title}</span>
-                  <span className="session-sub hint">
-                    {d.messageCount} messages
-                    {d.modified && ` · ${new Date(d.modified).toLocaleDateString()}`}
-                  </span>
+                  <DiscoveredSub d={d} />
                 </span>
               </div>
             ))}
@@ -655,7 +650,8 @@ export function Sidebar({
 /**
  * Session state at a glance: yellow blink = answer me (stops blinking once
  * you're looking at it), quiet three-dot wave = working, solid blue = finished
- * since you last looked (select clears it), red = failed, gray = idle.
+ * since you last looked (select clears it), red = failed or interrupted,
+ * gray = idle or hibernated.
  */
 function StatusIndicator({ view, active }: { view: SessionView; active: boolean }): JSX.Element {
   const s = view.summary;
@@ -663,7 +659,7 @@ function StatusIndicator({ view, active }: { view: SessionView; active: boolean 
     return <span className={`dot attention${active ? "" : " blink"}`} aria-hidden />;
   }
   // Advisors still reading count as "working" — the turn isn't finished yet.
-  if (isActive(s.runState) || (s.runState === "completed" && advisorsReviewing(view))) {
+  if (isActiveRunState(s.runState) || (s.runState === "completed" && advisorsReviewing(view))) {
     return (
       <span className="working-dots" aria-hidden>
         <span />
@@ -735,7 +731,7 @@ function SessionRow({
       onDrop={onDrop}
     >
       <StatusIndicator view={view} active={active} />
-      <span className="session-col">
+      <span className="session-text">
         <span className="session-title">{s.title}</span>
         <span className="session-sub hint">
           {modelBasename(s.model)}
@@ -747,6 +743,17 @@ function SessionRow({
         </span>
       </span>
     </button>
+  );
+}
+
+/** Secondary line under a discovered session: `[folder ·] N messages · date`. */
+function DiscoveredSub({ d, folder }: { d: DiscoveredSession; folder?: boolean }): JSX.Element {
+  const when = d.modified ? new Date(d.modified).toLocaleDateString() : "";
+  return (
+    <span className="session-sub hint">
+      {folder && `${basename(d.cwd)} · `}
+      {d.messageCount} messages{when && ` · ${when}`}
+    </span>
   );
 }
 
@@ -764,7 +771,6 @@ function DiscoveredRow({
   d: DiscoveredSession;
   onResume: () => void;
 } & RowDragProps): JSX.Element {
-  const when = d.modified ? new Date(d.modified).toLocaleDateString() : "";
   return (
     // The whole row opens the session — no hunting for a Resume button.
     <button
@@ -783,11 +789,9 @@ function DiscoveredRow({
       onDrop={onDrop}
     >
       <span className="dot idle" aria-hidden />
-      <span className="session-col">
+      <span className="session-text">
         <span className="session-title">{d.title}</span>
-        <span className="session-sub hint">
-          {d.cwd.split("/").pop()} · {d.messageCount} messages{when && ` · ${when}`}
-        </span>
+        <DiscoveredSub d={d} folder />
       </span>
       <span className="hint open-hint">Open</span>
     </button>
@@ -814,7 +818,6 @@ function ClosedRow({
   onReopen: () => void;
   onToggleArchive: () => void;
 }): JSX.Element {
-  const when = d.modified ? new Date(d.modified).toLocaleDateString() : "";
   return (
     <div
       className={`session-row closed-row${armed ? " armed" : ""}`}
@@ -822,11 +825,9 @@ function ClosedRow({
       onDoubleClick={onArm}
     >
       <span className="dot idle" aria-hidden />
-      <span className="session-col">
+      <span className="session-text">
         <span className="session-title">{d.title}</span>
-        <span className="session-sub hint">
-          {d.cwd.split("/").pop()} · {d.messageCount} messages{when && ` · ${when}`}
-        </span>
+        <DiscoveredSub d={d} folder />
       </span>
       <button
         className="btn btn-ghost archive-btn"
@@ -871,7 +872,7 @@ function SessionMenu({
   const setRenameTarget = useStore((s) => s.setRenameTarget);
   if (!view) return null;
   const s = view.summary;
-  const running = isActive(s.runState);
+  const running = isActiveRunState(s.runState);
   const pinned = prefs.pinnedProjects.includes(s.projectPath);
 
   const act = (fn: () => void) => () => {
@@ -941,7 +942,7 @@ function SessionMenu({
           // untouched and reappears under "Previous sessions" — an explicit
           // close is the one action that demotes a session from its project
           // group across relaunches.
-          void engine.request("sessions.close", { sessionId, dispose: true }).catch(() => {});
+          void engine.request("sessions.close", { sessionId }).catch(() => {});
           if (s.ompSessionPath) {
             updatePrefs({
               openSessionPaths: prefs.openSessionPaths.filter((p) => p !== s.ompSessionPath),
@@ -958,7 +959,7 @@ function SessionMenu({
           onClick={act(() => {
             // Close AND hide from the closed-sessions list. Local-only: the
             // OMP transcript on disk is never touched.
-            void engine.request("sessions.close", { sessionId, dispose: true }).catch(() => {});
+            void engine.request("sessions.close", { sessionId }).catch(() => {});
             updatePrefs({
               openSessionPaths: prefs.openSessionPaths.filter((p) => p !== s.ompSessionPath),
               archivedSessions: prefs.archivedSessions.includes(s.ompSessionPath!)

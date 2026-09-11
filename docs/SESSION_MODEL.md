@@ -109,12 +109,12 @@ read back out of OMP's store.
 
 ```
 idle, queued, starting, thinking, streaming, tool, waiting, stopping,
-completed, interrupted, error
+completed, interrupted, error, hibernated
 ```
 
-`ACTIVE_RUN_STATES` — the states in which the engine is doing work — are
+The active states — the ones in which the engine is doing work — are
 `queued`, `starting`, `thinking`, `streaming`, `tool`, `waiting`, `stopping`.
-`idle`, `completed`, `interrupted` and `error` are inactive. `isActiveRunState(s)` is the
+`idle`, `completed`, `interrupted`, `error` and `hibernated` are inactive. `isActiveRunState(s)` is the
 single predicate; the sidebar's spinner, the composer's busy affordance and
 `WorkerSupervisor.activeCount()` all derive from the same list rather than re-deciding.
 

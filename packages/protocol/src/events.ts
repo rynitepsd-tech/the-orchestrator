@@ -4,7 +4,8 @@
  * The adapter maps upstream OMP events onto these. The UI subscribes only to
  * these, so an upstream event rename is a one-file change in the adapter.
  *
- * Upstream (verified against OMP 17.3.1 session.subscribe):
+ * Upstream (verified against the OMP version pinned in packages/engine/package.json;
+ * see packages/engine/test/omp-pin.test.ts) session.subscribe:
  *   agent_start, turn_start, message_start, message_update, message_end,
  *   tool_execution_start, tool_execution_update, tool_execution_end,
  *   turn_end, agent_end
@@ -97,8 +98,6 @@ export interface ToolStarted extends EventBase {
   toolName: string;
   /** Redacted, display-ready arguments. */
   args: Record<string, unknown>;
-  /** Set when this tool call belongs to a subagent rather than the primary. */
-  parentActorId?: string;
 }
 
 export interface ToolUpdated extends EventBase {
@@ -106,7 +105,6 @@ export interface ToolUpdated extends EventBase {
   callId: string;
   /** Incremental output (e.g. streaming shell stdout). */
   outputDelta?: string;
-  progress?: string;
 }
 
 export interface ToolCompleted extends EventBase {
@@ -404,5 +402,3 @@ export type ProductEvent =
   | SessionHibernated
   | ExtensionUIRequested
   | TodoUpdated;
-
-export type ProductEventType = ProductEvent["type"];

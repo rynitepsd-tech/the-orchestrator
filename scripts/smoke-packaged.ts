@@ -11,9 +11,9 @@
  *
  * Usage: bun run scripts/smoke-packaged.ts [path/to/The Orchestrator.app]
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { checker, makeProject, removeProjects, waitFor } from "./lib";
 
 const DEFAULT_APP = resolve(
   import.meta.dir,
@@ -30,11 +30,7 @@ if (!existsSync(enginePath)) {
   process.exit(1);
 }
 
-const results: Array<{ name: string; ok: boolean; detail?: string }> = [];
-const check = (name: string, ok: boolean, detail?: string) => {
-  results.push({ name, ok, detail });
-  console.log(`${ok ? "✓" : "✗"} ${name}${detail ? ` — ${detail}` : ""}`);
-};
+const { results, check } = checker();
 
 // --- architecture ----------------------------------------------------------
 const file = Bun.spawnSync(["file", "-b", enginePath]);
@@ -46,8 +42,7 @@ const addon = join(appPath, "Contents/Resources/engine", `pi_natives.darwin-${pr
 check("native addon ships beside the engine", existsSync(addon));
 
 // --- boot the packaged engine ---------------------------------------------
-const project = mkdtempSync(join(tmpdir(), "orch-smoke-"));
-writeFileSync(join(project, "SMOKE.txt"), "packaged smoke test\n");
+const project = makeProject("orch-smoke-", { "SMOKE.txt": "packaged smoke test\n" });
 
 // A local mock provider so the packaged app can run a REAL session, with a
 // real tool call, without spending a cent of the user's API credit.
@@ -106,15 +101,6 @@ void (async () => {
 const send = (type: string, payload: unknown, requestId: string) =>
   proc.stdin.write(`${JSON.stringify({ protocolVersion: 1, requestId, type, payload })}\n`);
 
-async function waitFor(pred: () => boolean, ms = 90_000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < ms) {
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  return false;
-}
-
 const findResp = (id: string) => frames.find((f) => f.requestId === id);
 const findEvent = (t: string) => frames.find((f) => f.event?.type === t);
 
@@ -144,14 +130,14 @@ try {
 
   // 4. providers resolve from existing credentials
   send("providers.list", {}, "p1");
-  await waitFor(() => !!findResp("p1"));
+  await waitFor(() => !!findResp("p1"), 90_000);
   const provs = findResp("p1");
   const authed = (provs?.result?.providers ?? []).filter((p: any) => p.authenticated);
   check("reuses existing OMP credentials", provs?.ok === true, `${authed.length} authenticated`);
 
   // 5. project opens
   send("project.open", { path: project }, "o1");
-  await waitFor(() => !!findResp("o1"));
+  await waitFor(() => !!findResp("o1"), 90_000);
   check("opens a project", findResp("o1")?.ok === true);
 
   // 6. session discovery works against real session storage
@@ -308,7 +294,7 @@ try {
   }
   await pump.catch(() => {});
   mock.stop();
-  rmSync(project, { recursive: true, force: true });
+  removeProjects();
 }
 
 const failed = results.filter((r) => !r.ok);

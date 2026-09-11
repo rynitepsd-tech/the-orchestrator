@@ -1,8 +1,9 @@
 /**
  * Upstream OMP event -> normalized product event.
  *
- * Event shapes below were captured from a live OMP 17.3.1 session
- * (see docs/OMP_COMPATIBILITY.md for the capture method). Upstream emits:
+ * Event shapes below were captured from a live session of the pinned OMP
+ * version (packages/engine/package.json; see docs/OMP_COMPATIBILITY.md for
+ * the capture method). Upstream emits:
  *
  *   agent_start          { type }
  *   turn_start           { type }
@@ -24,6 +25,7 @@ import {
   type RunState,
   redactValue,
   sanitizeOutput,
+  type ToolCompleted,
   type ToolDetail,
 } from "@orchestrator/protocol";
 
@@ -58,7 +60,7 @@ function rawToolResult(result: any, isError: boolean): OmpToolResult | undefined
 /** Loose view of an upstream event; upstream types are not re-exported wholesale. */
 type OmpEvent = Record<string, any>;
 
-export interface MapperContext {
+interface MapperContext {
   sessionId: string;
   /** Called when the mapper infers a run-state transition. */
   onRunState?: (state: RunState, activity?: string) => void;
@@ -124,12 +126,9 @@ export class EventMapper {
 
       case "message_end": {
         const msg = ev.message;
-        // Advisor notes arrive as batched custom messages injected by the
-        // watchdog runtime (session-advisors.ts upstream):
-        //   { role: "custom", customType: "advisor",
-        //     details: { notes: [{ note, severity, advisor? }] } }
+        // Advisor cards (see advisorEventsFromCard) are not assistant messages.
         if (msg?.role === "custom" && msg?.customType === "advisor") {
-          return this.#mapAdvisorNotes(msg);
+          return this.mapAdvisorCard(msg);
         }
         if (msg?.role !== "assistant") return [];
         const id = this.#messageId();
@@ -169,7 +168,7 @@ export class EventMapper {
       }
 
       case "tool_execution_update": {
-        const partial = contentText(ev.partialResult);
+        const partial = textOf(ev.partialResult);
         if (!partial) return [];
         return [
           {
@@ -187,28 +186,13 @@ export class EventMapper {
         this.#toolStartedAt.delete(callId);
         const rememberedArgs = this.#toolArgs.get(callId);
         this.#toolArgs.delete(callId);
-        const raw = contentText(ev.result);
-        const { output, truncated } = sanitizeOutput(raw);
         const isError = ev.isError === true;
-        const events: ProductEvent[] = [
-          {
-            type: "tool.end",
-            sessionId,
-            callId,
-            ok: !isError,
-            output,
-            truncated,
-            error: isError ? output.slice(0, 2000) : undefined,
-            durationMs:
-              typeof ev.result?.details?.wallTimeMs === "number"
-                ? ev.result.details.wallTimeMs
-                : startedAt
-                  ? Date.now() - startedAt
-                  : undefined,
-            detail: toolDetail(String(ev.toolName ?? ""), ev, rememberedArgs),
-            ompResult: rawToolResult(ev.result, isError),
-          },
-        ];
+        const end = toolEndEvent(sessionId, callId, String(ev.toolName ?? ""), ev, isError, {
+          rememberedArgs,
+          startedAt,
+          ompResult: rawToolResult(ev.result, isError),
+        });
+        const events: ProductEvent[] = [end];
         // The todo tool's result carries the full post-op list; surface it as
         // its own event so the UI can pin live progress.
         const phases = ev.result?.details?.phases;
@@ -219,7 +203,8 @@ export class EventMapper {
       }
 
       case "turn_end": {
-        // Usage lives on turn_end.message.usage and is authoritative for the turn.
+        // Usage lives on turn_end.message.usage; the worker extracts it
+        // (usage-extract.ts) — the mapper only reports the state transition.
         this.#ctx.onRunState?.("idle");
         return [];
       }
@@ -361,59 +346,13 @@ export class EventMapper {
    * Map one advisor card (a `role: "custom", customType: "advisor"` message)
    * to advisor.message events. Public because not every card arrives as an
    * event: OMP delivers mid-turn (steered) advisories straight into agent
-   * state with NO message_start/message_end — since 17.3.5 that is the normal
-   * path for blocker-driven revision cascades — so the worker sweeps agent
-   * state and feeds unseen cards through here itself.
+   * state with NO message_start/message_end — under the pinned OMP version
+   * that is the normal path for blocker-driven revision cascades — so the
+   * worker sweeps agent state and feeds unseen cards through here itself.
    */
   mapAdvisorCard(msg: OmpEvent): ProductEvent[] {
-    return this.#mapAdvisorNotes(msg);
-  }
-
-  #mapAdvisorNotes(msg: OmpEvent): ProductEvent[] {
     const sessionId = this.#ctx.sessionId;
-    const notes: any[] = Array.isArray(msg?.details?.notes) ? msg.details.notes : [];
-    const at =
-      typeof msg?.timestamp === "number"
-        ? new Date(msg.timestamp).toISOString()
-        : new Date().toISOString();
-    const out: ProductEvent[] = [];
-    for (const n of notes) {
-      const text = typeof n?.note === "string" ? n.note : "";
-      if (!text) continue;
-      const name = typeof n?.advisor === "string" && n.advisor ? n.advisor : "Advisor";
-      const sev = n?.severity;
-      out.push({
-        type: "advisor.message",
-        sessionId,
-        advisorId: `advisor:${name}`,
-        advisorName: name,
-        // Unknown future severities degrade to "unknown" instead of vanishing.
-        severity: sev === "nit" || sev === "concern" || sev === "blocker" ? sev : "unknown",
-        text,
-        messageId: `${sessionId}:adv${++this.#messageSeq}`,
-        at,
-      });
-    }
-    // The batched note body is also rendered to the model as an <advisory>
-    // block; the per-note cards above are the product-facing form. If upstream
-    // ships a shape without `details.notes`, fall back to the raw text so the
-    // advisory is never silently dropped.
-    if (out.length === 0) {
-      const raw = textOf(msg);
-      if (raw) {
-        out.push({
-          type: "advisor.message",
-          sessionId,
-          advisorId: "advisor:unknown",
-          advisorName: "Advisor",
-          severity: "unknown",
-          text: raw,
-          messageId: `${sessionId}:adv${++this.#messageSeq}`,
-          at,
-        });
-      }
-    }
-    return out;
+    return advisorEventsFromCard(sessionId, msg, () => `${sessionId}:adv${++this.#messageSeq}`);
   }
 
   #mapMessageUpdate(ev: OmpEvent): ProductEvent[] {
@@ -484,15 +423,102 @@ export function thinkingOf(message: any): string {
     .join("");
 }
 
-/** Extract text from a tool result/partialResult `{ content: [{type,text}] }`. */
-function contentText(result: any): string {
-  const content = result?.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((p: any) => p?.type === "text" && typeof p.text === "string")
-    .map((p: any) => p.text)
-    .join("");
+/**
+ * The `tool.end` event for one finished call. Shared with replay so a resumed
+ * session's tool cards carry the same output, duration and structured detail
+ * as live ones — the data is in the file. `ev` is `{ args?, result }` for a
+ * live `tool_execution_end`, or the persisted `toolResult` message wrapped as
+ * `{ result }`.
+ */
+export function toolEndEvent(
+  sessionId: string,
+  callId: string,
+  toolName: string,
+  ev: OmpEvent,
+  isError: boolean,
+  opts: {
+    rememberedArgs?: Record<string, unknown>;
+    /** Live only: fallback when upstream reports no wall time. */
+    startedAt?: number;
+    ompResult?: OmpToolResult;
+  },
+): ToolCompleted {
+  const { output, truncated } = sanitizeOutput(textOf(ev.result));
+  return {
+    type: "tool.end",
+    sessionId,
+    callId,
+    ok: !isError,
+    output,
+    truncated,
+    error: isError ? output.slice(0, 2000) : undefined,
+    durationMs:
+      typeof ev.result?.details?.wallTimeMs === "number"
+        ? ev.result.details.wallTimeMs
+        : opts.startedAt
+          ? Date.now() - opts.startedAt
+          : undefined,
+    detail: toolDetail(toolName, ev, opts.rememberedArgs),
+    ompResult: opts.ompResult,
+  };
+}
+
+/**
+ * Advisor notes arrive as batched custom messages injected by the watchdog
+ * runtime (session-advisors.ts upstream):
+ *   { role: "custom", customType: "advisor",
+ *     details: { notes: [{ note, severity, advisor? }] } }
+ * One advisor.message per note; `nextMessageId` lets live and replay keep
+ * their own id sequences.
+ */
+export function advisorEventsFromCard(
+  sessionId: string,
+  msg: OmpEvent,
+  nextMessageId: () => string,
+): ProductEvent[] {
+  const notes: any[] = Array.isArray(msg?.details?.notes) ? msg.details.notes : [];
+  const at =
+    typeof msg?.timestamp === "number"
+      ? new Date(msg.timestamp).toISOString()
+      : new Date().toISOString();
+  const out: ProductEvent[] = [];
+  for (const n of notes) {
+    const text = typeof n?.note === "string" ? n.note : "";
+    if (!text) continue;
+    const name = typeof n?.advisor === "string" && n.advisor ? n.advisor : "Advisor";
+    const sev = n?.severity;
+    out.push({
+      type: "advisor.message",
+      sessionId,
+      advisorId: `advisor:${name}`,
+      advisorName: name,
+      // Unknown future severities degrade to "unknown" instead of vanishing.
+      severity: sev === "nit" || sev === "concern" || sev === "blocker" ? sev : "unknown",
+      text,
+      messageId: nextMessageId(),
+      at,
+    });
+  }
+  // The batched note body is also rendered to the model as an <advisory>
+  // block; the per-note cards above are the product-facing form. If upstream
+  // ships a shape without `details.notes`, fall back to the raw text so the
+  // advisory is never silently dropped.
+  if (out.length === 0) {
+    const raw = textOf(msg);
+    if (raw) {
+      out.push({
+        type: "advisor.message",
+        sessionId,
+        advisorId: "advisor:unknown",
+        advisorName: "Advisor",
+        severity: "unknown",
+        text: raw,
+        messageId: nextMessageId(),
+        at,
+      });
+    }
+  }
+  return out;
 }
 
 /**

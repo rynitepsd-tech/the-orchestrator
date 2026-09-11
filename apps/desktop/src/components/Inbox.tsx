@@ -10,6 +10,7 @@
 import type { JSX } from "react";
 import { useState } from "react";
 import { engine } from "../engine-client";
+import { basename } from "../lib/prefs";
 import {
   advisorsReviewing,
   fmtCount,
@@ -86,7 +87,7 @@ export function Inbox(): JSX.Element {
                   <div className="row">
                     <span className="dot finished" aria-hidden />
                     <span className="inbox-title">{v.summary.title}</span>
-                    <span className="chip mono">{v.summary.projectPath.split("/").pop()}</span>
+                    <span className="chip mono">{basename(v.summary.projectPath)}</span>
                     <span className="spacer" />
                     <button className="btn btn-ghost" onClick={() => markRead(v.summary.sessionId)}>
                       Mark reviewed
@@ -114,7 +115,7 @@ export function Inbox(): JSX.Element {
                       aria-hidden
                     />
                     <span className="inbox-title">{v.summary.title}</span>
-                    <span className="chip mono">{v.summary.projectPath.split("/").pop()}</span>
+                    <span className="chip mono">{basename(v.summary.projectPath)}</span>
                     <span className="spacer" />
                     <button className="btn" onClick={() => select(v.summary.sessionId)}>
                       Open
@@ -165,7 +166,7 @@ function NeedsInputCard({
       <div className="row">
         <span className="dot attention blink" aria-hidden />
         <span className="inbox-title">{view.summary.title}</span>
-        <span className="chip mono">{view.summary.projectPath.split("/").pop()}</span>
+        <span className="chip mono">{basename(view.summary.projectPath)}</span>
         <span className="spacer" />
         <button className="btn" onClick={() => onOpen(view.summary.sessionId)}>
           Open

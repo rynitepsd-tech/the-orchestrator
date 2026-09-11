@@ -40,7 +40,7 @@ import type {
 import { type AuthLifecycleEvent, createLoginController, type LoginController } from "./auth-login";
 import { logger } from "./logging";
 import { UsageIndex } from "./usage-index";
-import { type WorkerSpawnEnv, WorkerSupervisor } from "./worker/supervisor";
+import { type TestProvider, type WorkerSpawnEnv, WorkerSupervisor } from "./worker/supervisor";
 
 export interface RuntimeManagerOptions {
   agentDir?: string;
@@ -81,7 +81,7 @@ export class RuntimeManager {
     this.#supervisor = new WorkerSupervisor({
       agentDir: this.#agentDir,
       testMode: this.#opts.testMode,
-      env: this.#opts.workerEnv ?? envTestProviders(),
+      env: this.#opts.workerEnv ?? { testProviders: envTestProviders() },
       emit: (e) => this.#onSessionEvent(e),
     });
 
@@ -419,8 +419,7 @@ export class RuntimeManager {
    * worker's registry, which this storage cannot see.
    */
   async assertProvidersUsable(modelKeys: Array<string | undefined>, action: string): Promise<void> {
-    const testProviders =
-      this.#opts.workerEnv?.testProviders ?? envTestProviders()?.testProviders ?? [];
+    const testProviders = this.#opts.workerEnv?.testProviders ?? envTestProviders() ?? [];
     const exempt = new Set(testProviders.map((p) => p.name));
     const providers = new Set<string>();
     for (const key of modelKeys) {
@@ -486,10 +485,10 @@ export class RuntimeManager {
     return this.#supervisor.route<T>(sessionId, type, payload);
   }
 
-  async close(sessionId: string, dispose: boolean): Promise<void> {
+  async close(sessionId: string): Promise<void> {
     // Deliberately does NOT clear the session's rows from the usage index:
     // closing a session is a UI action; the tokens were still spent.
-    await this.#supervisor.close(sessionId, dispose);
+    await this.#supervisor.close(sessionId);
   }
 
   async shutdown(): Promise<void> {
@@ -681,10 +680,6 @@ export class RuntimeManager {
   workerStats(): ReturnType<WorkerSupervisor["workerStats"]> {
     return this.#supervisor.workerStats();
   }
-
-  supervisor(): WorkerSupervisor {
-    return this.#supervisor;
-  }
 }
 
 function numOrUndef(v: unknown): number | undefined {
@@ -702,12 +697,12 @@ function numOrUndef(v: unknown): number | undefined {
  * the engine's environment at spawn. Only direct spawns (tests, the packaged
  * smoke script) can reach this hook.
  */
-function envTestProviders(): { testProviders?: WorkerSpawnEnv["testProviders"] } | undefined {
+function envTestProviders(): TestProvider[] | undefined {
   const raw = process.env.ORCHESTRATOR_TEST_PROVIDERS;
   if (!raw) return undefined;
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? { testProviders: parsed } : undefined;
+    return Array.isArray(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }

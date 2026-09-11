@@ -12,13 +12,13 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
-export interface ShipOptions {
+interface ShipOptions {
   /** PR/commit title, typically the session title. */
   title: string;
   body?: string;
 }
 
-export interface ShipResult {
+interface ShipResult {
   branch: string;
   /** True when we branched off the default branch to avoid committing to it. */
   createdBranch: boolean;

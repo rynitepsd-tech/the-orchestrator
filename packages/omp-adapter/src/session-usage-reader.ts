@@ -2,7 +2,8 @@
  * Read authoritative usage records out of a persisted OMP session file.
  *
  * Session files are append-only JSONL (see docs/SESSION_MODEL.md). Assistant
- * messages carry provider-reported usage:
+ * messages carry provider-reported usage in the same shape the live
+ * `turn_end` path sees (see usage-extract.ts):
  *
  *   { type: "message", message: { role: "assistant",
  *       usage: { input, output, cacheRead, cacheWrite, totalTokens,
@@ -21,9 +22,9 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import type { UsageRecord } from "@orchestrator/protocol";
-import { usageKey } from "@orchestrator/usage";
+import { usageMessageId, usageRecordFromMessage } from "./usage-extract";
 
-export interface SessionFileUsage {
+interface SessionFileUsage {
   ompSessionId: string;
   cwd: string;
   title?: string;
@@ -39,7 +40,7 @@ export interface SessionFileUsage {
  * separate files with their own session headers, but their tokens were spent
  * on behalf of the PARENT session and must be filed under it.
  */
-export interface TranscriptActor {
+interface TranscriptActor {
   actorType: UsageRecord["actorType"];
   actorId: string;
   actorName?: string;
@@ -47,10 +48,6 @@ export interface TranscriptActor {
   ompSessionId: string;
   /** The parent session's project, for the "By project" rollup. */
   projectId?: string;
-}
-
-function num(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
 export async function readSessionFileUsage(
@@ -88,40 +85,22 @@ export async function readSessionFileUsage(
       }
       if (entry?.type !== "message") continue;
       const msg = entry.message;
-      if (msg?.role !== "assistant" || !msg.usage) continue;
-
-      const u = msg.usage;
-      const messageId =
-        (typeof msg.responseId === "string" && msg.responseId) ||
-        (typeof msg.timestamp === "number" && `ts:${msg.timestamp}`) ||
-        `entry:${String(entry.id ?? records.length)}`;
+      if (msg?.role !== "assistant") continue;
 
       // Nested transcripts get the PARENT's scope and the real actor; a
       // primary file is its own scope and its rows are the primary agent's.
       const scope = actor?.ompSessionId || ompSessionId || filePath;
-      const actorId = actor?.actorId ?? "primary";
-      records.push({
-        key: usageKey({ sessionId: scope, actorId, messageId }),
+      const rec = usageRecordFromMessage(msg, {
         sessionId: scope,
         projectId: actor?.projectId ?? cwd,
         actorType: actor?.actorType ?? "primary",
-        actorId,
+        actorId: actor?.actorId ?? "primary",
         actorName: actor?.actorName,
-        provider: String(msg.provider ?? "unknown"),
-        model: String(msg.model ?? "unknown"),
-        inputTokens: num(u.input),
-        outputTokens: num(u.output),
-        cacheReadTokens: num(u.cacheRead),
-        cacheWriteTokens: num(u.cacheWrite),
-        cost:
-          typeof u.cost?.total === "number" && Number.isFinite(u.cost.total)
-            ? u.cost.total
-            : undefined,
-        completedAt:
-          typeof msg.timestamp === "number" ? new Date(msg.timestamp).toISOString() : undefined,
+        messageId: usageMessageId(msg, `entry:${String(entry.id ?? records.length)}`),
         source: "omp-session",
-        ompSessionId: scope || undefined,
+        ompSessionId: scope,
       });
+      if (rec) records.push(rec);
     }
   } catch {
     return null; // unreadable file: skip rather than fail the whole reindex

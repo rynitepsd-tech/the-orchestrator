@@ -44,7 +44,7 @@ export class EngineClient {
     detail?: string;
   }) => void = () => {};
   /** Fired when the event sequence skips, i.e. frames were lost. */
-  onSequenceGap: (expected: number, got: number) => void = () => {};
+  onSequenceGap: () => void = () => {};
 
   async connect(): Promise<void> {
     this.#unlisteners.push(
@@ -98,9 +98,7 @@ export class EngineClient {
     }
 
     if (isEngineEventFrame(frame)) {
-      if (this.#lastSequence && frame.sequence > this.#lastSequence + 1) {
-        this.onSequenceGap(this.#lastSequence + 1, frame.sequence);
-      }
+      if (this.#lastSequence && frame.sequence > this.#lastSequence + 1) this.onSequenceGap();
       this.#lastSequence = frame.sequence;
 
       const e = frame.event as ProductEvent | EngineLifecycle;
@@ -142,10 +140,6 @@ export class EngineClient {
 
   restart(): Promise<void> {
     return invoke("engine_restart");
-  }
-
-  running(): Promise<boolean> {
-    return invoke("engine_running");
   }
 }
 

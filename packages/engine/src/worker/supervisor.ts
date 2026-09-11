@@ -17,6 +17,7 @@ import { projectIdFor } from "@orchestrator/omp-adapter";
 import {
   encodeFrame,
   FrameDecoder,
+  isActiveRunState,
   PROTOCOL_VERSION,
   type ProductEvent,
   type SessionLaunchConfig,
@@ -24,9 +25,17 @@ import {
 } from "@orchestrator/protocol";
 import { logger } from "../logging";
 
+/** A provider registration injected into each worker by tests (mock provider). */
+export interface TestProvider {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  modelIds: string[];
+}
+
 export interface WorkerSpawnEnv {
   /** Extra provider registrations for tests. */
-  testProviders?: Array<{ name: string; baseUrl: string; apiKey: string; modelIds: string[] }>;
+  testProviders?: TestProvider[];
 }
 
 interface PendingRequest {
@@ -538,10 +547,7 @@ export class WorkerSupervisor {
   }
 
   activeCount(): number {
-    return [...this.#workers.values()].filter((w) => {
-      const s = w.summary.runState;
-      return s !== "idle" && s !== "completed" && s !== "interrupted" && s !== "error";
-    }).length;
+    return [...this.#workers.values()].filter((w) => isActiveRunState(w.summary.runState)).length;
   }
 
   /** Route a session-scoped request to its worker. */
@@ -550,11 +556,11 @@ export class WorkerSupervisor {
   }
 
   /**
-   * `_dispose` is accepted for wire compatibility but a close ALWAYS disposes:
-   * a non-disposing close would leave a live writer on the session file with
-   * no owner in the registry — exactly the two-writer hazard this guards.
+   * A close ALWAYS disposes: a non-disposing close would leave a live writer
+   * on the session file with no owner in the registry — exactly the
+   * two-writer hazard this guards.
    */
-  async close(sessionId: string, _dispose: boolean): Promise<void> {
+  async close(sessionId: string): Promise<void> {
     const w = this.#workers.get(sessionId);
     if (!w) return;
     this.#workers.delete(sessionId);

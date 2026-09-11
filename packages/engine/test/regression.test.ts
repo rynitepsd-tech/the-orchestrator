@@ -10,94 +10,33 @@
  * 4. Fork: upstream forkFrom semantics — history preserved, new identity,
  *    original untouched, both immediately runnable.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ompAgentDir } from "@orchestrator/omp-adapter";
-import type { ProductEvent } from "@orchestrator/protocol";
-import { RuntimeManager } from "../src/runtime-manager";
-import { type MockServer, startMockProvider } from "./mock-provider";
+import { useHarness, waitFor } from "./harness";
 
-let mock: MockServer;
-let manager: RuntimeManager;
-const roots: string[] = [];
-const captured = new Map<string, ProductEvent[]>();
-
-const eventsFor = (id: string) => captured.get(id) ?? [];
-const finishedFor = (id: string) =>
-  eventsFor(id).filter(
-    (e): e is Extract<ProductEvent, { type: "session.finished" }> => e.type === "session.finished",
-  );
-const textFor = (id: string) =>
-  eventsFor(id)
-    .filter(
-      (e): e is Extract<ProductEvent, { type: "assistant.text" }> => e.type === "assistant.text",
-    )
-    .map((e) => e.delta)
-    .join("");
-
-async function waitFor(pred: () => boolean, timeoutMs = 30_000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (pred()) return true;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  return false;
-}
-
-function makeProject(tag: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `orch-reg-${tag}-`));
-  writeFileSync(join(dir, "MARKER.txt"), `${tag}\n`);
-  roots.push(dir);
-  return dir;
-}
-
-beforeAll(async () => {
-  mock = startMockProvider();
-  manager = new RuntimeManager({
-    agentDir: ompAgentDir(),
-    testMode: true,
-    workerEnv: {
-      testProviders: [
-        {
-          name: "mockprov",
-          baseUrl: mock.url,
-          apiKey: "mock-key",
-          modelIds: ["mock-alpha", "mock-bravo", "mock-one", "mock-slow"],
-        },
-      ],
-    },
-    emit: (e) => {
-      const list = captured.get(e.sessionId);
-      if (list) list.push(e);
-      else captured.set(e.sessionId, [e]);
-    },
-  });
-  await manager.init();
+const h = useHarness({
+  prefix: "orch-reg",
+  modelIds: ["mock-alpha", "mock-bravo", "mock-one", "mock-slow"],
 });
-
-afterAll(async () => {
-  await manager?.shutdown();
-  mock?.stop();
-  for (const r of roots) rmSync(r, { recursive: true, force: true });
-});
+const { eventsFor, finishedFor, textFor, makeProject } = h;
 
 describe("path handling", () => {
   test("a project path containing spaces runs tools in the right directory", async () => {
     const base = mkdtempSync(join(tmpdir(), "orch-reg-space-"));
-    roots.push(base);
+    h.roots.push(base);
     const dir = join(base, "My Project With Spaces");
     mkdirSync(dir);
     writeFileSync(join(dir, "MARKER.txt"), "spaces\n");
 
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: dir,
       title: "Spaces",
       model: "mockprov/mock-alpha",
       advisors: [],
     });
-    await manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
+    await h.manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
     expect(await waitFor(() => finishedFor(s.sessionId).length > 0)).toBe(true);
 
     const toolEnd = eventsFor(s.sessionId).find((e) => e.type === "tool.end") as any;
@@ -115,15 +54,15 @@ describe("path handling", () => {
 
 describe("completion authority", () => {
   test("an aborted turn finishes exactly once, as interrupted, never completed", async () => {
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: makeProject("abort"),
       title: "Abort",
       model: "mockprov/mock-slow",
       advisors: [],
     });
-    await manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
+    await h.manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
     expect(await waitFor(() => textFor(s.sessionId).length > 0)).toBe(true);
-    await manager.route(s.sessionId, "session.abort", { sessionId: s.sessionId });
+    await h.manager.route(s.sessionId, "session.abort", { sessionId: s.sessionId });
 
     expect(await waitFor(() => finishedFor(s.sessionId).length > 0)).toBe(true);
     // Let any racing emitter fire before asserting exact-once.
@@ -138,13 +77,13 @@ describe("completion authority", () => {
   }, 60_000);
 
   test("a normal turn also finishes exactly once", async () => {
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: makeProject("once"),
       title: "Once",
       model: "mockprov/mock-bravo",
       advisors: [],
     });
-    await manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
+    await h.manager.route(s.sessionId, "session.prompt", { sessionId: s.sessionId, text: "go" });
     expect(await waitFor(() => finishedFor(s.sessionId).length > 0)).toBe(true);
     await new Promise((r) => setTimeout(r, 500));
     expect(finishedFor(s.sessionId).length).toBe(1);
@@ -154,26 +93,26 @@ describe("completion authority", () => {
 
 describe("worker crash containment", () => {
   test("killing one worker interrupts only that session and unregisters it", async () => {
-    const victim = await manager.create({
+    const victim = await h.manager.create({
       projectPath: makeProject("victim"),
       title: "Victim",
       model: "mockprov/mock-slow",
       advisors: [],
     });
-    const bystander = await manager.create({
+    const bystander = await h.manager.create({
       projectPath: makeProject("bystander"),
       title: "Bystander",
       model: "mockprov/mock-one",
       advisors: [],
     });
 
-    await manager.route(victim.sessionId, "session.prompt", {
+    await h.manager.route(victim.sessionId, "session.prompt", {
       sessionId: victim.sessionId,
       text: "go",
     });
     expect(await waitFor(() => textFor(victim.sessionId).length > 0)).toBe(true);
 
-    const stats = await manager.workerStats();
+    const stats = await h.manager.workerStats();
     const pid = stats.find((w) => w.sessionId === victim.sessionId)?.pid;
     expect(pid).toBeGreaterThan(0);
     process.kill(pid!, "SIGKILL");
@@ -190,16 +129,16 @@ describe("worker crash containment", () => {
     expect(finishedFor(victim.sessionId)[0].runState).toBe("interrupted");
 
     // …the dead worker no longer routes, with an actionable error…
-    expect(manager.has(victim.sessionId)).toBe(false);
+    expect(h.manager.has(victim.sessionId)).toBe(false);
     await expect(
-      manager.route(victim.sessionId, "session.prompt", {
+      h.manager.route(victim.sessionId, "session.prompt", {
         sessionId: victim.sessionId,
         text: "again",
       }),
     ).rejects.toThrow(/resume/i);
 
     // …and the bystander is untouched.
-    await manager.route(bystander.sessionId, "session.prompt", {
+    await h.manager.route(bystander.sessionId, "session.prompt", {
       sessionId: bystander.sessionId,
       text: "go",
     });
@@ -211,25 +150,25 @@ describe("worker crash containment", () => {
 describe("session fork", () => {
   test("fork preserves history, gets a new identity, and both sides keep working", async () => {
     const project = makeProject("fork");
-    const original = await manager.create({
+    const original = await h.manager.create({
       projectPath: project,
       title: "Original",
       model: "mockprov/mock-alpha",
       advisors: [],
     });
-    await manager.route(original.sessionId, "session.prompt", {
+    await h.manager.route(original.sessionId, "session.prompt", {
       sessionId: original.sessionId,
       text: "first turn",
     });
     expect(await waitFor(() => finishedFor(original.sessionId).length > 0)).toBe(true);
 
-    const sourcePath = manager
+    const sourcePath = h.manager
       .list()
       .find((s) => s.sessionId === original.sessionId)?.ompSessionPath;
     expect(sourcePath).toBeTruthy();
     const originalBytes = readFileSync(sourcePath!, "utf8");
 
-    const fork = await manager.fork({
+    const fork = await h.manager.fork({
       sourcePath: sourcePath!,
       projectPath: project,
       title: "Forked",
@@ -237,7 +176,7 @@ describe("session fork", () => {
     });
     expect(fork.sessionId).not.toBe(original.sessionId);
 
-    const forkPath = manager.list().find((s) => s.sessionId === fork.sessionId)?.ompSessionPath;
+    const forkPath = h.manager.list().find((s) => s.sessionId === fork.sessionId)?.ompSessionPath;
     expect(forkPath).toBeTruthy();
     expect(forkPath).not.toBe(sourcePath);
     expect(existsSync(forkPath!)).toBe(true);
@@ -251,7 +190,7 @@ describe("session fork", () => {
     expect(header.parentSession).toBeTruthy();
 
     // Fork runs on its own model without disturbing the original…
-    await manager.route(fork.sessionId, "session.prompt", {
+    await h.manager.route(fork.sessionId, "session.prompt", {
       sessionId: fork.sessionId,
       text: "fork turn",
     });
@@ -262,7 +201,7 @@ describe("session fork", () => {
     expect(readFileSync(sourcePath!, "utf8")).toBe(originalBytes);
 
     // The original continues independently; histories diverge safely.
-    await manager.route(original.sessionId, "session.prompt", {
+    await h.manager.route(original.sessionId, "session.prompt", {
       sessionId: original.sessionId,
       text: "second original turn",
     });
@@ -279,7 +218,7 @@ describe("provider auth gate", () => {
   test("refuses to create a session on an unauthenticated provider", async () => {
     const dir = makeProject("authgate");
     await expect(
-      manager.create({
+      h.manager.create({
         projectPath: dir,
         title: "gated",
         model: "no-such-provider-xyz/some-model",
@@ -291,7 +230,7 @@ describe("provider auth gate", () => {
   test("refuses an enabled advisor on an unauthenticated provider", async () => {
     const dir = makeProject("authgate-adv");
     await expect(
-      manager.create({
+      h.manager.create({
         projectPath: dir,
         title: "gated-advisor",
         model: "mockprov/mock-alpha",
@@ -310,7 +249,7 @@ describe("provider auth gate", () => {
 
   test("test-double providers stay exempt and disabled advisors are ignored", async () => {
     const dir = makeProject("authgate-ok");
-    const s = await manager.create({
+    const s = await h.manager.create({
       projectPath: dir,
       title: "not gated",
       model: "mockprov/mock-alpha",
@@ -325,6 +264,6 @@ describe("provider auth gate", () => {
       ],
     });
     expect(s.sessionId).toBeTruthy();
-    await manager.close(s.sessionId, true);
+    await h.manager.close(s.sessionId);
   });
 });

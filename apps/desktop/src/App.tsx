@@ -6,7 +6,12 @@
  * agent. Switching the visible session is a pure UI selection.
  */
 
-import type { AdvisorConfig, DiscoveredSession, SessionLaunchConfig } from "@orchestrator/protocol";
+import {
+  type AdvisorConfig,
+  type DiscoveredSession,
+  isActiveRunState,
+  type SessionLaunchConfig,
+} from "@orchestrator/protocol";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -35,16 +40,15 @@ import { TodoStrip } from "./components/TodoStrip";
 import { Transcript } from "./components/Transcript";
 import { UsageCenter } from "./components/UsageCenter";
 import { engine } from "./engine-client";
-import { hasLocalPrefs, sanitizePrefs, setPrefsSink } from "./lib/prefs";
-import { checkForUpdates, installUpdate } from "./lib/updater";
 import {
-  advisorsReviewing,
-  fmtTokens,
-  isActive,
-  modelBasename,
-  runStateLabel,
-  useStore,
-} from "./store";
+  basename,
+  hasLocalPrefs,
+  projectDisplayName,
+  sanitizePrefs,
+  setPrefsSink,
+} from "./lib/prefs";
+import { checkForUpdates, installUpdate } from "./lib/updater";
+import { advisorsReviewing, fmtTokens, modelBasename, runStateLabel, useStore } from "./store";
 
 export function App(): JSX.Element {
   const s = useStore();
@@ -160,7 +164,7 @@ export function App(): JSX.Element {
 
     engine.onLifecycle = (e) => {
       const st = useStore.getState();
-      if (e.type === "engine.status") st.setEngineStage(e.stage, e.message);
+      if (e.type === "engine.status") st.setEngineStage(e.stage);
       if (e.type === "engine.ready") {
         st.setEngineStage("ready");
         st.setEngineInfo({
@@ -294,12 +298,7 @@ export function App(): JSX.Element {
     } catch {
       /* the picker degrades to "OMP default" rather than blocking startup */
     }
-    try {
-      const q = await engine.request("providers.quota", {});
-      useStore.getState().setQuotas(q.quotas);
-    } catch {
-      /* quota is optional; absence is rendered as "not reported" */
-    }
+    await refreshQuotas();
   };
 
   const refreshQuotas = async () => {
@@ -307,7 +306,7 @@ export function App(): JSX.Element {
       const q = await engine.request("providers.quota", {});
       useStore.getState().setQuotas(q.quotas);
     } catch {
-      /* quota is optional; keep the last known values */
+      /* quota is optional; absence renders as "not reported", stale values stay */
     }
   };
 
@@ -579,7 +578,9 @@ export function App(): JSX.Element {
   useEffect(() => {
     const un = listen("app://exit-requested", () => {
       const st = useStore.getState();
-      const running = Object.values(st.sessions).filter((v) => isActive(v.summary.runState)).length;
+      const running = Object.values(st.sessions).filter((v) =>
+        isActiveRunState(v.summary.runState),
+      ).length;
       if (running > 0) st.setQuitConfirm({ running });
       else void quitNow();
     });
@@ -684,9 +685,7 @@ export function App(): JSX.Element {
     starting: "Starting engine",
     "loading-config": "Loading OMP configuration",
     "loading-models": "Loading models",
-    "loading-extensions": "Loading extensions",
     ready: "Ready",
-    degraded: "Degraded",
     stopping: "Stopping",
     offline: "Engine offline",
   };
@@ -697,16 +696,15 @@ export function App(): JSX.Element {
 
   // Live status for the breadcrumb: only worth showing while something moves.
   const crumbStatus = view
-    ? !isActive(view.summary.runState) && advisorsReviewing(view)
+    ? !isActiveRunState(view.summary.runState) && advisorsReviewing(view)
       ? "Advisors reviewing…"
-      : isActive(view.summary.runState)
+      : isActiveRunState(view.summary.runState)
         ? (view.summary.activity ?? runStateLabel(view.summary.runState))
         : undefined
     : undefined;
 
   const projectName = view
-    ? (s.prefs.projectAliases[view.summary.projectPath] ??
-      (view.summary.projectPath.split("/").pop() || view.summary.projectPath))
+    ? projectDisplayName(view.summary.projectPath, s.prefs.projectAliases)
     : undefined;
 
   const gridColumns = `${s.sidebarOpen ? `${s.prefs.sidebarWidth}px` : "0px"} 1fr ${
@@ -750,7 +748,7 @@ export function App(): JSX.Element {
         data-tauri-drag-region
       >
         {s.sidebarOpen && (
-          <div className="titlebar-side titlebar-left" data-tauri-drag-region>
+          <div className="titlebar-left" data-tauri-drag-region>
             {sidebarToggle}
             {logo}
           </div>
@@ -843,7 +841,7 @@ export function App(): JSX.Element {
           {!showInspector && inspectorToggle}
         </div>
         {showInspector && (
-          <div className="titlebar-side titlebar-right" data-tauri-drag-region>
+          <div className="titlebar-right" data-tauri-drag-region>
             {inspectorToggle}
           </div>
         )}
@@ -1031,9 +1029,7 @@ export function App(): JSX.Element {
       {s.renameProjectTarget && (
         <PromptDialog
           title="Rename project"
-          initial={
-            s.prefs.projectAliases[s.renameProjectTarget] ?? s.renameProjectTarget.split("/").pop()
-          }
+          initial={projectDisplayName(s.renameProjectTarget, s.prefs.projectAliases)}
           placeholder="Project display name"
           submitLabel="Rename"
           onCancel={() => s.setRenameProjectTarget(undefined)}
@@ -1043,7 +1039,7 @@ export function App(): JSX.Element {
             if (!path) return;
             // Display alias only — the folder on disk keeps its real name.
             const aliases = { ...s.prefs.projectAliases };
-            if (name === path.split("/").pop()) delete aliases[path];
+            if (name === basename(path)) delete aliases[path];
             else aliases[path] = name;
             s.updatePrefs({ projectAliases: aliases });
           }}
