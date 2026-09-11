@@ -233,6 +233,13 @@ interface AppState {
   sessions: Record<string, SessionView>;
   order: string[];
   visibleSessionId?: string;
+  /**
+   * Project folder of the session the user was viewing when they last left
+   * for the home screen. `goHome` clears `visibleSessionId` before Home or the
+   * New Session sheet mount, so this is how a new session defaults to the
+   * folder the user was just working in.
+   */
+  lastProjectPath?: string;
   changes: Record<string, GitChanges>; // keyed by projectId
   /** Parked composer drafts, keyed by session id (see ComposerDraft). */
   drafts: Record<string, ComposerDraft>;
@@ -302,8 +309,10 @@ interface AppState {
   setRenameTarget(id?: string): void;
   setRenameProjectTarget(path?: string): void;
   setComposerPrefill(p?: { sessionId: string; text: string }): void;
-  /** Show the no-session home screen. */
+  /** Show the no-session home screen, remembering the departed session's folder. */
   goHome(): void;
+  /** Pin the folder the next new-session surface should open on. */
+  setLastProjectPath(path: string): void;
   /** Record which preset a session runs with (persisted by session path). */
   setSessionPreset(id: string, presetName?: string): void;
   /** Replace a session's advisor roster after the worker confirmed it. */
@@ -502,7 +511,16 @@ export const useStore = create<AppState>((set, get) => ({
   setRenameProjectTarget: (renameProjectTarget) => set({ renameProjectTarget }),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
 
-  goHome: () => set({ visibleSessionId: undefined, mainView: "sessions" }),
+  goHome: () =>
+    set((s) => {
+      const active = s.visibleSessionId ? s.sessions[s.visibleSessionId] : undefined;
+      return {
+        visibleSessionId: undefined,
+        mainView: "sessions",
+        lastProjectPath: active?.summary.projectPath || s.lastProjectPath,
+      };
+    }),
+  setLastProjectPath: (lastProjectPath) => set({ lastProjectPath }),
 
   setSessionPreset: (id, presetName) =>
     set((s) => {
@@ -1400,6 +1418,16 @@ export function modelBasename(model?: string): string {
   if (!model) return "OMP default";
   const slash = model.indexOf("/");
   return slash >= 0 ? model.slice(slash + 1) : model;
+}
+
+/**
+ * Folder a new-session surface should open on: the session being viewed,
+ * else the one the user just left for the home screen, else the most
+ * recently opened project.
+ */
+export function defaultProjectPath(s: AppState): string {
+  const active = s.visibleSessionId ? s.sessions[s.visibleSessionId] : undefined;
+  return active?.summary.projectPath || s.lastProjectPath || s.prefs.recentProjects[0] || "";
 }
 
 const VENDOR_NAMES: Record<string, string> = {

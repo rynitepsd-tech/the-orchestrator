@@ -219,16 +219,29 @@ that sees the upstream event does not know the user's intent.
 occurred. The store's reducer trusts it and also sets `unread: !visible` from it.
 
 **Advisor-triggered continuation turns are the one exception to "the prompt handler is the
-sole emitter".** Advisors review *after* `turn_end`, so by the time a blocker lands the owning
-prompt has already resolved and emitted `session.finished`. OMP then starts a fresh agent run
-with no prompt from the host — the revision. The worker spots it (an `agent_start` with no
-current turn), and on its terminal `agent_end` emits a second `session.finished` flagged
-`continuation: true`. The store does not treat that as a new turn: it *moves* the turn-end
-marker to the tail (summing wall time) so the transcript sees one segment — pre-review
-answer, review note, revision — and folds the pre-review answer into a collapsed "Draft"
-row. Without this, the two full answers rendered back to back. The relocation is guarded
-structurally: a user message after the old marker (a queued follow-up) always means a
-genuinely new turn, whatever the flag says.
+sole emitter".** Advisors review *after* `turn_end`, so by the time a note lands the owning
+prompt has already resolved and emitted `session.finished`. A fresh agent run with no prompt
+from the host — the revision — starts in one of two ways:
+
+- **A `blocker`** makes OMP itself start the run (`steer` + `triggerTurn`).
+- **A `concern`** does not: upstream routes a post-turn concern to its "preserve" channel — the
+  card is appended to context and shown, and nothing runs, so the model would first read it on
+  the user's *next* prompt. The worker closes that gap. When an advisor card is surfaced while
+  the agent loop is idle, the tail of the post-turn review window (after `waitForAdvisorCatchup`
+  drains every note) sends a hidden `advisor-followup` custom message with `triggerTurn: true`,
+  and the primary addresses the note now. Bounded to **one host follow-up per user turn** (the
+  revision is reviewed too; a further note on it stays a visible card), skipped after a user
+  Stop (`interrupted`), and the review window stays open across the follow-up so no finished
+  alert fires for an answer about to be revised. `nit`s remain non-interrupting asides, as
+  upstream intends.
+
+Either way the worker spots the run (an `agent_start` with no current turn), and on its terminal
+`agent_end` emits a second `session.finished` flagged `continuation: true`. The store does not
+treat that as a new turn: it *moves* the turn-end marker to the tail (summing wall time) so the
+transcript sees one segment — pre-review answer, review note, revision — and folds the
+pre-review answer into a collapsed "Draft" row. Without this, the two full answers rendered back
+to back. The relocation is guarded structurally: a user message after the old marker (a queued
+follow-up) always means a genuinely new turn, whatever the flag says.
 
 ## 4. Concurrent execution
 

@@ -237,7 +237,10 @@ export function UsageCenter(): JSX.Element {
                 {fmtCost(agg.cost) ?? "$—"}
                 {agg.cost !== undefined && <span className="usage-cost-star">*</span>}
               </div>
-              <div className="hint">* if billed at full API rate</div>
+              <div className="hint">
+                * if billed at full API rate
+                {agg.costPartial && "; partial — some models are not priced"}
+              </div>
 
               <div className="provider-list">
                 {agg.byProvider.map((p) => (
@@ -246,7 +249,17 @@ export function UsageCenter(): JSX.Element {
                       <span className="provider-dot" style={{ background: p.color }} />
                       <span className="provider-name">{providerLabel(p.provider)}</span>
                       <span className="spacer" />
-                      <span className="provider-cost">{fmtCost(p.cost) ?? "—"}</span>
+                      <span
+                        className="provider-cost"
+                        title={
+                          p.unpriced
+                            ? "OMP's catalogue lists no API price for some of these models (subscription-only SKU), so their turns carry no cost"
+                            : undefined
+                        }
+                      >
+                        {fmtCost(p.cost) ?? "not priced"}
+                        {p.unpriced && p.cost !== undefined && " (partial)"}
+                      </span>
                     </div>
                     <div className="provider-bar">
                       <div
@@ -591,7 +604,10 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
   };
-  const providers = new Map<string, { tokens: number; cost: number; hasCost: boolean }>();
+  const providers = new Map<
+    string,
+    { tokens: number; cost: number; hasCost: boolean; unpriced: boolean }
+  >();
   const modelAgg = new Map<string, { tokens: number; cost: number; hasCost: boolean }>();
   const dayAgg = new Map<string, { tokens: number; cost: number; hasCost: boolean }>();
   const dailyByProvider = new Map<string, Map<string, { cost: number; tokens: number }>>();
@@ -632,11 +648,18 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
       hasSavings = true;
     }
 
-    const pv = providers.get(r.provider) ?? { tokens: 0, cost: 0, hasCost: false };
+    const pv = providers.get(r.provider) ?? {
+      tokens: 0,
+      cost: 0,
+      hasCost: false,
+      unpriced: false,
+    };
     pv.tokens += t;
     if (typeof r.cost === "number") {
       pv.cost += r.cost;
       pv.hasCost = true;
+    } else if (t > 0) {
+      pv.unpriced = true;
     }
     providers.set(r.provider, pv);
 
@@ -715,6 +738,8 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
       provider,
       tokens: v.tokens,
       cost: v.hasCost ? v.cost : undefined,
+      /** Some of this provider's models carry no catalogue price. */
+      unpriced: v.unpriced,
       share: shareOf(v.cost, v.tokens, v.hasCost),
     }))
     .sort((a, b) => b.share - a.share)
@@ -749,6 +774,8 @@ function aggregate(records: UsageRecord[], models: ModelInfo[]) {
     tokens,
     observedInput: tokens.inputTokens + tokens.cacheReadTokens,
     cost: hasCost ? cost : undefined,
+    /** Some token-spending records carried no cost, so the total under-counts. */
+    costPartial: hasCost && byProvider.some((p) => p.unpriced),
     cacheSavings: hasSavings ? cacheSavings : undefined,
     activeDays: dayAgg.size,
     sessionCount: sessionsAgg.size,

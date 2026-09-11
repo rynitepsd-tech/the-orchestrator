@@ -299,6 +299,52 @@ describe("cost honesty", () => {
     expect(b.costPartial).toBe(false);
     expect(b.total.cost).toBeCloseTo(0.75);
   });
+
+  test("a zero cost on a token-spending record is unpriced, not free", () => {
+    // OMP prices subscription-only SKUs at all-zero rates, so cost.total
+    // arrives as a literal 0 on a response that spent tokens.
+    const acc = new UsageAccumulator();
+    acc.ingest(
+      rec({
+        actorType: "primary",
+        actorId: "primary",
+        messageId: "m1",
+        input: 100,
+        output: 10,
+        cost: 0.5,
+      }),
+    );
+    acc.ingest(
+      rec({
+        actorType: "advisor",
+        actorId: "advisor:x",
+        messageId: "a1",
+        input: 50,
+        output: 5,
+        cost: 0,
+      }),
+    );
+    const b = acc.breakdown(SESSION);
+    expect(acc.recordsFor(SESSION).find((r) => r.actorId === "advisor:x")?.cost).toBeUndefined();
+    expect(b.costPartial).toBe(true);
+    expect(b.total.cost).toBe(0.5);
+  });
+
+  test("a zero cost on a zero-token record stays a reported zero", () => {
+    const acc = new UsageAccumulator();
+    acc.ingest(
+      rec({
+        actorType: "primary",
+        actorId: "primary",
+        messageId: "m1",
+        input: 0,
+        output: 0,
+        cost: 0,
+      }),
+    );
+    expect(acc.recordsFor(SESSION)[0]?.cost).toBe(0);
+    expect(acc.breakdown(SESSION).costPartial).toBe(false);
+  });
 });
 
 describe("model rollup", () => {

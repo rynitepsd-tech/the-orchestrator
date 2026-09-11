@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.11
+
+- **Reviewer notes left after a turn are now acted on immediately.** OMP
+  routes a `concern` raised after the primary's final answer to a "preserve"
+  channel: the note was shown, appended to context, and then sat unread until
+  your next prompt — only a `blocker` started a revision on its own. The
+  worker now watches for a note surfaced while the agent is idle and, once the
+  post-turn review has drained, starts one continuation turn so the primary
+  addresses it now. Bounded to one follow-up per user turn, skipped after a
+  Stop, and the finished alert waits for the revision. Verified live: a
+  post-turn concern produced a continuation with no further prompt, then the
+  review window closed.
+- **OpenAI usage no longer shows "$0.00".** The embedded OMP lists the
+  ChatGPT-subscription SKU (`gpt-6-astra`) with all-zero rates — no public API
+  price exists — so every response arrived costed at a literal 0, which the
+  ledger stored and rendered as "$0.00" while tokens were counted correctly.
+  A zero cost on a response that spent tokens is now treated as *not priced*:
+  the provider row reads "not priced" with the reason on hover, the headline
+  cost is flagged partial, and already-stored zero rows heal on the next index
+  load. Genuinely priced models are unaffected; nothing is estimated from a
+  price table of our own.
+- **New sessions start in the folder you were just working in.** "+ New
+  Session", ⌘N, the palette and the File menu all clear the visible session
+  before the home screen mounts, so the folder field defaulted to the most
+  recently *opened* project rather than the one on screen. The departing
+  session's folder is now remembered across that transition and seeds both the
+  home launcher and the full New Session sheet; the sheet also inherits the
+  folder picked on the home screen instead of re-seeding from recents.
+
 ## 0.6.10
 
 - **Updated the embedded OMP from 18.1.1 to 18.1.11** — every upstream patch

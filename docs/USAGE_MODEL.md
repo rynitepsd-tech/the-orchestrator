@@ -45,7 +45,7 @@ Implementation: `packages/usage/src/accumulator.ts`.
 | Dimension | Source | Notes |
 |---|---|---|
 | **Primary tokens** | `turn_end.message.usage` | `{input, output, cacheRead, cacheWrite, totalTokens, cost{…}}`, keyed by `responseId` |
-| **Primary cost** | `usage.cost.total` | Computed by OMP. Absent ≠ zero |
+| **Primary cost** | `usage.cost.total` | Computed by OMP. Absent ≠ zero; and a zero on a token-spending response ≠ free (see below) |
 | **Advisor tokens & cost** | the advisor's own `__advisor.<name>.jsonl` transcript | One record per provider response, keyed by `responseId` |
 | **Subagent** | the subagent's own `<Agent>.jsonl` transcript, plus live `task:subagent:event` | Keyed by `responseId` |
 | **Context window** | `session.getContextUsage()` | `usedTokens` / `contextWindow` |
@@ -105,9 +105,18 @@ way usage displays lie:
 ## Cost honesty
 
 - Cost appears only when OMP computed it.
+- A **zero** `cost.total` on a response that spent tokens is treated as *not priced*, not as
+  free: OMP computes cost as tokens × the catalogue's rates and lists subscription-only SKUs (a
+  ChatGPT-backed `gpt-6-astra`) with all-zero rates because no public API price exists. Storing
+  that 0 as a cost rendered "$0.00" for every OpenAI turn. The rule lives in one place —
+  `UsageAccumulator.ingest` (`reportedCost`) — so the worker ledger, the engine-wide index and a
+  reload of the index file all agree. A zero on a zero-token record is kept: nothing was spent, so
+  nothing is unknown.
 - If some records report cost and others do not, the total is flagged `costPartial` and the UI says
-  *"Cost is partial — some models did not report it."*
-- Cost is never estimated from token counts and a price table of our own.
+  *"Cost is partial — some models did not report it."* The usage centre labels such a provider
+  **not priced** rather than showing a dash.
+- Cost is never estimated from token counts and a price table of our own. To price a subscription
+  SKU, add a `cost` patch for it in OMP's own `models.json` override; OMP then computes it.
 
 ## Provider quota honesty
 

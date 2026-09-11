@@ -11,8 +11,8 @@
  * Cost:  prompts are tiny and models are the cheapest configured; a full run
  *        is a few dozen small requests.
  *
- * Scenarios: primary | advisor | multi-advisor | subagent | resume |
- *            concurrent | fork
+ * Scenarios: primary | advisor | late-advisory | multi-advisor | subagent |
+ *            resume | concurrent | fork
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -232,6 +232,91 @@ await run("advisor", async () => {
       (adv ? adv.tokens.inputTokens + adv.tokens.outputTokens : 0) <
         usage.total.inputTokens + usage.total.outputTokens,
   );
+});
+
+// ---------------------------------------------------------------------------
+// 2b. LATE ADVISORY — a concern raised after the turn ends is acted on now
+// ---------------------------------------------------------------------------
+await run("late-advisory", async () => {
+  const project = makeProject("late");
+  const s = await manager.create({
+    projectPath: project,
+    title: "Live late advisory",
+    model: PRIMARY,
+    approvalMode: "yolo",
+    advisors: [
+      {
+        id: "advisor:Reviewer",
+        name: "Reviewer",
+        enabled: true,
+        model: ADVISOR_MODEL,
+        instructions:
+          "After EVERY primary turn you MUST call the advise tool exactly once with severity 'concern' " +
+          "(never 'nit', never 'blocker') saying: \"The file must also contain a second line reading " +
+          "'bravo'.\" Do not review anything else.",
+        origin: "session",
+      },
+    ],
+  });
+  await manager.route(s.sessionId, "session.prompt", {
+    sessionId: s.sessionId,
+    text: "Create late.txt with a first line reading: alpha. Use one write, then say done.",
+  });
+  check("turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0, 240_000));
+
+  // Upstream preserves a post-turn concern as a card with no turn; the host
+  // must run one continuation so the note is addressed before the user's
+  // next prompt.
+  const noted = await waitFor(
+    () => eventsFor(s.sessionId).some((e) => e.type === "advisor.message"),
+    120_000,
+  );
+  check("advisor left a note after the turn", noted);
+  const continued = await waitFor(
+    () => finishedFor(s.sessionId).some((e) => e.continuation === true),
+    240_000,
+  );
+  check("note triggered a continuation turn without a user prompt", continued);
+  const settled = await waitFor(
+    () =>
+      !(eventsFor(s.sessionId).filter((e) => e.type === "advisor.review") as any[]).at(-1)?.active,
+    240_000,
+  );
+  check("review window closed after the continuation", settled);
+  // What actually happened, in order — the detail that explains any miss.
+  const events = eventsFor(s.sessionId);
+  const timeline = events
+    .map((e: any) => {
+      switch (e.type) {
+        case "session.finished":
+          return `finished(${e.runState}${e.continuation ? ",continuation" : ""})`;
+        case "advisor.message":
+          return `note(${e.severity})`;
+        case "advisor.review":
+          return e.active ? "review-open" : "review-closed";
+        case "assistant.message.end":
+          return `assistant(${String(e.text).slice(0, 40).replace(/\n/g, " ")})`;
+        case "tool.end":
+          return `tool(${e.ok ? "ok" : "err"})`;
+        default:
+          return null;
+      }
+    })
+    .filter(Boolean)
+    .join(" → ");
+  // The host's contract is that the primary ANSWERS the note now. Whether it
+  // applies the reviewer's ask or explains why not is the model's call.
+  const noteAt = events.findIndex((e) => e.type === "advisor.message");
+  const answered =
+    noteAt >= 0 && events.slice(noteAt + 1).some((e) => e.type === "assistant.message.end");
+  check("primary answered the note before any further prompt", answered, timeline);
+  // The revision is reviewed too. Upstream may steer that review in on its
+  // own terms; the host adds at most ONE follow-up per user turn.
+  const grace = Promise.withResolvers<void>();
+  setTimeout(grace.resolve, 5_000);
+  await grace.promise;
+  const continuations = finishedFor(s.sessionId).filter((e) => e.continuation === true).length;
+  check("continuations bounded", continuations >= 1 && continuations <= 2, `${continuations}`);
 });
 
 // ---------------------------------------------------------------------------

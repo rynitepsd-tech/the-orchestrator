@@ -55,6 +55,25 @@ export function usageKey(parts: {
   return `${parts.sessionId}\u0000${parts.actorId}\u0000${parts.messageId}`;
 }
 
+/**
+ * The cost a record actually reports.
+ *
+ * OMP computes `cost.total` as tokens × the catalogue's rates, and lists
+ * subscription-only SKUs (a ChatGPT-backed `gpt-6-astra`) with all-zero rates
+ * because no public API price exists. That arrives as a literal 0 on a
+ * response that plainly spent tokens — not a free turn, an unpriced one.
+ * Storing the 0 as a cost rendered "$0.00" for every OpenAI turn and kept the
+ * total from flagging itself partial. A zero on a zero-token record is kept:
+ * nothing was spent, so nothing is unknown.
+ */
+export function reportedCost(r: UsageRecord): number | undefined {
+  if (typeof r.cost !== "number" || !Number.isFinite(r.cost)) return undefined;
+  if (r.cost === 0 && r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens > 0) {
+    return undefined;
+  }
+  return r.cost;
+}
+
 export class UsageAccumulator {
   /** key -> record. Replacement semantics, never additive. */
   readonly #records = new Map<string, UsageRecord>();
@@ -63,7 +82,9 @@ export class UsageAccumulator {
    * Record an observation. Returns true when it changed stored state, so
    * callers can avoid emitting redundant UI updates.
    */
-  ingest(record: UsageRecord): boolean {
+  ingest(raw: UsageRecord): boolean {
+    const cost = reportedCost(raw);
+    const record = cost === raw.cost ? raw : { ...raw, cost };
     const existing = this.#records.get(record.key);
     if (!existing) {
       this.#records.set(record.key, record);

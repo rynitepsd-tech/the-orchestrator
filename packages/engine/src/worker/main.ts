@@ -797,6 +797,76 @@ interface AdvisorReviewSession {
   waitForAdvisorCatchup?: (timeoutMs: number) => Promise<unknown>;
 }
 
+/**
+ * A reviewer note that landed after the primary's final answer.
+ *
+ * OMP routes a `concern` raised once the turn has ended to its "preserve"
+ * channel: the card is appended to context and shown in the UI, and nothing
+ * runs — the model first reads it on the user's NEXT prompt. Only a `blocker`
+ * starts a continuation turn upstream. From the user's chair the reviewer
+ * "left a note and nobody read it". So when a card is surfaced while the agent
+ * is idle, the review-window tail starts one host-initiated continuation turn
+ * and the primary addresses the note now. One per user turn: the revision is
+ * reviewed too, and a further note on it stays a visible card instead of
+ * looping the two agents.
+ */
+let lateAdvisoryPending = false;
+let lateAdvisoryFollowUpUsed = false;
+const LATE_ADVISORY_NUDGE =
+  "One or more advisor notes (the <advisory> messages above) arrived after your final " +
+  "answer. Act on them now: apply and verify any change they warrant, or state briefly " +
+  "why a point does not apply. Then restate the complete, corrected outcome for the user " +
+  "as a standalone answer — the user did not see the note.";
+
+/** The optional upstream surface the follow-up needs; probed, never assumed. */
+interface LateAdvisorySession {
+  isStreaming?: boolean;
+  /** The live agent-core loop; a preserved card only ever lands while it is idle. */
+  agent?: { state?: { isStreaming?: boolean } };
+  sendCustomMessage?: (
+    message: { customType: string; content: string; display: boolean; attribution: "agent" },
+    options: { triggerTurn: boolean },
+  ) => Promise<boolean>;
+}
+
+function noteAdvisorCardSurfaced(): void {
+  const s = session as unknown as LateAdvisorySession;
+  if (!s.agent?.state?.isStreaming) lateAdvisoryPending = true;
+}
+
+/**
+ * Start the follow-up turn for a late note, if one is due. Resolves when that
+ * turn has ENDED (upstream awaits the whole agent run), returning whether it
+ * ran at all — the caller keeps the review window open across it so the UI
+ * never announces a finished turn that is about to be revised.
+ */
+async function continueForLateAdvisory(): Promise<boolean> {
+  if (!lateAdvisoryPending || lateAdvisoryFollowUpUsed) return false;
+  const s = session as unknown as LateAdvisorySession;
+  if (typeof s.sendCustomMessage !== "function") return false;
+  // A user Stop preserved the note precisely so nothing auto-resumes; a turn
+  // already running reads the card itself.
+  if (runState === "interrupted" || runState === "stopping" || s.isStreaming || hibernating) {
+    return false;
+  }
+  lateAdvisoryPending = false;
+  lateAdvisoryFollowUpUsed = true;
+  try {
+    return await s.sendCustomMessage(
+      {
+        customType: "advisor-followup",
+        content: LATE_ADVISORY_NUDGE,
+        display: false,
+        attribution: "agent",
+      },
+      { triggerTurn: true },
+    );
+  } catch (e) {
+    err(`late advisory follow-up failed: ${String(e)}`);
+    return false;
+  }
+}
+
 function beginAdvisorReviewWatch(): void {
   const s = session as unknown as AdvisorReviewSession;
   const catchup = s.waitForAdvisorCatchup;
@@ -823,6 +893,11 @@ function beginAdvisorReviewWatch(): void {
       /* the wait must never wedge the finished state */
     }
     if (gen !== advisorReviewGen) return; // a newer turn owns the window now
+    // The catchup drained every note the review produced. If one was parked
+    // in context with no turn to read it, run that turn now; its own
+    // agent_end re-arms this watch and owns the window from there.
+    if (await continueForLateAdvisory()) return;
+    if (gen !== advisorReviewGen) return;
     setAdvisorReview(false);
     refreshAdvisors();
   })();
@@ -932,6 +1007,7 @@ function sweepAdvisorCards(): void {
     const key = advisorCardKey(m);
     if (surfacedAdvisorCards.has(key)) continue;
     surfacedAdvisorCards.add(key);
+    noteAdvisorCardSurfaced();
     for (const o of mapper.mapAdvisorCard(m)) {
       flush();
       emit(o);
@@ -960,9 +1036,13 @@ function scanForPreviewUrl(text: string | undefined): void {
 session.subscribe((ev: any) => {
   // Advisor-triggered continuation turns never pass through the prompt
   // handler; the raw agent_start is their turn boundary.
-  if (ev?.type === "agent_start" && !currentTurnId) {
-    beginTurn();
-    continuationStartedAt = Date.now();
+  if (ev?.type === "agent_start") {
+    // Whatever cards sit in context, this turn reads them.
+    lateAdvisoryPending = false;
+    if (!currentTurnId) {
+      beginTurn();
+      continuationStartedAt = Date.now();
+    }
   }
   // Surface silently-steered advisor cards before this event's own items, so
   // a note lands ahead of the revision it triggered (see sweepAdvisorCards).
@@ -976,6 +1056,7 @@ session.subscribe((ev: any) => {
     if (ev.type === "message_start") return; // end carries the render
     if (surfacedAdvisorCards.has(key)) return;
     surfacedAdvisorCards.add(key);
+    noteAdvisorCardSurfaced();
   }
   for (const o of mapper.map(ev)) {
     if (o.type === "assistant.text") {
@@ -1346,6 +1427,7 @@ async function handle(req: any): Promise<unknown> {
       if (owning) {
         beginTurn();
         continuationStartedAt = undefined; // this turn has an owner
+        lateAdvisoryFollowUpUsed = false; // a fresh user turn earns a fresh follow-up
         setRunState("queued");
       }
       const turnStartedAt = Date.now();

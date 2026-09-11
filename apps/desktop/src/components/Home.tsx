@@ -14,7 +14,7 @@ import type { ClipboardEvent, DragEvent, JSX } from "react";
 import { useMemo, useRef, useState } from "react";
 import { type Attachment, attachmentKind, storeBlob } from "../lib/attachments";
 import { projectParent, type SessionPreset } from "../lib/prefs";
-import { modelBasename, useStore } from "../store";
+import { defaultProjectPath, modelBasename, useStore } from "../store";
 import { FolderIcon } from "./icons";
 import { PresetForm } from "./PresetForm";
 
@@ -35,6 +35,7 @@ export function Home({
   const prefs = useStore((s) => s.prefs);
   const updatePrefs = useStore((s) => s.updatePrefs);
   const setNewSession = useStore((s) => s.setNewSession);
+  const setLastProjectPath = useStore((s) => s.setLastProjectPath);
   const addPreset = useStore((s) => s.addPreset);
   const models = useStore((s) => s.models);
   const [presetDraft, setPresetDraft] = useState(false);
@@ -44,7 +45,10 @@ export function Home({
     () => [...new Set([...prefs.recentProjects, ...prefs.pinnedProjects])],
     [prefs.recentProjects, prefs.pinnedProjects],
   );
-  const [projectPath, setProjectPath] = useState(projects[0] ?? "");
+  // Seed from the session the user just left; fall back to the recents list.
+  const [projectPath, setProjectPath] = useState(
+    () => defaultProjectPath(useStore.getState()) || projects[0] || "",
+  );
   const [projectMenu, setProjectMenu] = useState(false);
   const [text, setText] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("always-ask");
@@ -336,7 +340,14 @@ export function Home({
         )}
       </div>
 
-      <button className="btn btn-ghost home-advanced" onClick={() => setNewSession(true)}>
+      <button
+        className="btn btn-ghost home-advanced"
+        onClick={() => {
+          // Carry the folder picked here into the sheet instead of re-seeding from recents.
+          if (projectPath) setLastProjectPath(projectPath);
+          setNewSession(true);
+        }}
+      >
         New session with advisors & full options…
       </button>
 

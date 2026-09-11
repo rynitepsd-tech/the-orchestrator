@@ -147,10 +147,14 @@ reason instead of silently proceeding as if advisors were running.
 `advise-tool.ts` gates updates raised while a review is still in progress
 (`#inProgressUpdate`): a `nit` or `concern` raised mid-review returns `"Recorded."` to the advisor
 but is **not delivered** to the primary session. `blocker` severity always delivers, in progress or
-not. A `concern` (or lower) raised as an **end-of-turn** note against an otherwise-idle primary is
-delivered as a preserved card, and — unlike the dropped in-progress case — that delivery does emit
-its own `message_start` / `message_end`, which is why advisor message counting has to key off those
-events rather than assume one review produces exactly one delivered note.
+not. A post-turn note against an otherwise-idle primary is routed by severity
+(`resolveAdvisorDeliveryChannel`): a `nit` rides the non-interrupting aside queue, which is
+never flushed while idle; a `concern` is delivered as a **preserved card** — appended to context
+and shown, with no turn started; only a `blocker` steers a triggered continuation turn. The
+preserved delivery does emit its own `message_start` / `message_end`, which is why advisor message
+counting has to key off those events rather than assume one review produces exactly one delivered
+note. Because a preserved concern would otherwise wait for the user's next prompt, the worker
+starts one continuation turn for it itself — see SESSION_MODEL.md §3.
 
 Advisor reviews themselves run **asynchronously after `turn_end`**, not synchronously with the
 primary turn. There is no push event for "the advisor finished reviewing" — the worker polls

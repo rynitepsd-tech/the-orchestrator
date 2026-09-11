@@ -12,7 +12,7 @@ import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { projectParent, type SessionPreset } from "../lib/prefs";
-import { useStore } from "../store";
+import { defaultProjectPath, useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
 import { BoltIcon, FolderIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
@@ -35,7 +35,7 @@ export function NewSession({
   const removePreset = useStore((s) => s.removePreset);
   const updatePrefs = useStore((s) => s.updatePrefs);
 
-  const [projectPath, setProjectPath] = useState(prefs.recentProjects[0] ?? "");
+  const [projectPath, setProjectPath] = useState(() => defaultProjectPath(useStore.getState()));
   const [title, setTitle] = useState("");
   const [modelKey, setModelKey] = useState<string | undefined>(undefined);
   const [effort, setEffort] = useState<string>("");
