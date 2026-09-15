@@ -331,6 +331,15 @@ try {
         "publication retains command evidence",
         task?.evidence.some((item) => item.output?.includes("PUBLICATION-CHECK")) === true,
       );
+      check(
+        "recognizes completed SDK bash exit zero",
+        task?.evidence.some(
+          (item) =>
+            item.output?.includes("PUBLICATION-CHECK") &&
+            item.status === "passed" &&
+            item.exitCode === 0,
+        ) === true,
+      );
       send("session.transcript", { sessionId: publicationId }, "t3");
       await waitFor(() => !!findResp("t3"), 20_000);
       const committed: ProductEvent | undefined = findResp("t3")?.result?.events.find(

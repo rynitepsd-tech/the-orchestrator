@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { ProductEvent } from "@orchestrator/protocol";
-import { EventMapper } from "../src/event-mapper";
+import { EventMapper, toolDetail } from "../src/event-mapper";
 
 function mapAll(events: any[]): ProductEvent[] {
   const mapper = new EventMapper({ sessionId: "S1" });
@@ -243,6 +243,159 @@ describe("tool detail mapping", () => {
       additions: 4,
       deletions: 2,
       diff: "+a\n-b",
+    });
+  });
+
+  test("hashline edit results provide the file when the call only contains patch input", () => {
+    const out = mapAll([
+      {
+        type: "tool_execution_start",
+        toolCallId: "patch",
+        toolName: "edit",
+        args: { input: "*** Begin Patch\n[src/x.ts#ABCD]\nPUT 1.=1:\n+updated\n*** End Patch" },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "patch",
+        toolName: "edit",
+        isError: false,
+        result: {
+          content: [{ type: "text", text: "Updated src/x.ts" }],
+          details: {
+            path: "src/x.ts",
+            op: "update",
+            diff: "-original\n+updated",
+            firstChangedLine: 1,
+            oldText: "original\n",
+            newText: "updated\n",
+          },
+        },
+      },
+    ]);
+    const end = out.find((event) => event.type === "tool.end");
+    expect(end?.detail).toMatchObject({
+      kind: "edit",
+      path: "src/x.ts",
+      diff: "-original\n+updated",
+    });
+  });
+
+  test("edit metadata names the destination of a move, not the original argument", () => {
+    expect(
+      toolDetail("edit", {
+        args: { path: "src/old.ts", edits: [{ op: "update", rename: "src/new.ts" }] },
+        result: {
+          details: {
+            path: "src/new.ts",
+            sourcePath: "src/old.ts",
+            move: "src/new.ts",
+            op: "update",
+            diff: "",
+          },
+        },
+      }),
+    ).toMatchObject({ kind: "edit", path: "src/new.ts" });
+  });
+
+  test("multi-file edit metadata stays generic even when a legacy path is present", () => {
+    expect(
+      toolDetail("edit", {
+        args: { path: "src/one.ts" },
+        result: {
+          details: {
+            diff: "+one\n+two",
+            perFileResults: [
+              { path: "src/one.ts", op: "update", diff: "+one" },
+              { path: "src/two.ts", op: "update", diff: "+two" },
+            ],
+          },
+        },
+      }),
+    ).toEqual({ kind: "other" });
+  });
+
+  test("single-file batch metadata retains its file and diff", () => {
+    expect(
+      toolDetail("edit", {
+        result: {
+          details: {
+            perFileResults: [{ path: "src/one.ts", op: "update", diff: "+one" }],
+          },
+        },
+      }),
+    ).toMatchObject({ kind: "edit", path: "src/one.ts", diff: "+one" });
+  });
+
+  test.each(
+    [undefined, "", " \t ", 42, {}, ["src/x.ts"], "src/x.ts\nsrc/y.ts"].map((path) => ({ path })),
+  )("invalid edit and write paths do not become file details: %j", ({ path }) => {
+    expect(toolDetail("edit", { args: { path }, result: { details: { path } } })).toEqual({
+      kind: "other",
+    });
+    expect(
+      toolDetail("write", { args: { path }, result: { details: { resolvedPath: path } } }),
+    ).toEqual({ kind: "other" });
+  });
+
+  test.each([null, {}, [], [null], [{ path: "" }]].map((perFileResults) => ({ perFileResults })))(
+    "malformed per-file metadata does not fall back to an unrelated argument: %j",
+    ({ perFileResults }) => {
+      expect(
+        toolDetail("edit", {
+          args: { path: "src/unrelated.ts" },
+          result: { details: { perFileResults } },
+        }),
+      ).toEqual({ kind: "other" });
+    },
+  );
+
+  test("AST edits use applied file results, never search scopes or preview files", () => {
+    const args = { paths: ["src/**/*.ts"] };
+    expect(
+      toolDetail("ast_edit", {
+        args,
+        result: { details: { applied: true, filesTouched: 1, files: ["src/x.ts"] } },
+      }),
+    ).toMatchObject({ kind: "edit", path: "src/x.ts" });
+    expect(
+      toolDetail("ast_edit", {
+        args,
+        result: { details: { applied: false, filesTouched: 1, files: ["src/x.ts"] } },
+      }),
+    ).toEqual({ kind: "other" });
+    expect(
+      toolDetail("ast_edit", {
+        args,
+        result: { details: { applied: true, filesTouched: 2, files: ["src/x.ts", "src/y.ts"] } },
+      }),
+    ).toEqual({ kind: "other" });
+    expect(toolDetail("ast_edit", { args })).toEqual({ kind: "other" });
+  });
+
+  test("write results prefer the resolved filename and preserve historical argument fallback", () => {
+    expect(
+      toolDetail("write", {
+        args: { path: "local://output.txt", content: "hello" },
+        result: { details: { resolvedPath: "/session/artifacts/output.txt" } },
+      }),
+    ).toMatchObject({ kind: "write", path: "/session/artifacts/output.txt", bytes: 5 });
+    expect(toolDetail("write", {}, { file: "legacy.txt", content: "old" })).toMatchObject({
+      kind: "write",
+      path: "legacy.txt",
+      bytes: 3,
+    });
+    expect(toolDetail("edit", {}, { file: "legacy.txt" })).toMatchObject({
+      kind: "edit",
+      path: "legacy.txt",
+    });
+  });
+
+  test("write device dispatches stay generic rather than pretending the device is a file", () => {
+    expect(toolDetail("write", { args: { path: "xd://resolve", content: "apply" } })).toEqual({
+      kind: "other",
+    });
+    expect(toolDetail("write", { result: { details: { xdev: { name: "ast_edit" } } } })).toEqual({
+      kind: "other",
     });
   });
 

@@ -542,8 +542,8 @@ export function toolDetail(
   ev: OmpEvent,
   rememberedArgs?: Record<string, unknown>,
 ): ToolDetail {
-  const args: any = ev.args ?? rememberedArgs ?? {};
-  const details = ev.result?.details ?? {};
+  const args = detailRecord(ev.args ?? rememberedArgs);
+  const details = detailRecord(ev.result?.details);
   switch (toolName) {
     case "bash":
       return {
@@ -551,22 +551,70 @@ export function toolDetail(
         command: String(args.command ?? ""),
         exitCode: typeof details.exitCode === "number" ? details.exitCode : undefined,
       };
-    case "edit":
-    case "ast_edit":
+    case "edit": {
+      // OMP 18.x patch/hashline calls carry `input`, not a path argument.
+      // Results name the destination after a move; batches cannot fit ToolDetail.
+      let file = details;
+      if (details.perFileResults !== undefined) {
+        if (!Array.isArray(details.perFileResults) || details.perFileResults.length !== 1) {
+          return { kind: "other" };
+        }
+        file = detailRecord(details.perFileResults[0]);
+        if (!detailPath(file.path)) return { kind: "other" };
+      }
+      const path =
+        detailPath(file.path) ??
+        detailPath(args.path) ??
+        detailPath(args.file) ??
+        detailPath(args.file_path);
+      if (!path) return { kind: "other" };
       return {
         kind: "edit",
-        path: String(args.path ?? args.file ?? ""),
+        path,
+        additions: numberOr(file.additions ?? file.added, 0),
+        deletions: numberOr(file.deletions ?? file.removed, 0),
+        diff: typeof file.diff === "string" ? file.diff : undefined,
+      };
+    }
+    case "ast_edit": {
+      // `paths` are search scopes (possibly globs), not necessarily edited files.
+      if (details.applied === false) return { kind: "other" };
+      let path: string | undefined;
+      if (details.files !== undefined) {
+        if (!Array.isArray(details.files) || details.files.length !== 1) {
+          return { kind: "other" };
+        }
+        path = detailPath(details.files[0]);
+      } else {
+        path = detailPath(args.path) ?? detailPath(args.file);
+      }
+      if (!path) return { kind: "other" };
+      return {
+        kind: "edit",
+        path,
         additions: numberOr(details.additions ?? details.added, 0),
         deletions: numberOr(details.deletions ?? details.removed, 0),
         diff: typeof details.diff === "string" ? details.diff : undefined,
       };
-    case "write":
+    }
+    case "write": {
+      // Device dispatches use write's transport but do not name a written file.
+      if (details.xdev !== undefined || detailPath(args.path)?.startsWith("xd://")) {
+        return { kind: "other" };
+      }
+      const path =
+        detailPath(details.resolvedPath) ??
+        detailPath(args.path) ??
+        detailPath(args.file) ??
+        detailPath(args.file_path);
+      if (!path) return { kind: "other" };
       return {
         kind: "write",
-        path: String(args.path ?? args.file ?? ""),
+        path,
         bytes: numberOr(details.bytes ?? String(args.content ?? "").length, 0),
         created: details.created !== false,
       };
+    }
     case "read":
       return { kind: "read", path: String(args.path ?? ""), lines: numberOr(details.lines, 0) };
     case "grep":
@@ -581,6 +629,18 @@ export function toolDetail(
     default:
       return { kind: "other" };
   }
+}
+
+function detailRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function detailPath(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 && !/\p{Cc}/u.test(value)
+    ? value
+    : undefined;
 }
 
 function numberOr(v: unknown, fallback: number): number {

@@ -216,15 +216,24 @@ messages are explicit actions.
 
 ### Verification evidence
 
-Live command and browser observations are attached to their owning request. Records retain
-output, artifacts, observed status, and bounded Git-workspace fingerprints. Missing exit codes
-remain unknown; invocation success alone is not verification success. Browser behavior without
-browser evidence remains unverified.
+Live command and browser observations are attached to their owning request. The answer remains
+primary; changed files and checks/activity are collapsed by default. Failed-run counts and incomplete
+coverage remain visible. Expanding activity shows eight recent runs, with access to all records,
+individual output, artifacts, and coverage detail.
 
-Ignored files, external state, and sensitive-file contents are outside the fingerprint's coverage.
-If tool activity overlaps revision capture, or the workspace cannot be fingerprinted reliably,
-evidence says its coverage is unavailable/stale rather than claiming freshness. Later workspace
-edits make earlier coverage stale. Refresh recomputes coverage; it does not rerun checks.
+The pinned SDK omits exit zero for completed synchronous bash results; the collector recognizes
+that documented result shape, but never infers success from prose or generic invocation success.
+Timeouts, background jobs, and errors cannot pass. Exit zero does not prove tests ran, and browser
+activity without structured assertions remains an observation.
+
+Workspace coverage uses versioned metadata change tokens rather than content hashes. Capture is
+synchronous at tool-event boundaries to avoid assigning late baselines to fast commands, and uses
+two bounded metadata passes (10,000 files, one-second deadline). This briefly pauses worker event
+delivery; filesystem calls can exceed the deadline before returning. Ignored files, submodule
+contents, external/browser state, and changes preserving all observed metadata are not covered.
+True concurrent tool execution and unstable capture remain uncovered. Later workspace edits stale
+earlier evidence. Old content-hash fingerprints cannot establish coverage under the new scheme.
+**Check coverage** compares metadata without rerunning commands or browser checks.
 
 
 ## 4. Concurrent execution

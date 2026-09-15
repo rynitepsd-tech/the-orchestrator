@@ -3300,15 +3300,22 @@ button {
   opacity: 1;
 }
 
-/* Copy the whole answer (markdown source) — visible on hover only. */
-.msg-assistant .copy-answer {
-  opacity: 0;
-  font-size: 12px;
-  margin-top: 2px;
-  transition: opacity 0.12s;
+/* Answer actions stay discoverable without competing with the answer. */
+.answer-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 16px 0 8px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
-.msg-assistant:hover .copy-answer {
-  opacity: 1;
+.answer-footer .copy-answer {
+  margin-left: auto;
+  font-size: 13px;
+}
+.answer-footer .turn-done-when {
+  color: var(--text-muted);
 }
 
 /* Syntax colors for markdown code blocks (hljs classes; vendor tool cards
@@ -3415,8 +3422,7 @@ button {
 
 /* Published results, observed evidence, and exact historical sources. */
 .inbox .row,
-.inbox-approval,
-.evidence-list .row {
+.inbox-approval {
   flex-wrap: wrap;
 }
 .inbox-title,
@@ -3424,16 +3430,105 @@ button {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.evidence-list {
-  margin-top: 20px;
-  padding-top: 12px;
+.evidence-list,
+.result-files {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.evidence-summary,
+.result-files > summary,
+.evidence-record > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 36px;
+  cursor: pointer;
+  list-style: none;
+}
+.evidence-summary,
+.result-files > summary {
+  flex-wrap: wrap;
+}
+.evidence-summary::-webkit-details-marker,
+.result-files > summary::-webkit-details-marker,
+.evidence-record > summary::-webkit-details-marker {
+  display: none;
+}
+.evidence-summary::before,
+.result-files > summary::before,
+.evidence-record > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  margin: 0 3px 0 2px;
+}
+.evidence-list[open] > summary::before,
+.result-files[open] > summary::before,
+.evidence-record[open] > summary::before {
+  transform: rotate(45deg);
+}
+.evidence-summary:hover,
+.result-files > summary:hover,
+.evidence-record > summary:hover {
+  color: var(--text);
+}
+.evidence-count,
+.evidence-outcome {
+  color: var(--text-muted);
+}
+.evidence-failure {
+  color: var(--warn);
+}
+.evidence-content {
+  margin: 4px 0 12px;
+}
+.evidence-toolbar,
+.evidence-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 0;
+}
+.evidence-toolbar .hint {
+  flex: 1 1 240px;
+  margin: 0;
+}
+.evidence-record {
   border-top: 1px solid var(--border);
 }
-.evidence-list .tool-card {
-  margin-top: 8px;
+.evidence-record > summary {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  padding: 8px 0;
+}
+.evidence-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.evidence-outcome {
+  font-size: 12px;
+  white-space: nowrap;
 }
 .evidence-body {
-  padding: 10px 12px;
+  padding: 4px 0 12px 22px;
+}
+.evidence-full-label,
+.evidence-artifacts li {
+  overflow-wrap: anywhere;
+}
+.evidence-full-label {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.result-files .files-row {
+  padding: 4px 0 8px 22px;
 }
 .evidence-meta {
   display: grid;

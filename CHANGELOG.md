@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.1
+
+- **Final answers lead; supporting activity stays compact.** Review status, time, and copy
+  action share a quiet footer. Changed files and checks/activity are collapsed by default.
+  Expanding activity shows the latest eight runs, with access to all runs and individual output,
+  artifacts, and coverage details. Failed-run counts and incomplete coverage remain visible
+  without repeated warning pills or a wall of command cards.
+- **Evidence capture no longer rereads file contents.** Bounded metadata change tokens replace
+  full-file hashing and are captured at tool boundaries, so fast sequential commands do not lose
+  their baseline to a queued scan. Real overlap, unstable capture, and subsequent file changes
+  still invalidate coverage. Metadata-preserving changes, ignored files, submodule contents,
+  and external/browser state remain outside coverage; older fingerprints stay stale.
+- **Successful SDK bash commands report their actual completion contract.** The pinned SDK's
+  omitted zero exit is recognized only for completed synchronous results. Timeouts, background
+  jobs, and errors cannot become passing checks, and exit zero does not imply that tests ran.
+- **Edited-file labels use actual tool result paths.** Hashline edits, moves, and resolved writes
+  no longer produce blank chips. Multi-file results that cannot fit a single-file detail remain
+  generic, and old empty/control-character filenames are omitted from the changed-file row.
+
 ## 0.7.0
 
 - **Final answers are explicit, durable publications.** The primary submits a complete

@@ -64,9 +64,11 @@ disposes anything: session lifetime is tied to a worker process, not to what Rea
 - The primary explicitly submits a standalone answer. The harness publishes it only after
   required finite work and candidate-specific advisor review settle; drafts remain in work history.
   Missing submissions, failed review, and timeouts are visible unfinished states, not guessed finals.
-- Command/browser evidence includes observed output, artifacts, revision coverage, and stale status.
-  Unknown exit codes stay unknown; a successful tool invocation is not proof that assertions ran.
-  Refresh checks workspace coverage without rerunning commands or browser checks.
+- Command/browser evidence is collapsed under **Checks & activity**, with failed-run counts and
+  coverage gaps visible before expanding. Recent runs, all runs, and full output are available on demand.
+  The pinned SDK's completed synchronous bash results recognize omitted zero exits; other missing
+  exits remain unknown. Successful execution is not proof that assertions ran.
+  **Check coverage** compares bounded workspace metadata without rereading file contents or rerunning tools.
 
 **Sessions**
 

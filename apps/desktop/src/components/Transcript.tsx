@@ -427,6 +427,7 @@ function editedFiles(items: TranscriptItem[]): EditedFile[] {
     if (it.kind !== "tool" || it.state !== "ok") continue;
     const d = it.detail;
     if (!d || (d.kind !== "edit" && d.kind !== "write")) continue;
+    if (typeof d.path !== "string" || !d.path.trim() || /\p{Cc}/u.test(d.path)) continue;
     const f = map.get(d.path) ?? { path: d.path, additions: 0, deletions: 0 };
     if (d.kind === "edit") {
       f.additions += d.additions;
@@ -823,31 +824,13 @@ function PublishedResult({
   projectPath?: string;
 }): JSX.Element | null {
   const [copyError, setCopyError] = useState(false);
+  const [copied, setCopied] = useState(false);
   const answer = task.answer;
   if (!answer) return null;
   return (
     <div className="msg-assistant" data-answer-id={answer.id}>
       <Markdown text={answer.text} projectPath={projectPath} />
-      <button
-        className="btn btn-ghost copy-answer"
-        title="Copy the published answer as markdown"
-        onClick={async () => {
-          setCopyError(false);
-          try {
-            await navigator.clipboard.writeText(answer.text);
-          } catch {
-            setCopyError(true);
-          }
-        }}
-      >
-        Copy answer
-      </button>
-      {copyError && (
-        <span className="hint" role="alert">
-          Could not copy. Select the answer text to copy it.
-        </span>
-      )}
-      <div className="turn-done">
+      <div className="answer-footer">
         <span>
           {answer.reviewStatus === "passed"
             ? "Reviewed"
@@ -858,7 +841,28 @@ function PublishedResult({
                 : "Review incomplete"}
         </span>
         <TimeAgo iso={answer.at} />
+        <button
+          className="btn btn-ghost copy-answer"
+          title="Copy the published answer as markdown"
+          onClick={async () => {
+            setCopyError(false);
+            setCopied(false);
+            try {
+              await navigator.clipboard.writeText(answer.text);
+              setCopied(true);
+            } catch {
+              setCopyError(true);
+            }
+          }}
+        >
+          {copied ? "Copied" : "Copy answer"}
+        </button>
       </div>
+      {copyError && (
+        <span className="hint" role="alert">
+          Could not copy. Select the answer text to copy it.
+        </span>
+      )}
       {files.length > 0 && <FilesRow files={files} projectPath={projectPath} />}
       <EvidenceList sessionId={sessionId} requestId={task.requestId} evidence={task.evidence} />
     </div>
@@ -874,35 +878,43 @@ function FilesRow({
   projectPath?: string;
 }): JSX.Element {
   return (
-    <div className="files-row">
-      <span className="hint">Edited</span>
-      {files.map((f) => {
-        const rel =
-          projectPath && f.path.startsWith(`${projectPath}/`)
-            ? f.path.slice(projectPath.length + 1)
-            : f.path;
-        const abs = f.path.startsWith("/") ? f.path : projectPath ? `${projectPath}/${f.path}` : "";
-        return (
-          <button
-            key={f.path}
-            type="button"
-            className="file-chip"
-            title={`${f.path} — click to preview`}
-            disabled={!abs}
-            onClick={() => abs && useStore.getState().openFilePreview({ path: abs, projectPath })}
-          >
-            <span className="file-chip-name mono">{rel}</span>
-            {f.created && <span className="hint">new</span>}
-            {(f.additions > 0 || f.deletions > 0) && (
-              <span className="diffstat">
-                <span className="add">+{f.additions}</span>{" "}
-                <span className="del">-{f.deletions}</span>
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </div>
+    <details className="result-files">
+      <summary>
+        {files.length} {files.length === 1 ? "file changed" : "files changed"}
+      </summary>
+      <div className="files-row">
+        {files.map((f) => {
+          const rel =
+            projectPath && f.path.startsWith(`${projectPath}/`)
+              ? f.path.slice(projectPath.length + 1)
+              : f.path;
+          const abs = f.path.startsWith("/")
+            ? f.path
+            : projectPath
+              ? `${projectPath}/${f.path}`
+              : "";
+          return (
+            <button
+              key={f.path}
+              type="button"
+              className="file-chip"
+              title={`${f.path} — click to preview`}
+              disabled={!abs}
+              onClick={() => abs && useStore.getState().openFilePreview({ path: abs, projectPath })}
+            >
+              <span className="file-chip-name mono">{rel}</span>
+              {f.created && <span className="hint">new</span>}
+              {(f.additions > 0 || f.deletions > 0) && (
+                <span className="diffstat">
+                  <span className="add">+{f.additions}</span>{" "}
+                  <span className="del">-{f.deletions}</span>
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
