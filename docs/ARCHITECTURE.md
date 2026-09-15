@@ -33,7 +33,7 @@ flowchart TD
 | **UI** (`apps/desktop/src`) | Product concepts: projects, sessions, transcript, usage | Know OMP internals |
 | **Tauri** (`src-tauri`) | Desktop lifecycle, sidecar supervision, menus, notifications, IPC boundary | Contain product logic |
 | **Protocol** (`packages/protocol`) | Typed, versioned messages; redaction | Depend on OMP |
-| **Engine** (`packages/engine`) | Session lifetimes, routing, catalogue | Reimplement agent behaviour |
+| **Engine** (`packages/engine`) | Session lifetimes, routing, catalogue, task finalization and publication | Author the primary's answer or invent review/evidence outcomes |
 | **Adapter** (`packages/omp-adapter`) | All upstream-specific integration | Leak upstream types upward |
 | **Usage** (`packages/usage`) | Normalised attribution and de-duplication | Invent numbers |
 
@@ -96,9 +96,16 @@ Per-session isolation guarantees, all covered by `packages/engine/test/concurren
 - aborting one leaves the others running
 - disposing one leaves the others running
 
+Code isolation is separate from process isolation. New Git sessions default to managed worktrees
+under Application Support, while the sidebar retains the logical project identity. Shared mode
+and forked sessions can still share files. Shipping and integration lock all involved checkouts
+against routed work, including queued requests, and preserve unrelated staged paths.
+
 ## Protocol
 
-Newline-delimited JSON over stdio, versioned and negotiated on connect.
+Newline-delimited JSON over stdio, versioned and negotiated on connect. Version 2 introduces
+durable task snapshots, explicit publication, workspace operations, evidence, and sourced history.
+Version 1 clients are rejected; notably, `project.ship` now requires an explicit `files` array.
 
 ```ts
 EngineRequest  { protocolVersion, requestId, type, payload }
@@ -131,12 +138,17 @@ sequenceDiagram
   U->>T: session.prompt
   T->>S: NDJSON frame
   S->>W: routed by sessionId
-  W->>O: session.prompt(text, {streamingBehavior})
-  Note over W,O: returns immediately;<br/>the turn runs in the background
+  W->>O: run the request under a durable userTurnId
+  Note over W,O: host acknowledgment returns immediately;<br/>the request runs in the background
   O-->>W: message_update / tool_execution_* / turn_end
   W-->>S: normalised product events
   S-->>T: forwarded verbatim
   T-->>U: engine://frame
+  O->>W: submit_answer(requestId, text, dispositions)
+  W->>O: drain finite work and candidate-scoped review
+  Note over W,O: unresolved findings cause bounded primary revisions;<br/>failed or incomplete review blocks publication
+  W->>W: persist the canonical answer
+  W-->>U: task.updated with complete + answer
   Note over U: user may switch sessions freely;<br/>this turn keeps running
 ```
 
@@ -146,8 +158,11 @@ OMP owns transcripts. The Orchestrator does not create a competing format.
 
 - Sessions live where OMP puts them: `~/.omp/agent/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl`.
 - `SessionManager.listAll()` discovers sessions across every project for the sidebar.
-- Orchestrator-only UI metadata belongs in
-  `~/Library/Application Support/The Orchestrator/`, never mixed into OMP's directories.
+- Durable request snapshots and reviewer ownership are OMP custom entries; canonical answers are
+  selected by persisted task snapshots, never by transcript position or raw model completion.
+- App-only metadata and retained managed worktrees belong in
+  `~/Library/Application Support/The Orchestrator/`. Sourced decisions are explicitly editable
+  local metadata; no competing transcript store is created.
 
 **Single-writer enforcement.** OMP session files have no cross-process lock, and two writers lose
 data silently. The supervisor tracks which persisted path each worker owns and refuses to open the
@@ -161,7 +176,8 @@ The Rust supervisor reaps the engine process and reports exit explicitly.
 2. Every session is marked **interrupted** — an in-flight model request is never reported as still
    running once its process is gone.
 3. Transcripts already in the UI are preserved.
-4. "Restart engine" relaunches; persisted OMP sessions are rediscovered and can be resumed.
+4. "Restart engine" relaunches; persisted OMP sessions can be restored without resending prompts.
+   In-flight task reviews become interrupted, and only explicit user action starts work again.
 
 The same path handles a single worker dying: only that session is interrupted, and the rest keep
 running. That containment is a direct benefit of process-per-session.

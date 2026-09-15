@@ -14,8 +14,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
+  canonicalPath,
   gitChanges,
   gitDiff,
   inspectProject,
@@ -23,7 +24,9 @@ import {
   listProjectFiles,
   projectIdFor,
   readProjectFile,
+  readSessionSource,
   realParentPath,
+  searchSessions,
   shipChanges,
 } from "@orchestrator/omp-adapter";
 import type {
@@ -33,16 +36,22 @@ import type {
   UsageRecord,
 } from "@orchestrator/protocol";
 import { appSupportDir, engineLogPath } from "./logging";
+import { ProjectDecisionStore } from "./project-decisions";
 import type { EngineServer } from "./server";
+
+const projectDecisions = new ProjectDecisionStore();
 
 /** Symlink-resolved project roots of live sessions — the read allowlist. */
 function liveProjectRoots(m: EngineServer["manager"]): string[] {
   const roots = new Set<string>();
   for (const s of m.list()) {
-    try {
-      roots.add(realpathSync(s.projectPath));
-    } catch {
-      /* a vanished project dir guards itself */
+    for (const path of [s.projectPath, s.workspacePath]) {
+      if (!path) continue;
+      try {
+        roots.add(realpathSync(path));
+      } catch {
+        /* a vanished directory guards itself */
+      }
     }
   }
   return [...roots];
@@ -164,11 +173,22 @@ export async function handleRequest(
     case "project.readFile":
       return readProjectFile(requireOpenProject(p.path), String(p.file));
 
-    case "project.ship":
-      return shipChanges(requireOpenProject(p.path), {
-        title: String(p.title),
-        body: p.body ? String(p.body) : undefined,
-      });
+    case "project.ship": {
+      const root = requireOpenProject(p.path);
+      if (!Array.isArray(p.files) || p.files.some((file: unknown) => typeof file !== "string")) {
+        throw new Error("Select the files to include in this commit.");
+      }
+      return m.withWorkspaceStopped([root], () =>
+        shipChanges(root, {
+          title: String(p.title),
+          body: p.body ? String(p.body) : undefined,
+          files: p.files,
+        }),
+      );
+    }
+
+    case "project.integrate":
+      return m.integrateWorkspace(requireOpenProject(p.path));
 
     case "attachments.store": {
       const b64 = String(p.base64 ?? "");
@@ -270,6 +290,34 @@ export async function handleRequest(
     case "sessions.discover":
       return { sessions: await m.discoverSessions(p?.projectPath) };
 
+    case "sessions.search":
+      return searchSessions(await m.discoverSessions(), p.query, {
+        projectPath: p.projectPath,
+        limit: p.limit,
+      });
+
+    case "sessions.source":
+      return readSessionSource(await m.discoverSessions(), p.sessionPath, p.entryId);
+
+    case "project.decisions.list":
+    case "project.decisions.save":
+    case "project.decisions.delete": {
+      // These operations touch app-owned metadata, never the project files.
+      // Historical projects remain accessible without spawning a worker.
+      const sessions = await m.discoverSessions();
+      if (typeof p.path !== "string" || !isAbsolute(p.path))
+        throw new Error("Choose an absolute project folder.");
+      const path = canonicalPath(String(p.path));
+      const known =
+        sessions.some((s) => canonicalPath(s.projectPath ?? s.cwd) === path) ||
+        m.list().some((s) => canonicalPath(s.projectPath) === path);
+      if (!known) throw new Error("Choose a project with an existing session.");
+      if (req.type === "project.decisions.list") return { decisions: projectDecisions.list(path) };
+      if (req.type === "project.decisions.delete")
+        return { deleted: projectDecisions.delete(path, p.id) };
+      return { decision: await projectDecisions.save(path, p.decision, sessions) };
+    }
+
     case "sessions.relocate": {
       // Re-home sessions whose project folder moved. The destination must be a
       // real directory; the source must actually be gone — when the recorded
@@ -302,11 +350,11 @@ export async function handleRequest(
       return { sessions: m.list() };
 
     // --- one session -------------------------------------------------------
-    case "session.prompt":
-      // Auth gate: a dead OAuth grant must fail HERE, loudly — OMP's stale
-      // token fallback otherwise keeps working and bills API credits.
+    case "session.prompt": {
+      // The supervisor serializes prompt pickup with shipping/integration.
       await m.assertSessionProvidersUsable(String(p.sessionId));
       return m.route(String(p.sessionId), "session.prompt", p) as never;
+    }
 
     case "session.abort":
       return m.route(String(p.sessionId), "session.abort", p) as never;
@@ -319,6 +367,10 @@ export async function handleRequest(
 
     case "session.rewind":
       return m.route(String(p.sessionId), "session.rewind", p) as never;
+
+    case "session.task.retryReview":
+    case "session.evidence.refresh":
+      return m.route(String(p.sessionId), req.type, p) as never;
 
     case "session.fork": {
       // Fork a live session (by id) or a persisted file (by path).

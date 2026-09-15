@@ -22,6 +22,12 @@ import type {
   UsageRecord,
 } from "./domain";
 import type { ProductEvent } from "./events";
+import type {
+  ProjectDecision,
+  SessionSearchHit,
+  SessionSource,
+  VerificationEvidence,
+} from "./tasks";
 
 // ---------------------------------------------------------------------------
 // Envelopes
@@ -135,7 +141,8 @@ export interface RequestPayloads {
    */
   "file.read": { path: string };
   /** Commit the working tree, push, and open a PR (branching off default). */
-  "project.ship": { path: string; title: string; body?: string };
+  "project.ship": { path: string; title: string; body?: string; files: string[] };
+  "project.integrate": { path: string };
   /**
    * Persist pasted/dropped bytes (no OS path exists in the webview) to a temp
    * file the agent can read. Returns the absolute path.
@@ -143,6 +150,19 @@ export interface RequestPayloads {
   "attachments.store": { name: string; base64: string };
 
   "sessions.discover": { projectPath?: string };
+  "sessions.search": { query: string; projectPath?: string; limit?: number };
+  "sessions.source": { sessionPath: string; entryId: string };
+  "project.decisions.list": { path: string };
+  "project.decisions.save": {
+    path: string;
+    decision: {
+      id?: string;
+      title: string;
+      text: string;
+      source: { sessionPath: string; entryId: string };
+    };
+  };
+  "project.decisions.delete": { path: string; id: string };
   /**
    * Re-home persisted sessions whose recorded project folder no longer exists
    * (the folder was moved or renamed). Every discovered session whose cwd is
@@ -188,6 +208,8 @@ export interface RequestPayloads {
   "session.setTitle": { sessionId: SessionId; title: string };
   "session.setApprovalMode": { sessionId: SessionId; mode: ApprovalMode };
   "session.transcript": { sessionId: SessionId; sinceSequence?: number };
+  "session.task.retryReview": { sessionId: SessionId; requestId: string };
+  "session.evidence.refresh": { sessionId: SessionId; requestId: string };
 
   "session.advisors.set": { sessionId: SessionId; advisors: AdvisorConfig[] };
   "session.advisors.get": { sessionId: SessionId };
@@ -284,8 +306,14 @@ export interface ResponsePayloads {
     prUrl?: string;
     note?: string;
   };
+  "project.integrate": { integrated: boolean; commit?: string; conflicts: string[]; note?: string };
 
   "sessions.discover": { sessions: DiscoveredSession[] };
+  "sessions.search": { hits: SessionSearchHit[]; truncated: boolean };
+  "sessions.source": SessionSource;
+  "project.decisions.list": { decisions: ProjectDecision[] };
+  "project.decisions.save": { decision: ProjectDecision };
+  "project.decisions.delete": { deleted: boolean };
   /** `moved` pairs old→new session file paths so the UI can migrate prefs. */
   "sessions.relocate": {
     moved: Array<{ from: string; to: string }>;
@@ -306,6 +334,8 @@ export interface ResponsePayloads {
   "session.setTitle": { ok: boolean };
   "session.setApprovalMode": { ok: boolean };
   "session.transcript": { events: ProductEvent[]; sequence: number };
+  "session.task.retryReview": { accepted: boolean };
+  "session.evidence.refresh": { evidence: VerificationEvidence[] };
 
   "session.advisors.set": { advisors: AdvisorConfig[] };
   "session.advisors.get": { advisors: AdvisorConfig[] };
@@ -413,8 +443,14 @@ export const REQUEST_TYPES = [
   "path.open",
   "file.read",
   "project.ship",
+  "project.integrate",
   "attachments.store",
   "sessions.discover",
+  "sessions.search",
+  "sessions.source",
+  "project.decisions.list",
+  "project.decisions.save",
+  "project.decisions.delete",
   "sessions.relocate",
   "sessions.create",
   "sessions.close",
@@ -430,6 +466,8 @@ export const REQUEST_TYPES = [
   "session.setTitle",
   "session.setApprovalMode",
   "session.transcript",
+  "session.task.retryReview",
+  "session.evidence.refresh",
   "session.advisors.set",
   "session.advisors.get",
   "approval.respond",

@@ -13,6 +13,7 @@
  */
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { PROTOCOL_VERSION, type ProductEvent, type TaskSnapshot } from "../packages/protocol/src";
 import { checker, makeProject, removeProjects, waitFor } from "./lib";
 
 const DEFAULT_APP = resolve(
@@ -58,7 +59,12 @@ const proc = Bun.spawn([enginePath], {
     ORCHESTRATOR_LOG_LEVEL: "warn",
     ORCHESTRATOR_TEST_MODE: "1",
     ORCHESTRATOR_TEST_PROVIDERS: JSON.stringify([
-      { name: "mockprov", baseUrl: mock.url, apiKey: "mock-key", modelIds: ["mock-smoke"] },
+      {
+        name: "mockprov",
+        baseUrl: mock.url,
+        apiKey: "mock-key",
+        modelIds: ["mock-smoke", "mock-publication", "mock-review"],
+      },
     ]),
   },
 });
@@ -99,7 +105,9 @@ void (async () => {
 })();
 
 const send = (type: string, payload: unknown, requestId: string) =>
-  proc.stdin.write(`${JSON.stringify({ protocolVersion: 1, requestId, type, payload })}\n`);
+  proc.stdin.write(
+    `${JSON.stringify({ protocolVersion: PROTOCOL_VERSION, requestId, type, payload })}\n`,
+  );
 
 const findResp = (id: string) => frames.find((f) => f.requestId === id);
 const findEvent = (t: string) => frames.find((f) => f.event?.type === t);
@@ -271,6 +279,72 @@ try {
         );
         check("approval releases the tool", done2 && tool2?.event?.ok === true);
       }
+    }
+
+    // 7e. Publication is a durable task commit, not the last model message.
+    send(
+      "sessions.create",
+      {
+        projectPath: project,
+        title: "Smoke publication",
+        model: "mockprov/mock-publication",
+        advisors: [
+          {
+            id: "reviewer",
+            name: "Reviewer",
+            enabled: true,
+            model: "mockprov/mock-review",
+            origin: "session",
+            tools: [],
+          },
+        ],
+      },
+      "c3",
+    );
+    await waitFor(() => !!findResp("c3"), 90_000);
+    const publicationSession = findResp("c3")?.result?.session;
+    check("creates a reviewed publication session", Boolean(publicationSession));
+    if (publicationSession) {
+      const publicationId = publicationSession.sessionId;
+      send(
+        "session.prompt",
+        { sessionId: publicationId, text: "Run the smoke check and submit the reviewed answer." },
+        "pr3",
+      );
+      const answerFrame = () =>
+        frames.find(
+          (f) =>
+            f.event?.type === "task.updated" &&
+            f.event.sessionId === publicationId &&
+            f.event.task?.answer,
+        );
+      check(
+        "publishes an explicit answer from the packaged SDK",
+        await waitFor(() => Boolean(answerFrame()), 120_000),
+      );
+      const task: TaskSnapshot | undefined = answerFrame()?.event.task;
+      check(
+        "publication waits for successful advisor review",
+        task?.phase === "complete" && task?.answer?.reviewStatus === "passed",
+      );
+      check(
+        "publication retains command evidence",
+        task?.evidence.some((item) => item.output?.includes("PUBLICATION-CHECK")) === true,
+      );
+      send("session.transcript", { sessionId: publicationId }, "t3");
+      await waitFor(() => !!findResp("t3"), 20_000);
+      const committed: ProductEvent | undefined = findResp("t3")?.result?.events.find(
+        (event: ProductEvent) =>
+          event.type === "task.updated" && event.task.answer?.id === task?.answer?.id,
+      );
+      check(
+        "transcript replay retains the canonical answer",
+        Boolean(
+          task?.answer &&
+            committed?.type === "task.updated" &&
+            committed.task.answer?.text === task.answer.text,
+        ),
+      );
     }
   }
 

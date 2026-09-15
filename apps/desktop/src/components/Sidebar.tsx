@@ -14,10 +14,12 @@ import { useMemo, useState } from "react";
 import { engine } from "../engine-client";
 import { basename, projectDisplayName } from "../lib/prefs";
 import {
-  advisorsReviewing,
+  activeTask,
   modelBasename,
+  publishedAnswer,
   runStateLabel,
   type SessionView,
+  taskPhaseLabel,
   useStore,
 } from "../store";
 import { ChartIcon, FolderIcon, GearIcon, InboxIcon } from "./icons";
@@ -112,7 +114,9 @@ export function Sidebar({
         !openPaths.has(d.path) &&
         !d.openInThisApp &&
         !d.cwdMissing &&
-        (!q || d.title.toLowerCase().includes(q) || d.cwd.toLowerCase().includes(q)),
+        (!q ||
+          d.title.toLowerCase().includes(q) ||
+          (d.projectPath ?? d.cwd).toLowerCase().includes(q)),
     );
   }, [discovered, openPaths, q, prefs.openSessionPaths]);
 
@@ -127,7 +131,7 @@ export function Sidebar({
       return g;
     };
     for (const v of filteredLive) group(v.summary.projectPath).views.push(v);
-    for (const d of openRemembered) group(d.cwd).open.push(d);
+    for (const d of openRemembered) group(d.projectPath ?? d.cwd).open.push(d);
     // Manual drag order wins; projects never dragged fall back to pinned-first
     // alphabetical after the ordered ones.
     const orderIdx = (p: string) => {
@@ -157,7 +161,12 @@ export function Sidebar({
           !openPaths.has(d.path) && !remembered.has(d.path) && !d.openInThisApp && !d.cwdMissing,
       )
       .filter((d) => showArchived || !archived.has(d.path))
-      .filter((d) => !q || d.title.toLowerCase().includes(q) || d.cwd.toLowerCase().includes(q))
+      .filter(
+        (d) =>
+          !q ||
+          d.title.toLowerCase().includes(q) ||
+          (d.projectPath ?? d.cwd).toLowerCase().includes(q),
+      )
       .sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""));
   }, [discovered, openPaths, q, prefs.archivedSessions, prefs.openSessionPaths, showArchived]);
   const resumable = allResumable.slice(0, q ? 50 : closedLimit);
@@ -239,21 +248,20 @@ export function Sidebar({
   const moveSession = useStore((s) => s.moveSession);
   const mainView = useStore((s) => s.mainView);
   const setMainView = useStore((s) => s.setMainView);
-  // Inbox badge: blocked sessions + unread finishes + failures. A finish with
-  // advisors still reviewing is NOT one — it matches the Inbox's own filter,
-  // so the badge can never promise a card the list will not show.
-  const inboxCount = Object.values(sessions).reduce(
-    (n, v) =>
-      n +
-      (v.pendingInteractions > 0 || v.summary.runState === "waiting"
-        ? 1
-        : v.summary.unread && v.summary.runState === "completed" && !advisorsReviewing(v)
-          ? 1
-          : v.summary.runState === "error" || v.summary.runState === "interrupted"
-            ? 1
-            : 0),
-    0,
-  );
+  // Publication and actionable task outcomes drive the same badge as the inbox.
+  const inboxCount = Object.values(sessions).filter((v) => {
+    const task = activeTask(v);
+    return (
+      v.pendingInteractions > 0 ||
+      v.summary.runState === "waiting" ||
+      task?.phase === "blocked" ||
+      task?.phase === "error" ||
+      task?.phase === "interrupted" ||
+      (v.summary.unread && task?.phase === "complete" && Boolean(publishedAnswer(v))) ||
+      v.summary.runState === "error" ||
+      v.summary.runState === "interrupted"
+    );
+  }).length;
   const setRenameProjectTarget = useStore((s) => s.setRenameProjectTarget);
   const [projMenu, setProjMenu] = useState<{ path: string; x: number; y: number } | null>(null);
   /** Closed-session row armed by double-click, showing its Reopen button. */
@@ -332,7 +340,18 @@ export function Sidebar({
 
       <div className="sidebar-scroll">
         {byProject.map(([projectPath, g]) => {
-          const shared = g.views.filter((v) => isActiveRunState(v.summary.runState)).length;
+          const workspaceCounts = new Map<string, number>();
+          for (const v of g.views) {
+            const phase = activeTask(v)?.phase;
+            if (
+              !isActiveRunState(v.summary.runState) &&
+              !["working", "reviewing", "revising", "finalizing"].includes(phase ?? "")
+            )
+              continue;
+            const path = v.summary.workspacePath ?? v.summary.projectPath;
+            workspaceCounts.set(path, (workspaceCounts.get(path) ?? 0) + 1);
+          }
+          const shared = Math.max(0, ...workspaceCounts.values());
           const collapsed = isCollapsed(projectPath);
           const count = g.views.length + g.open.length;
           const rows = sortedRows(g, prefs.sessionOrder);
@@ -655,11 +674,14 @@ export function Sidebar({
  */
 function StatusIndicator({ view, active }: { view: SessionView; active: boolean }): JSX.Element {
   const s = view.summary;
-  if (view.pendingInteractions > 0 || s.runState === "waiting") {
+  const task = activeTask(view);
+  if (view.pendingInteractions > 0 || s.runState === "waiting" || task?.phase === "blocked") {
     return <span className={`dot attention${active ? "" : " blink"}`} aria-hidden />;
   }
-  // Advisors still reading count as "working" — the turn isn't finished yet.
-  if (isActiveRunState(s.runState) || (s.runState === "completed" && advisorsReviewing(view))) {
+  if (
+    isActiveRunState(s.runState) ||
+    (task && ["working", "reviewing", "revising", "finalizing"].includes(task.phase))
+  ) {
     return (
       <span className="working-dots" aria-hidden>
         <span />
@@ -668,10 +690,13 @@ function StatusIndicator({ view, active }: { view: SessionView; active: boolean 
       </span>
     );
   }
-  if (s.runState === "error") return <span className="dot error" aria-hidden />;
-  if (s.runState === "interrupted") return <span className="dot interrupted" aria-hidden />;
+  if (s.runState === "error" || task?.phase === "error")
+    return <span className="dot error" aria-hidden />;
+  if (s.runState === "interrupted" || task?.phase === "interrupted")
+    return <span className="dot interrupted" aria-hidden />;
   if (s.runState === "hibernated") return <span className="dot hibernated" aria-hidden />;
-  if (s.runState === "completed" && s.unread) return <span className="dot finished" aria-hidden />;
+  if (task?.phase === "complete" && task.answer && s.unread)
+    return <span className="dot finished" aria-hidden />;
   return <span className="dot idle" aria-hidden />;
 }
 
@@ -696,10 +721,11 @@ function SessionRow({
   const s = view.summary;
   const advisorsOn = view.advisors.filter((a) => a.enabled).length;
   const needsInput = view.pendingInteractions > 0 || s.runState === "waiting";
+  const task = activeTask(view);
   const status = needsInput
     ? "Needs input"
-    : s.runState === "completed" && advisorsReviewing(view)
-      ? "Advisors reviewing"
+    : task
+      ? taskPhaseLabel(task.phase)
       : runStateLabel(s.runState, s.activity);
   // Plan progress, visible without opening the session.
   const todoTasks = view.todoPhases?.flatMap((p) => p.tasks) ?? [];
@@ -736,6 +762,7 @@ function SessionRow({
         <span className="session-sub hint">
           {modelBasename(s.model)}
           {advisorsOn > 0 && ` · ${advisorsOn} advisor${advisorsOn > 1 ? "s" : ""}`}
+          {s.workspaceMode === "isolated" && " · isolated"}
         </span>
         <span className={`session-status hint${needsInput ? " attention" : ""}`}>
           {status}

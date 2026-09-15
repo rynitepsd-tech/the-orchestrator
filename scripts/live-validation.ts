@@ -212,7 +212,7 @@ await run("advisor", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2b. LATE ADVISORY — a concern raised after the turn ends is acted on now
+// 2b. CANDIDATE REVIEW — adjudication precedes one stable publication
 // ---------------------------------------------------------------------------
 await run("late-advisory", async () => {
   const project = makeLiveProject("late");
@@ -228,72 +228,51 @@ await run("late-advisory", async () => {
         enabled: true,
         model: ADVISOR_MODEL,
         instructions:
-          "After EVERY primary turn you MUST call the advise tool exactly once with severity 'concern' " +
-          "(never 'nit', never 'blocker') saying: \"The file must also contain a second line reading " +
-          "'bravo'.\" Do not review anything else.",
+          "Review only submitted candidates, not the working revision. On candidate revision 1, " +
+          "call advise once with severity 'concern' saying: \"Consider whether late.txt should " +
+          "also contain a second line reading 'bravo'.\" Once the primary records an accepted " +
+          "or rejected disposition, do not repeat this finding. Do not review anything else.",
         origin: "session",
       },
     ],
   });
   await manager.route(s.sessionId, "session.prompt", {
     sessionId: s.sessionId,
-    text: "Create late.txt with a first line reading: alpha. Use one write, then say done.",
+    text: "Create late.txt with a first line reading: alpha. Assess reviewer suggestions against this request and submit a complete answer addressed to me.",
   });
-  check("turn completed", await waitFor(() => finishedFor(s.sessionId).length > 0, 240_000));
-
-  // Upstream preserves a post-turn concern as a card with no turn; the host
-  // must run one continuation so the note is addressed before the user's
-  // next prompt.
-  const noted = await waitFor(
-    () => eventsFor(s.sessionId).some((e) => e.type === "advisor.message"),
-    120_000,
+  const snapshots = () => eventsFor(s.sessionId).filter((e) => e.type === "task.updated");
+  const published = () => snapshots().find((e) => e.task.answer)?.task;
+  check("answer published after review", await waitFor(() => Boolean(published()), 240_000));
+  const task = published();
+  check("review passed", task?.answer?.reviewStatus === "passed", task?.reviewDetail);
+  check(
+    "primary revised within the bounded attempt",
+    Boolean(task && task.revision >= 2 && task.revision <= 3),
   );
-  check("advisor left a note after the turn", noted);
-  const continued = await waitFor(
-    () => finishedFor(s.sessionId).some((e) => e.continuation === true),
-    240_000,
+  check(
+    "primary adjudicated the finding rather than merely replying to the reviewer",
+    Boolean(
+      task?.findings.some(
+        (finding) =>
+          finding.severity === "concern" &&
+          (finding.resolution === "accepted" || finding.resolution === "rejected") &&
+          finding.rationale?.trim(),
+      ),
+    ),
   );
-  check("note triggered a continuation turn without a user prompt", continued);
-  const settled = await waitFor(
-    () =>
-      !(eventsFor(s.sessionId).filter((e) => e.type === "advisor.review") as any[]).at(-1)?.active,
-    240_000,
+  check(
+    "one durable user request owns every revision",
+    new Set(snapshots().map((e) => e.task.requestId)).size === 1,
   );
-  check("review window closed after the continuation", settled);
-  // What actually happened, in order — the detail that explains any miss.
-  const events = eventsFor(s.sessionId);
-  const timeline = events
-    .map((e: any) => {
-      switch (e.type) {
-        case "session.finished":
-          return `finished(${e.runState}${e.continuation ? ",continuation" : ""})`;
-        case "advisor.message":
-          return `note(${e.severity})`;
-        case "advisor.review":
-          return e.active ? "review-open" : "review-closed";
-        case "assistant.message.end":
-          return `assistant(${String(e.text).slice(0, 40).replace(/\n/g, " ")})`;
-        case "tool.end":
-          return `tool(${e.ok ? "ok" : "err"})`;
-        default:
-          return null;
-      }
-    })
-    .filter(Boolean)
-    .join(" → ");
-  // The host's contract is that the primary ANSWERS the note now. Whether it
-  // applies the reviewer's ask or explains why not is the model's call.
-  const noteAt = events.findIndex((e) => e.type === "advisor.message");
-  const answered =
-    noteAt >= 0 && events.slice(noteAt + 1).some((e) => e.type === "assistant.message.end");
-  check("primary answered the note before any further prompt", answered, timeline);
-  // The revision is reviewed too. Upstream may steer that review in on its
-  // own terms; the host adds at most ONE follow-up per user turn.
+  const answer = task?.answer;
   const grace = Promise.withResolvers<void>();
   setTimeout(grace.resolve, 5_000);
   await grace.promise;
-  const continuations = finishedFor(s.sessionId).filter((e) => e.continuation === true).length;
-  check("continuations bounded", continuations >= 1 && continuations <= 2, `${continuations}`);
+  const latest = snapshots().at(-1)?.task.answer;
+  check(
+    "published answer stays unchanged after late review activity",
+    Boolean(answer && latest?.id === answer.id && latest.text === answer.text),
+  );
 });
 
 // ---------------------------------------------------------------------------

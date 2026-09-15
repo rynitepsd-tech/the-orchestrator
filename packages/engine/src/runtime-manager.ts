@@ -9,13 +9,14 @@
  * session lifetime is tied to a worker process, not to what the UI is showing.
  * Switching sessions in the sidebar never pauses, disposes, or aborts anything.
  */
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   discoverAdvisors,
   discoverNestedTranscripts,
   discoverSessions,
   fetchProviderQuotas,
   forkSessionFile,
+  integrateWorkspace,
   listDisabledProviderCauses,
   listModels,
   listProviders,
@@ -25,6 +26,9 @@ import {
   providerAuthHealth,
   readSessionFileUsage,
   relocateProjectSessions,
+  type SessionFileUsage,
+  workspaceForPath,
+  workspaceForSession,
 } from "@orchestrator/omp-adapter";
 import type {
   AdvisorConfig,
@@ -38,7 +42,7 @@ import type {
   UsageBreakdown,
 } from "@orchestrator/protocol";
 import { type AuthLifecycleEvent, createLoginController, type LoginController } from "./auth-login";
-import { logger } from "./logging";
+import { appSupportDir, logger } from "./logging";
 import { UsageIndex } from "./usage-index";
 import { type TestProvider, type WorkerSpawnEnv, WorkerSupervisor } from "./worker/supervisor";
 
@@ -243,10 +247,19 @@ export class RuntimeManager {
   // -------------------------------------------------------------------------
 
   async discoverSessions(projectPath?: string): Promise<DiscoveredSession[]> {
-    const found = await discoverSessions(projectPath);
+    // OMP groups by tool cwd. Managed worktrees retain logical project grouping.
+    const found = await discoverSessions();
     const open = this.#supervisor.openSessionPaths();
-    for (const s of found) s.openInThisApp = open.has(s.path);
-    return found;
+    const requested = projectPath
+      ? workspaceForPath(projectPath, join(appSupportDir(), "worktrees")).projectPath
+      : undefined;
+    for (const session of found) {
+      const workspace = workspaceForPath(session.cwd, join(appSupportDir(), "worktrees"));
+      session.projectPath = workspace.projectPath;
+      session.workspaceMode = workspace.workspaceMode;
+      session.openInThisApp = open.has(session.path);
+    }
+    return requested ? found.filter((session) => session.projectPath === requested) : found;
   }
 
   /**
@@ -480,6 +493,18 @@ export class RuntimeManager {
     return this.#supervisor.activeCount();
   }
 
+  withWorkspaceStopped<T>(paths: string[], operation: () => Promise<T>): Promise<T> {
+    return this.#supervisor.withWorkspaceStopped(paths, operation);
+  }
+
+  async integrateWorkspace(path: string) {
+    const storage = join(appSupportDir(), "worktrees");
+    const workspace = workspaceForPath(path, storage);
+    return this.withWorkspaceStopped([workspace.workspacePath, workspace.projectPath], () =>
+      integrateWorkspace(path, storage),
+    );
+  }
+
   /** Forward a session-scoped request to the owning worker. */
   route<T = unknown>(sessionId: string, type: string, payload: unknown): Promise<T> {
     return this.#supervisor.route<T>(sessionId, type, payload);
@@ -526,16 +551,19 @@ export class RuntimeManager {
       this.#reconcileLater(e.sessionId);
     }
     if (e.type === "advisor.review" && !e.active) {
-      // The review window closing is when the advisors' transcripts are
-      // finally on disk. Reconciling only at `session.finished` missed them
-      // entirely on the common path: an advisor with no concern raises no
-      // continuation turn, so no second finish ever arrives to pick them up.
+      // Capture each review round as its nested transcripts settle, including
+      // incomplete rounds that do not produce a published answer.
       this.#reconcileLater(e.sessionId);
     }
     if (e.type === "usage.records") {
       // Mirror worker records into the persistent engine-wide index. It
       // rejects cumulative advisor snapshots itself — see isSupersededSnapshot.
-      this.#usageIndex.ingest(e.records);
+      const summary = this.list().find((session) => session.sessionId === e.sessionId);
+      this.#usageIndex.ingest(
+        summary
+          ? e.records.map((record) => ({ ...record, projectId: summary.projectId }))
+          : e.records,
+      );
     }
     this.#opts.emit(e);
   }
@@ -556,9 +584,14 @@ export class RuntimeManager {
     thinkingLevel?: string;
     advisors?: SessionLaunchConfig["advisors"];
   }): Promise<SessionSummary> {
-    const forked = await forkSessionFile(
+    const workspace = await workspaceForSession(
       opts.sourcePath,
       opts.projectPath,
+      join(appSupportDir(), "worktrees"),
+    );
+    const forked = await forkSessionFile(
+      opts.sourcePath,
+      workspace.workspacePath,
       this.#agentDir,
       opts.title,
     );
@@ -568,7 +601,7 @@ export class RuntimeManager {
       });
     }
     return this.create({
-      projectPath: opts.projectPath,
+      projectPath: workspace.projectPath,
       title: opts.title,
       model: opts.model,
       thinkingLevel: opts.thinkingLevel,
@@ -598,17 +631,22 @@ export class RuntimeManager {
     const usage = await readSessionFileUsage(path);
     if (!usage) return 0;
     const title = usage.title ?? fallbackTitle;
+    const projectId = workspaceForPath(usage.cwd, join(appSupportDir(), "worktrees")).projectPath;
     let indexed = this.#usageIndex.ingest(
-      usage.records.map((r) => ({ ...r, sessionTitle: title })),
+      usage.records.map((r) => ({ ...r, sessionTitle: title, projectId })),
     );
     if (!usage.ompSessionId) return indexed;
     for (const n of await discoverNestedTranscripts(path)) {
+      const advisor =
+        n.actorType === "advisor"
+          ? usage.advisorIdentities.get(n.actorId.slice("advisor:".length))
+          : undefined;
       const nestedUsage = await readSessionFileUsage(n.path, {
         actorType: n.actorType,
-        actorId: n.actorId,
-        actorName: n.actorName,
+        actorId: advisor ? `advisor:${advisor.id}` : n.actorId,
+        actorName: advisor?.name ?? n.actorName,
         ompSessionId: usage.ompSessionId,
-        projectId: usage.cwd,
+        projectId,
       });
       if (!nestedUsage) continue;
       indexed += this.#usageIndex.ingest(
@@ -631,26 +669,36 @@ export class RuntimeManager {
     const startedAt = Date.now();
     let indexed = 0;
     /** Parent identity by session-file path, for attributing nested rows. */
-    const parents = new Map<string, { ompSessionId: string; cwd: string; title?: string }>();
+    const parents = new Map<
+      string,
+      Pick<SessionFileUsage, "ompSessionId" | "cwd" | "title" | "advisorIdentities">
+    >();
     const sessions = await discoverSessions(undefined);
     for (const s of sessions) {
       const usage = await readSessionFileUsage(s.path);
       if (!usage) continue;
-      parents.set(resolve(s.path), usage);
+      const projectId = workspaceForPath(usage.cwd, join(appSupportDir(), "worktrees")).projectPath;
+      parents.set(resolve(s.path), { ...usage, cwd: projectId });
       // Carry the parsed title so "By session" can show a name, not an id.
-      const records = usage.title
-        ? usage.records.map((r) => ({ ...r, sessionTitle: usage.title }))
-        : usage.records;
+      const records = usage.records.map((record) => ({
+        ...record,
+        projectId,
+        sessionTitle: usage.title ?? record.sessionTitle,
+      }));
       indexed += this.#usageIndex.ingest(records);
     }
     const nested = await discoverNestedTranscripts();
     for (const n of nested) {
       const parent = parents.get(resolve(n.parentPath));
       if (!parent?.ompSessionId) continue;
+      const advisor =
+        n.actorType === "advisor"
+          ? parent.advisorIdentities.get(n.actorId.slice("advisor:".length))
+          : undefined;
       const usage = await readSessionFileUsage(n.path, {
         actorType: n.actorType,
-        actorId: n.actorId,
-        actorName: n.actorName,
+        actorId: advisor ? `advisor:${advisor.id}` : n.actorId,
+        actorName: advisor?.name ?? n.actorName,
         ompSessionId: parent.ompSessionId,
         projectId: parent.cwd,
       });

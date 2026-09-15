@@ -8,14 +8,17 @@
  * pretends to be the runtime.
  */
 
-import { isActiveRunState, type ToolDetail } from "@orchestrator/protocol";
+import type { TaskSnapshot, ToolDetail } from "@orchestrator/protocol";
+import { isActiveRunState } from "@orchestrator/protocol";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { engine } from "../engine-client";
 import { basename } from "../lib/prefs";
-import { fmtCount, fmtDuration, fmtTokens, type TranscriptItem, useStore } from "../store";
+import type { TranscriptItem } from "../store";
+import { fmtCount, fmtDuration, fmtTokens, taskPhaseLabel, useStore } from "../store";
 import type { OmpToolViewData, OmpToolViewElement } from "../types/omp-tool-view";
+import { EvidenceList } from "./EvidenceList";
 import { Markdown } from "./Markdown";
 
 /**
@@ -68,7 +71,13 @@ export function Transcript({
   items: TranscriptItem[];
   sessionId: string;
 }): JSX.Element {
-  const projectPath = useStore((s) => s.sessions[sessionId]?.summary.projectPath);
+  const projectPath = useStore(
+    (s) =>
+      s.sessions[sessionId]?.summary.workspacePath ?? s.sessions[sessionId]?.summary.projectPath,
+  );
+  const tasks = useStore((s) => s.sessions[sessionId]?.tasks);
+  const jump = useStore((s) => s.transcriptJump);
+  const [revealedId, setRevealedId] = useState<string>();
   const runState = useStore((s) => s.sessions[sessionId]?.summary.runState);
   // Rewind is only offered at rest — mid-run history surgery is a footgun.
   const canRewind = runState !== undefined && !isActiveRunState(runState);
@@ -98,13 +107,21 @@ export function Transcript({
     if (grew > 0 && !pinned.current && items.length > shown) setShown(shown + grew);
   }
 
-  const hidden = Math.max(0, items.length - shown);
+  let hidden = Math.max(0, items.length - shown);
+  // Never slice through a task's work: its canonical result belongs to the
+  // whole request, including earlier executions and review notes.
+  const firstRequest = items[hidden]?.userTurnId;
+  if (firstRequest) {
+    const start = items.findIndex((item) => item.userTurnId === firstRequest);
+    if (start >= 0) hidden = start;
+  }
   const visible = useMemo(() => (hidden > 0 ? items.slice(hidden) : items), [items, hidden]);
 
   const active = runState !== undefined && isActiveRunState(runState);
-  // toNodes ran on EVERY render (any store change re-renders the app shell);
-  // memoized it only re-derives when the transcript actually changed.
-  const nodes = useMemo(() => toNodes(visible, active), [visible, active]);
+  const nodes = useMemo(
+    () => toNodes(visible, tasks ?? {}, active, items),
+    [visible, tasks, active, items],
+  );
 
   // Depends on the render input (nodes, not items): regrouping can change
   // layout without an item append — e.g. the live segment condensing when
@@ -186,19 +203,32 @@ export function Transcript({
             : "";
       if (text?.toLowerCase().includes(q)) out.push(it.id);
     }
+    for (const task of Object.values(tasks ?? {})) {
+      const answer = task.answer;
+      if (answer?.text.toLowerCase().includes(q) && !out.includes(answer.messageId)) {
+        out.push(answer.messageId);
+      }
+    }
     return out;
-  }, [items, findQuery]);
+  }, [items, tasks, findQuery]);
 
   // Reveal an item wherever it is: raise the render window until it is
   // mounted, then scroll its wrapper into view. Shared by find-jumps and the
   // PendingBar's "Show in transcript" (which used to silently no-op whenever
   // the approval had scrolled out of the window).
   const revealItem = (id: string) => {
-    const itemIdx = items.findIndex((i) => i.id === id);
+    const requestId = Object.values(tasks ?? {}).find(
+      (task) => task.answer?.messageId === id,
+    )?.requestId;
+    const itemIdx = items.findIndex(
+      (item) => item.id === id || (requestId && item.userTurnId === requestId),
+    );
+    setRevealedId(id);
     if (itemIdx >= 0 && itemIdx < hidden) {
       setShown(items.length - itemIdx + 20);
     }
     pinned.current = false;
+    setAtBottom(false);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const el = ref.current?.querySelector(`[data-tid="${CSS.escape(id)}"]`);
@@ -217,6 +247,19 @@ export function Transcript({
     window.addEventListener("orchestrator:reveal", onReveal);
     return () => window.removeEventListener("orchestrator:reveal", onReveal);
   }, []);
+
+  useEffect(() => {
+    if (jump?.sessionId !== sessionId) return;
+    const item = items.find(
+      (entry) => entry.sourceEntryId === jump.entryId || entry.id === jump.entryId,
+    );
+    const answer = Object.values(tasks ?? {}).find(
+      (task) => task.answer?.messageId === jump.entryId,
+    )?.answer;
+    if (!item && !answer) return; // Replay may still be in flight.
+    revealRef.current(item?.id ?? answer!.messageId);
+    useStore.getState().setTranscriptJump(undefined);
+  }, [jump, items, tasks, sessionId]);
 
   const jumpTo = (matchIdx: number) => {
     const id = findMatches[matchIdx];
@@ -307,15 +350,19 @@ export function Transcript({
                   }
                 />
               </div>
-            ) : n.kind === "draft" ? (
-              <div key={n.item.id} className="titem" data-tid={n.item.id}>
-                <DraftRow item={n.item} projectPath={projectPath} />
+            ) : n.kind === "result" ? (
+              <div key={n.task.answer!.id} className="titem" data-tid={n.task.answer!.messageId}>
+                <PublishedResult
+                  task={n.task}
+                  files={n.files}
+                  sessionId={sessionId}
+                  projectPath={projectPath}
+                />
               </div>
-            ) : n.kind === "files" ? (
-              // Groups get data-tid wrappers too so the scroll anchor can
-              // latch onto them; keys are stable across window slides.
-              <div key={n.key} className="titem" data-tid={n.key}>
-                <FilesRow files={n.files} projectPath={projectPath} />
+            ) : n.kind === "status" ? (
+              <div key={`status-${n.task.requestId}`} className="turn-done" role="status">
+                <span>{taskStatus(n.task)}</span>
+                {n.task.reviewDetail && <span className="hint">{n.task.reviewDetail}</span>}
               </div>
             ) : (
               <div key={n.key} className="titem" data-tid={n.key}>
@@ -325,6 +372,7 @@ export function Transcript({
                   live={n.live}
                   durationMs={n.durationMs}
                   projectPath={projectPath}
+                  revealedId={revealedId}
                 />
               </div>
             ),
@@ -350,33 +398,26 @@ export function Transcript({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Turn condensing
-//
-// While a turn is running, NOTHING condenses: the work streams as an open
-// timeline — thinking, tool calls, subagents — so the user can watch where
-// the agent is heading and steer or stop it. Advisor notes and anything
-// pending stay outside the timeline, always visible.
-//
-// Only when the turn is completely finished (a turn-end marker arrives, a new
-// user message starts the next turn, or the session is at rest) does the work
-// collapse into one Codex-style "Worked for …" line, followed by the final
-// answer and the files it edited.
-// ---------------------------------------------------------------------------
+// Task snapshots alone authorize publication. Run-end markers, user steers,
+// report length, and advisor placement never select or promote an answer.
 
 type EditedFile = { path: string; additions: number; deletions: number; created?: boolean };
 
 type RenderNode =
   | { kind: "plain"; item: TranscriptItem }
-  | { kind: "draft"; item: TranscriptItem }
   | { kind: "work"; key: string; items: TranscriptItem[]; live: boolean; durationMs?: number }
-  | { kind: "files"; key: string; files: EditedFile[] };
+  | { kind: "result"; task: TaskSnapshot; files: EditedFile[] }
+  | { kind: "status"; task: TaskSnapshot };
 
-/** Items that must never disappear into a collapsed work group. */
-function alwaysVisible(i: TranscriptItem): boolean {
-  if (i.kind === "user" || i.kind === "system" || i.kind === "turn-end") return true;
-  if ((i.kind === "approval" || i.kind === "interaction") && i.state === "pending") return true;
-  return false;
+function taskStatus(task: TaskSnapshot): string {
+  switch (task.phase) {
+    case "complete":
+      return task.answer ? "Answer published" : "Complete · no published answer";
+    case "blocked":
+      return "Blocked · no published answer";
+    default:
+      return taskPhaseLabel(task.phase);
+  }
 }
 
 /** Files the segment's successful edit/write tool calls touched, deduped. */
@@ -398,140 +439,83 @@ function editedFiles(items: TranscriptItem[]): EditedFile[] {
   return [...map.values()];
 }
 
-/**
- * Segments are delimited by user messages and turn-end markers. An open
- * (still-running) segment renders as live groups with everything visible;
- * a finished one condenses everything but its final answer into a single
- * "Worked for …" line, with an edited-files row after the answer.
- */
-function toNodes(items: TranscriptItem[], sessionActive: boolean): RenderNode[] {
+function toNodes(
+  items: TranscriptItem[],
+  tasks: Record<string, TaskSnapshot>,
+  sessionActive: boolean,
+  allItems: TranscriptItem[],
+): RenderNode[] {
   const nodes: RenderNode[] = [];
-  let seg: TranscriptItem[] = [];
-
-  const flushSegment = (closed: boolean, durationMs?: number) => {
-    if (!seg.length) return;
-    const segment = seg;
-    seg = [];
-
-    // Group keys must be stable while the render window slides: keying on
-    // bucket[0].id remounted the group on every window shift, snapping open
-    // cards shut mid-run. The worker's turnId plus the bucket's ordinal
-    // within its turn is stable regardless of where the window starts.
-    const segTurn = segment.find((it) => it.turnId)?.turnId;
-    let bucketOrdinal = 0;
-    const bucketKey = (first: TranscriptItem): string =>
-      segTurn ? `wg-${segTurn}-${bucketOrdinal++}` : `wg-${first.id}`;
-
-    if (!closed) {
-      // Still running: advisor notes and alwaysVisible items stay plain; all
-      // work gathers into live groups that render expanded.
-      const bucket: TranscriptItem[] = [];
-      const flushBucket = () => {
-        if (!bucket.length) return;
-        nodes.push({ kind: "work", key: bucketKey(bucket[0]), items: [...bucket], live: true });
-        bucket.length = 0;
-      };
-      for (const it of segment) {
-        // System notices ride inside the live timeline (it's expanded, so
-        // they're visible) rather than splitting it into several pulsing
-        // groups; the closed pass pulls them back out as plain lines.
-        if ((alwaysVisible(it) && it.kind !== "system") || it.kind === "advisor") {
-          flushBucket();
-          nodes.push({ kind: "plain", item: it });
-        } else {
-          bucket.push(it);
-        }
-      }
-      flushBucket();
-      return;
-    }
-
-    // Finished: answers stay out; everything else — thinking, tools,
-    // subagents, settled approvals, advisor notes, intermediate narration —
-    // folds into "Worked" lines. An advisor-driven turn produces SEVERAL real
-    // answers separated by review notes, so every substantive report stays
-    // reachable — folding all but the literal last message buried a 20-minute
-    // report under the "Worked" line while a trailing bookkeeping remark
-    // became "the" answer. One-line narration ("Now the db layer:") condenses.
-    //
-    // But "reachable" ≠ "expanded": the system prompt requires the post-review
-    // answer to be complete and standalone, so a report that an advisor
-    // reviewed (an advisor note follows it, and a later report replaced it)
-    // is a superseded draft. Rendering it in full stacks two near-identical
-    // mega-answers; it collapses to a one-line row instead.
-    const isReport = (it: TranscriptItem): boolean =>
-      it.kind === "assistant" && (it.text.trim().length >= 400 || /\n\s*\n/.test(it.text.trim()));
-    let lastAnswer = -1;
-    for (let i = segment.length - 1; i >= 0; i--) {
-      const it = segment[i];
-      if (it.kind === "assistant" && it.text) {
-        lastAnswer = i;
-        break;
-      }
-    }
-    let lastReport = -1;
-    for (let i = segment.length - 1; i >= 0; i--) {
-      if (isReport(segment[i])) {
-        lastReport = i;
-        break;
-      }
-    }
-    const lastAdvisor = segment.reduce((a, it, i) => (it.kind === "advisor" ? i : a), -1);
-    const isSupersededDraft = (i: number): boolean =>
-      i !== lastAnswer && i < lastReport && i < lastAdvisor && isReport(segment[i]);
-    const files = editedFiles(segment);
-    let filesEmitted = false;
-    const bucket: TranscriptItem[] = [];
-    let firstBucket = true;
-    const flushBucket = () => {
-      if (!bucket.length) return;
-      nodes.push({
-        kind: "work",
-        key: bucketKey(bucket[0]),
-        items: [...bucket],
-        live: false,
-        // The turn's wall time labels the main work line; splinter buckets
-        // (split off by system lines) fall back to their summed durations.
-        durationMs: firstBucket ? durationMs : undefined,
-      });
-      firstBucket = false;
-      bucket.length = 0;
-    };
-    segment.forEach((it, i) => {
-      if (i === lastAnswer || isReport(it) || alwaysVisible(it)) {
-        flushBucket();
-        nodes.push(
-          isSupersededDraft(i) ? { kind: "draft", item: it } : { kind: "plain", item: it },
-        );
-        if (i === lastAnswer && files.length) {
-          nodes.push({ kind: "files", key: `files-${it.id}`, files });
-          filesEmitted = true;
-        }
-        return;
-      }
-      bucket.push(it);
-    });
-    flushBucket();
-    // A segment with edits but no answer (interrupted turn) still lists them.
-    if (files.length && !filesEmitted) {
-      nodes.push({ kind: "files", key: `files-${segment[0].id}`, files });
+  const lastItem = new Map<string, number>();
+  const taskItems = new Map<string, TranscriptItem[]>();
+  const answerRequests = new Map<string, string>();
+  for (const task of Object.values(tasks)) {
+    if (task.answer) answerRequests.set(task.answer.messageId, task.requestId);
+  }
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
+    const requestId = item.userTurnId ?? answerRequests.get(item.id);
+    if (!requestId) continue;
+    lastItem.set(requestId, index);
+    const entries = taskItems.get(requestId) ?? [];
+    entries.push(item);
+    taskItems.set(requestId, entries);
+  }
+  let bucket: TranscriptItem[] = [];
+  let bucketRequest: string | undefined;
+  const flush = () => {
+    if (!bucket.length) return;
+    const task = bucketRequest ? tasks[bucketRequest] : undefined;
+    const live = task
+      ? !task.answer && ["working", "reviewing", "revising", "finalizing"].includes(task.phase)
+      : sessionActive;
+    nodes.push({ kind: "work", key: `wg-${bucket[0].id}`, items: bucket, live });
+    bucket = [];
+  };
+  const emitTask = (task: TaskSnapshot) => {
+    if (task.answer) {
+      nodes.push({ kind: "result", task, files: editedFiles(taskItems.get(task.requestId) ?? []) });
+    } else {
+      nodes.push({ kind: "status", task });
     }
   };
-
-  for (const item of items) {
-    if (item.kind === "user") {
-      flushSegment(true);
-      nodes.push({ kind: "plain", item });
-    } else if (item.kind === "turn-end") {
-      flushSegment(true, item.durationMs);
+  items.forEach((item, index) => {
+    const requestId = item.userTurnId ?? answerRequests.get(item.id);
+    const task = requestId ? tasks[requestId] : undefined;
+    if (requestId !== bucketRequest) {
+      flush();
+      bucketRequest = requestId;
+    }
+    // The canonical message is rendered exactly once from the snapshot.
+    const canonical = task?.answer?.messageId === item.id;
+    const pending =
+      (item.kind === "approval" || item.kind === "interaction") && item.state === "pending";
+    if (item.kind === "turn-end") {
+      // Legacy transport markers remain in state, not in answer presentation.
+    } else if (canonical) {
+      // Keep private reasoning reachable without duplicating the answer text.
+      if (item.kind === "assistant" && item.thinking)
+        bucket.push({ ...item, id: `${item.id}:thinking`, text: "" });
+    } else if (item.kind === "user" || pending || (!item.userTurnId && item.kind === "assistant")) {
+      flush();
       nodes.push({ kind: "plain", item });
     } else {
-      seg.push(item);
+      bucket.push(item);
     }
+    if (task && lastItem.get(task.requestId) === index) {
+      flush();
+      emitTask(task);
+    }
+  });
+  flush();
+  // A persisted task can precede its first message or have no model output.
+  // Do not reintroduce tasks whose messages are outside the render window.
+  const represented = new Set(
+    allItems.map((item) => item.userTurnId ?? answerRequests.get(item.id)),
+  );
+  for (const task of Object.values(tasks)) {
+    if (!represented.has(task.requestId)) emitTask(task);
   }
-  // The trailing segment is live only while the session is actually running;
-  // at rest (including hydrated sessions with no markers) it condenses.
-  flushSegment(!sessionActive);
   return nodes;
 }
 
@@ -645,26 +629,35 @@ function ToolRunRow({
   tools,
   sessionId,
   projectPath,
+  revealedId,
 }: {
   tools: ToolItem[];
   sessionId: string;
   projectPath?: string;
+  revealedId?: string;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const revealing = tools.some((tool) => tool.id === revealedId);
+  useEffect(() => {
+    if (revealing) setOpen(true);
+  }, [revealedId, revealing]);
+  const expanded = open;
   const running = tools.some((t) => t.state === "running");
   const failed = tools.filter((t) => t.state === "error").length;
   return (
-    <div className={`tool-run${open ? " open" : ""}`}>
-      <button className="tool-run-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className="tool-chevron">{open ? "▾" : "▸"}</span>
+    <div className={`tool-run${expanded ? " open" : ""}`}>
+      <button className="tool-run-head" onClick={() => setOpen((v) => !v)} aria-expanded={expanded}>
+        <span className="tool-chevron">{expanded ? "▾" : "▸"}</span>
         <span className="tool-run-summary">{toolRunSummary(tools)}</span>
         {running && <span className="hint">running…</span>}
         {failed > 0 && <span className="chip warn-chip">{failed} failed</span>}
       </button>
-      {open && (
+      {expanded && (
         <div className="tool-run-body">
           {tools.map((t) => (
-            <Item key={t.id} item={t} sessionId={sessionId} projectPath={projectPath} />
+            <div key={t.id} className="titem" data-tid={t.id}>
+              <Item item={t} sessionId={sessionId} projectPath={projectPath} />
+            </div>
           ))}
         </div>
       )}
@@ -694,6 +687,7 @@ function WorkGroup({
   live,
   durationMs,
   projectPath,
+  revealedId,
 }: {
   items: TranscriptItem[];
   sessionId: string;
@@ -701,6 +695,7 @@ function WorkGroup({
   /** Wall time of the finished turn, from its turn-end marker. */
   durationMs?: number;
   projectPath?: string;
+  revealedId?: string;
 }): JSX.Element {
   // Live groups stream expanded so the user can watch the agent work; the
   // moment the turn finishes they condense to one line. A manual toggle wins
@@ -709,6 +704,10 @@ function WorkGroup({
   useEffect(() => {
     if (!live) setToggled(null);
   }, [live]);
+  const revealing = items.some((item) => item.id === revealedId);
+  useEffect(() => {
+    if (revealing) setToggled(true);
+  }, [revealedId, revealing]);
   const open = toggled ?? live;
   const summed = items.reduce(
     (n, i) => n + ((i.kind === "tool" || i.kind === "subagent") && i.durationMs ? i.durationMs : 0),
@@ -753,13 +752,16 @@ function WorkGroup({
         <div className="work-body">
           {toBodyNodes(items).map((n) =>
             n.kind === "item" ? (
-              <Item key={n.item.id} item={n.item} sessionId={sessionId} projectPath={projectPath} />
+              <div key={n.item.id} className="titem" data-tid={n.item.id}>
+                <Item item={n.item} sessionId={sessionId} projectPath={projectPath} />
+              </div>
             ) : (
               <ToolRunRow
                 key={n.key}
                 tools={n.tools}
                 sessionId={sessionId}
                 projectPath={projectPath}
+                revealedId={revealedId}
               />
             ),
           )}
@@ -809,31 +811,57 @@ function StreamingMarkdown({
   );
 }
 
-/**
- * A pre-review answer that an advisor reviewed and a later report replaced.
- * The revision is standalone by contract, so the draft collapses to one line
- * — expandable for comparing what the review changed.
- */
-function DraftRow({
-  item,
+function PublishedResult({
+  task,
+  files,
+  sessionId,
   projectPath,
 }: {
-  item: TranscriptItem;
+  task: TaskSnapshot;
+  files: EditedFile[];
+  sessionId: string;
   projectPath?: string;
-}): JSX.Element {
-  const text = item.kind === "assistant" ? item.text : "";
-  const firstLine = text.trim().split("\n", 1)[0] ?? "";
+}): JSX.Element | null {
+  const [copyError, setCopyError] = useState(false);
+  const answer = task.answer;
+  if (!answer) return null;
   return (
-    <details className="draft-superseded">
-      <summary title="An advisor reviewed this draft; the answer below replaces it.">
-        <span className="draft-label">Draft</span>
-        <span className="hint">superseded after advisor review</span>
-        <span className="draft-preview hint">{firstLine}</span>
-      </summary>
-      <div className="draft-body">
-        <Markdown text={text} projectPath={projectPath} />
+    <div className="msg-assistant" data-answer-id={answer.id}>
+      <Markdown text={answer.text} projectPath={projectPath} />
+      <button
+        className="btn btn-ghost copy-answer"
+        title="Copy the published answer as markdown"
+        onClick={async () => {
+          setCopyError(false);
+          try {
+            await navigator.clipboard.writeText(answer.text);
+          } catch {
+            setCopyError(true);
+          }
+        }}
+      >
+        Copy answer
+      </button>
+      {copyError && (
+        <span className="hint" role="alert">
+          Could not copy. Select the answer text to copy it.
+        </span>
+      )}
+      <div className="turn-done">
+        <span>
+          {answer.reviewStatus === "passed"
+            ? "Reviewed"
+            : answer.reviewStatus === "not-required"
+              ? "Review not required"
+              : answer.reviewStatus === "pending"
+                ? "Review pending"
+                : "Review incomplete"}
+        </span>
+        <TimeAgo iso={answer.at} />
       </div>
-    </details>
+      {files.length > 0 && <FilesRow files={files} projectPath={projectPath} />}
+      <EvidenceList sessionId={sessionId} requestId={task.requestId} evidence={task.evidence} />
+    </div>
   );
 }
 
@@ -966,16 +994,7 @@ const Item = memo(function Item({
               // part of every turn, and no full-height snap at the end.
               <StreamingMarkdown text={item.text} projectPath={projectPath} />
             ) : (
-              <>
-                <Markdown text={item.text} projectPath={projectPath} />
-                <button
-                  className="btn btn-ghost copy-answer"
-                  title="Copy the answer as markdown"
-                  onClick={() => void navigator.clipboard.writeText(item.text)}
-                >
-                  Copy answer
-                </button>
-              </>
+              <Markdown text={item.text} projectPath={projectPath} />
             ))}
         </div>
       );
@@ -997,20 +1016,7 @@ const Item = memo(function Item({
         <div className={`banner${item.tone === "warn" ? " warn" : ""}`}>{item.text}</div>
       );
     case "turn-end":
-      // The turn is only announced as finished once advisors are done —
-      // "finished" with a reviewer still reading would be a contradiction.
-      return item.pending ? (
-        <div className="turn-done pending">
-          <span className="work-live-dot" aria-hidden />
-          Advisors reviewing…
-        </div>
-      ) : (
-        <div className="turn-done">
-          ✓ Turn finished
-          {item.durationMs && item.durationMs >= 1000 ? ` in ${fmtDuration(item.durationMs)}` : ""}
-          {item.at && <TimeAgo iso={item.at} />}
-        </div>
-      );
+      return null;
     default:
       return null;
   }

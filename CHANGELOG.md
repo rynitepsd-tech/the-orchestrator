@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.0
+
+- **Final answers are explicit, durable publications.** The primary submits a complete
+  user-facing answer; the harness waits for request-owned finite work and candidate-specific
+  advisor review before publishing it. Queued prompts have distinct durable request identities,
+  and reviewer revisions remain anchored to the original request. Missing submissions,
+  unsuccessful catchup, unavailable reviewers, and exhausted revision limits remain visibly
+  unfinished. Stop fences late callbacks. Published answers survive replay unchanged and cannot
+  be replaced by later progress or a reply addressed to a reviewer.
+- **New Git sessions default to isolated worktrees.** Each starts from committed `HEAD` on a
+  unique branch, while the sidebar keeps the logical project grouping. Shared-folder mode is
+  explicit. Uncommitted files, dependencies, and secrets are not copied; retained checkouts
+  survive session closure. Resuming and forking preserve the actual checkout, and forks
+  deliberately share files rather than claiming new isolation.
+- **Shipping is file-scoped and integration is guarded.** Only selected files enter a commit;
+  unrelated staged changes remain staged. Active and queued work block checkout mutations.
+  Isolated changes can be integrated into a clean logical project after conflict preflight.
+  Repositories with active commit hooks or required commit signing must commit in a terminal:
+  the app refuses to bypass those policies. File selection does not isolate same-file hunks.
+- **Results retain verification evidence.** Command/browser observations include output,
+  artifacts, observed outcomes, and bounded revision coverage. Missing exit codes remain unknown,
+  and overlapping capture or later edits mark evidence stale. Refresh checks coverage without
+  rerunning checks; absent browser evidence never implies a verified browser result.
+- **The inbox distinguishes attention, work, and published results.** Review retry is explicit,
+  failures stay actionable, and remembered/interrupted sessions can be restored without
+  automatically resending prompts.
+- **Saved conversations are searchable by content.** The History inspector and command palette
+  can search this project or all projects and open exact read-only source messages, including
+  history outside the live render window. Project decisions can be explicitly saved with a
+  source, edited, or deleted; they are never silently injected into model context. macOS path
+  aliases resolve to the same project identity.
+- **Reviewer usage retains configured identities across review rounds.** Internal round names
+  do not leak into advisor usage rows, and separate cumulative streams preserve round costs.
+- **The engine protocol is now version 2.** Older clients are rejected rather than silently
+  accepting incompatible publication or unscoped shipping requests.
+
 ## 0.6.11
 
 - **Reviewer notes left after a turn are now acted on immediately.** OMP

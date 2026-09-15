@@ -3,6 +3,8 @@ export * from "./event-mapper";
 export * from "./fork";
 export * from "./paths";
 export * from "./replay";
+export { readSessionSource, resolveSessionSource, searchSessions } from "./session-search";
 export * from "./session-usage-reader";
 export * from "./ship";
 export * from "./usage-extract";
+export * from "./workspace";

@@ -28,15 +28,17 @@ disposes anything: session lifetime is tied to a worker process, not to what Rea
 
 - One worker process per top-level session, so a fatal error in one session contains to that
   session instead of the app.
-- Background sessions keep streaming while you look at another one; a native notification fires
-  when a background session finishes or an advisor raises a blocker.
+- Background sessions keep streaming while you look at another one. Completion notifications
+  follow a newly published answer, not a model stopping or a review window merely closing.
 
 **Navigation**
 
 - Project/session sidebar, grouped by project, with git branch, live run state (thinking,
-  responding, running tool, waiting, interrupted, error), unread markers, and session search.
-- Command palette (`⌘K` or `⌘⇧P`) covering new session, abort, compact, restart engine, panel
-  toggles, and jump-to-session.
+  responding, running tool, waiting, interrupted, error), unread markers, and title search.
+- Command palette (`⌘K` or `⌘⇧P`) covers session actions and saved conversation content search.
+  The History inspector searches this project or all projects and opens exact, read-only sources.
+- Explicit project decisions can be saved from a source message, edited, or deleted. They are
+  local notes with provenance, never automatically injected into model context.
 - Native macOS menus and keyboard shortcuts; notifications through the system notification centre.
 - Session presets, model favourites and recents, pinned projects, and local session archiving —
   all Orchestrator-local preferences; OMP's own config is never written by this app.
@@ -59,15 +61,29 @@ disposes anything: session lifetime is tied to a worker process, not to what Rea
 - Advisor cards rendered inline with upstream's own severity levels: `nit`, `concern`, `blocker`.
 - Slash-command completion in the composer, sourced from OMP's own command registry (builtins,
   skills, extensions, MCP prompts, file commands).
+- The primary explicitly submits a standalone answer. The harness publishes it only after
+  required finite work and candidate-specific advisor review settle; drafts remain in work history.
+  Missing submissions, failed review, and timeouts are visible unfinished states, not guessed finals.
+- Command/browser evidence includes observed output, artifacts, revision coverage, and stale status.
+  Unknown exit codes stay unknown; a successful tool invocation is not proof that assertions ran.
+  Refresh checks workspace coverage without rerunning commands or browser checks.
 
 **Sessions**
 
 - **Fork** — branch an existing session (live or discovered) into a new one with its history
   copied and lineage recorded, using upstream's own `forkFrom`.
 - **Resume** — the sidebar lists previously persisted sessions; resuming replays their transcript
-  into a fresh worker.
-- **Changes** and **Files** panels — working-tree git status and diff, and a file browser scoped to
-  the project, both read live through the engine.
+  into a fresh worker without resending the previous prompt.
+- New Git sessions default to a managed isolated worktree from committed `HEAD`. Shared-folder
+  mode is explicit; dependencies, secrets, and uncommitted files are not copied. Forks deliberately
+  share the retained checkout, so start another isolated session for independent code changes.
+- **Changes** and **Files** inspect the actual checkout. Shipping commits only selected files and
+  preserves unrelated staged files; selection is file-level, not hunk-level. Active commit hooks
+  or required signing cause an explicit refusal rather than silently bypassing repository policy.
+- Isolated work can be integrated into a clean logical project with conflict preflight. Worktrees
+  are retained on close; they are not automatically deleted.
+- The inbox separates attention, work, and published results, with explicit review retry and
+  restoration of remembered sessions. Restoration does not automatically restart work.
 - **MCP** status per session (server name, connection state, tool count) with reconnect, and an
   **engine diagnostics** view (per-worker PID and memory) under Settings.
 

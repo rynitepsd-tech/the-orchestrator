@@ -13,7 +13,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { projectIdFor } from "@orchestrator/omp-adapter";
+import { createWorkspace, projectIdFor, workspaceForSession } from "@orchestrator/omp-adapter";
+import type { TaskPhase } from "@orchestrator/protocol";
 import {
   encodeFrame,
   FrameDecoder,
@@ -23,7 +24,7 @@ import {
   type SessionLaunchConfig,
   type SessionSummary,
 } from "@orchestrator/protocol";
-import { logger } from "../logging";
+import { appSupportDir, logger } from "../logging";
 
 /** A provider registration injected into each worker by tests (mock provider). */
 export interface TestProvider {
@@ -48,6 +49,8 @@ const STDERR_RING_SIZE = 40;
 class Worker {
   readonly sessionId: string;
   readonly summary: SessionSummary;
+  /** Per-request ownership includes queued tasks, not just the latest event. */
+  readonly unfinishedTasks = new Map<string, TaskPhase>();
   readonly startedAtMs = Date.now();
   readonly #proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
   readonly #decoder = new FrameDecoder();
@@ -255,6 +258,8 @@ export class WorkerSupervisor {
   readonly #agentDir: string;
   readonly #env: WorkerSpawnEnv;
   readonly #testMode: boolean;
+  readonly #workspaceLocks = new Set<string>();
+  readonly #workspaceRequests = new Map<string, number>();
 
   constructor(opts: {
     agentDir: string;
@@ -269,7 +274,8 @@ export class WorkerSupervisor {
   }
 
   async create(config: SessionLaunchConfig): Promise<SessionSummary> {
-    const projectPath = config.projectPath;
+    let projectPath = config.projectPath;
+    this.#assertUnlocked(projectPath);
     if (!existsSync(projectPath) || !statSync(projectPath).isDirectory()) {
       throw Object.assign(new Error(`Project folder not found: ${projectPath}`), {
         kind: "filesystem-permission",
@@ -280,28 +286,37 @@ export class WorkerSupervisor {
     // two writers silently lose data. Refuse to open one twice — including
     // while a just-closed worker is still draining (it holds the file until
     // its process actually exits).
-    if (config.resumeSessionPath) {
-      const wanted = canonicalSessionPath(config.resumeSessionPath);
-      for (const w of [...this.#workers.values(), ...this.#closing.values()]) {
-        const held = w.summary.ompSessionPath;
-        if (held && canonicalSessionPath(held) === wanted) {
-          throw Object.assign(
-            new Error(
-              this.#closing.has(w.sessionId)
-                ? "That session is still closing — try again in a moment."
-                : "That session is already open in The Orchestrator.",
-            ),
-            { kind: "session-corruption" },
-          );
-        }
-      }
-    }
+    if (config.resumeSessionPath) this.#assertSessionAvailable(config.resumeSessionPath);
 
     const sessionId = randomUUID();
+    const workspace = config.resumeSessionPath
+      ? await workspaceForSession(
+          config.resumeSessionPath,
+          projectPath,
+          join(appSupportDir(), "worktrees"),
+        )
+      : await createWorkspace(
+          projectPath,
+          config.workspaceMode ?? "shared",
+          join(appSupportDir(), "worktrees"),
+        );
+    projectPath = workspace.projectPath;
+    this.#assertUnlocked(workspace.workspacePath);
+    if (!existsSync(workspace.workspacePath)) {
+      throw new Error(
+        `The retained workspace is missing: ${workspace.workspacePath}. Restore it before resuming; no replacement checkout was created.`,
+      );
+    }
+    // Workspace resolution yielded: recheck before registering the new writer.
+    if (config.resumeSessionPath) this.#assertSessionAvailable(config.resumeSessionPath);
     const summary: SessionSummary = {
       sessionId,
       projectId: projectIdFor(projectPath),
       projectPath,
+      workspacePath: workspace.workspacePath,
+      workspaceMode: workspace.workspaceMode,
+      workspaceBranch: workspace.workspaceBranch,
+      ompSessionPath: config.resumeSessionPath,
       title: config.title?.trim() || "New session",
       runState: "starting",
       model: config.model,
@@ -314,7 +329,7 @@ export class WorkerSupervisor {
     const boot = {
       sessionId,
       projectId: summary.projectId,
-      projectPath,
+      projectPath: workspace.workspacePath,
       agentDir: this.#agentDir,
       title: summary.title,
       // Only a launch config that actually carried a title counts as
@@ -345,7 +360,7 @@ export class WorkerSupervisor {
       stderr: "pipe",
       // Anchor the worker in the project: any OMP fallback to process.cwd()
       // then lands inside the project instead of "/" (Finder-launched apps).
-      cwd: projectPath,
+      cwd: workspace.workspacePath,
       env: {
         ...process.env,
         ORCHESTRATOR_WORKER_BOOT: JSON.stringify(boot),
@@ -369,6 +384,18 @@ export class WorkerSupervisor {
         // extensions) must reach the summary too, or sessions.list would
         // keep resurrecting the stale launch title.
         if (e.type === "session.title") summary.title = e.title;
+        if (e.type === "task.updated") {
+          if (["working", "reviewing", "revising", "finalizing"].includes(e.task.phase)) {
+            worker.unfinishedTasks.set(e.task.requestId, e.task.phase);
+          } else {
+            worker.unfinishedTasks.delete(e.task.requestId);
+          }
+          // A's terminal snapshot must not mark the session idle while queued B
+          // already owns work. Transport run completion never clears this map.
+          const pending = worker.unfinishedTasks.entries().next().value;
+          summary.taskPhase = pending?.[1] ?? e.task.phase;
+          summary.taskRequestId = pending?.[0] ?? e.task.requestId;
+        }
         // Track the session's real model (boot announcement for resumed
         // sessions, upstream fallbacks, explicit switches) — the engine's
         // provider auth gate reads it at prompt time.
@@ -550,9 +577,78 @@ export class WorkerSupervisor {
     return [...this.#workers.values()].filter((w) => isActiveRunState(w.summary.runState)).length;
   }
 
+  #assertSessionAvailable(path: string): void {
+    const wanted = canonicalSessionPath(path);
+    for (const worker of [...this.#workers.values(), ...this.#closing.values()]) {
+      const held = worker.summary.ompSessionPath;
+      if (held && canonicalSessionPath(held) === wanted) {
+        throw Object.assign(
+          new Error(
+            this.#closing.has(worker.sessionId)
+              ? "That session is still closing — try again in a moment."
+              : "That session is already open in The Orchestrator.",
+          ),
+          { kind: "session-corruption" },
+        );
+      }
+    }
+  }
+
   /** Route a session-scoped request to its worker. */
   async route<T = unknown>(sessionId: string, type: string, payload: unknown): Promise<T> {
-    return this.get(sessionId).request<T>(type, payload);
+    const worker = this.get(sessionId);
+    if (
+      ["worker.ping", "usage.session", "session.evidence.refresh", "session.abort"].includes(type)
+    ) {
+      return worker.request<T>(type, payload);
+    }
+    const key = canonicalSessionPath(worker.summary.workspacePath ?? worker.summary.projectPath);
+    this.#assertUnlocked(key);
+    this.#workspaceRequests.set(key, (this.#workspaceRequests.get(key) ?? 0) + 1);
+    try {
+      return await worker.request<T>(type, payload);
+    } finally {
+      const remaining = (this.#workspaceRequests.get(key) ?? 1) - 1;
+      if (remaining) this.#workspaceRequests.set(key, remaining);
+      else this.#workspaceRequests.delete(key);
+    }
+  }
+
+  #assertUnlocked(path: string): void {
+    if (this.#workspaceLocks.has(canonicalSessionPath(path))) {
+      throw new Error(
+        "This workspace is being shipped or integrated. Wait for that operation to finish.",
+      );
+    }
+  }
+
+  async withWorkspaceStopped<T>(paths: string[], operation: () => Promise<T>): Promise<T> {
+    const keys = [...new Set(paths.map(canonicalSessionPath))];
+    for (const key of keys) {
+      this.#assertUnlocked(key);
+      if (this.#workspaceRequests.has(key))
+        throw new Error("Wait for outstanding workspace requests before shipping or integrating.");
+    }
+    for (const worker of [...this.#workers.values(), ...this.#closing.values()]) {
+      const summary = worker.summary;
+      if (!keys.includes(canonicalSessionPath(summary.workspacePath ?? summary.projectPath)))
+        continue;
+      if (
+        this.#closing.has(worker.sessionId) ||
+        isActiveRunState(summary.runState) ||
+        worker.unfinishedTasks.size > 0
+      ) {
+        throw new Error(
+          "Stop all work and wait for review/finalization in this workspace before shipping or integrating.",
+        );
+      }
+    }
+    for (const key of keys) this.#workspaceLocks.add(key);
+    try {
+      return await operation();
+    } finally {
+      for (const key of keys) this.#workspaceLocks.delete(key);
+    }
   }
 
   /**

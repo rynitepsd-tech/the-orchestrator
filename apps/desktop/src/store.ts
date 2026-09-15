@@ -23,8 +23,11 @@ import type {
   ProjectInfo,
   ProviderInfo,
   ProviderQuota,
+  PublishedAnswer,
   RunState,
   SessionSummary,
+  TaskPhase,
+  TaskSnapshot,
   TodoTaskItem,
   ToolDetail,
   UsageBreakdown,
@@ -39,12 +42,12 @@ import { loadPrefs, type Prefs, type SessionPreset, savePrefs } from "./lib/pref
 // ---------------------------------------------------------------------------
 
 export type TranscriptItem = TranscriptItemBase & {
-  /**
-   * Stable turn identity stamped by the worker (see protocol EventBase).
-   * The transcript keys its work groups by this, so a group's identity no
-   * longer shifts when the render window slides. Absent on old replays.
-   */
+  /** Execution-run identity; not a user-request or publication boundary. */
   turnId?: string;
+  /** Durable task identity across review and revision runs. */
+  userTurnId?: string;
+  /** Exact persisted OMP message entry, for sourced history navigation. */
+  sourceEntryId?: string;
 };
 
 type TranscriptItemBase =
@@ -123,11 +126,7 @@ type TranscriptItemBase =
     }
   | { kind: "system"; id: string; text: string; tone: "info" | "warn" | "error" }
   | {
-      /**
-       * End-of-turn marker. `pending` while advisors are still reviewing —
-       * the turn is only announced as finished once they're done. Also the
-       * boundary the transcript condenses work groups at.
-       */
+      /** Legacy run-fate marker. Never authorizes answer publication. */
       kind: "turn-end";
       id: string;
       durationMs?: number;
@@ -143,6 +142,8 @@ type TranscriptItemBase =
 export interface SessionView {
   summary: SessionSummary;
   transcript: TranscriptItem[];
+  tasks: Record<string, TaskSnapshot>;
+  latestTaskId?: string;
   usage?: UsageBreakdown;
   context?: ContextUsage;
   advisors: AdvisorConfig[];
@@ -181,7 +182,7 @@ export interface ComposerDraft {
   attachments: Array<{ kind: "image" | "file"; name: string; path: string }>;
 }
 
-export type InspectorTab = "changes" | "files" | "usage" | "preview";
+export type InspectorTab = "changes" | "files" | "usage" | "preview" | "history";
 
 /** A file opened for preview in the inspector, from a clicked file link. */
 export interface FilePreview {
@@ -267,6 +268,7 @@ interface AppState {
   renameProjectTarget?: string;
   /** Text handed to the composer (e.g. a rewound message returned for editing). */
   composerPrefill?: { sessionId: string; text: string };
+  transcriptJump?: { sessionId: string; entryId: string };
 
   // updater
   updateAvailable?: { version: string; notes?: string };
@@ -309,6 +311,7 @@ interface AppState {
   setRenameTarget(id?: string): void;
   setRenameProjectTarget(path?: string): void;
   setComposerPrefill(p?: { sessionId: string; text: string }): void;
+  setTranscriptJump(target?: { sessionId: string; entryId: string }): void;
   /** Show the no-session home screen, remembering the departed session's folder. */
   goHome(): void;
   /** Pin the folder the next new-session surface should open on. */
@@ -414,6 +417,7 @@ export const useStore = create<AppState>((set, get) => ({
           [summary.sessionId]: {
             summary,
             transcript: [],
+            tasks: {},
             advisors,
             advisorStates: {},
             advisorReviewActive: false,
@@ -510,6 +514,7 @@ export const useStore = create<AppState>((set, get) => ({
   setRenameTarget: (renameTarget) => set({ renameTarget }),
   setRenameProjectTarget: (renameProjectTarget) => set({ renameProjectTarget }),
   setComposerPrefill: (composerPrefill) => set({ composerPrefill }),
+  setTranscriptJump: (transcriptJump) => set({ transcriptJump }),
 
   goHome: () =>
     set((s) => {
@@ -638,7 +643,12 @@ export const useStore = create<AppState>((set, get) => ({
     set((s) => {
       const sessions: Record<string, SessionView> = {};
       for (const [id, v] of Object.entries(s.sessions)) {
-        const active = isActiveRunState(v.summary.runState);
+        const task = activeTask(v);
+        const unfinished =
+          task &&
+          !task.answer &&
+          !["complete", "blocked", "interrupted", "error"].includes(task.phase);
+        const active = isActiveRunState(v.summary.runState) || unfinished;
         // A dead worker sends no more events — settle EVERYTHING still
         // spinning: pending turn-end markers, running tool cards, running
         // subagents. No tool.end will ever arrive for them.
@@ -677,7 +687,23 @@ export const useStore = create<AppState>((set, get) => ({
         sessions[id] = active
           ? {
               ...patched,
-              summary: { ...patched.summary, runState: "interrupted" as RunState },
+              tasks: unfinished
+                ? {
+                    ...patched.tasks,
+                    [task.requestId]: {
+                      ...task,
+                      phase: "interrupted",
+                      reviewStatus:
+                        task.reviewStatus === "pending" ? "incomplete" : task.reviewStatus,
+                      reviewDetail: reason,
+                    },
+                  }
+                : patched.tasks,
+              summary: {
+                ...patched.summary,
+                runState: "interrupted" as RunState,
+                taskPhase: unfinished ? "interrupted" : patched.summary.taskPhase,
+              },
               interrupted: true,
               pendingInteractions: 0,
               transcript: [
@@ -695,7 +721,14 @@ export const useStore = create<AppState>((set, get) => ({
     const view = state.sessions[sessionId];
     if (!view) return;
     // Rebuild from scratch: replay the worker's authoritative history.
-    let next: SessionView = { ...view, transcript: [], pendingInteractions: 0 };
+    let next: SessionView = {
+      ...view,
+      summary: { ...view.summary, taskPhase: undefined, taskRequestId: undefined },
+      transcript: [],
+      tasks: {},
+      latestTaskId: undefined,
+      pendingInteractions: 0,
+    };
     for (const e of events) next = reduce(next, e, true);
     // Replay must not resurrect long-settled prompts as pending.
     next = {
@@ -779,19 +812,18 @@ function lastIndex(t: TranscriptItem[], pred: (i: TranscriptItem) => boolean): n
   return -1;
 }
 
-/**
- * Stamp the event's turnId onto items the reduction appended. Items are only
- * ever appended at the tail or updated in place (which preserves fields), so
- * "new" = "index at or past the previous length".
- */
+/** Preserve request and source identity on both appends and authoritative replacements. */
 function stampTurn(prev: SessionView, next: SessionView, e: ProductEvent): SessionView {
-  const turnId = (e as { turnId?: string }).turnId;
-  if (!turnId || next === prev || next.transcript === prev.transcript) return next;
-  const base = prev.transcript.length;
-  if (next.transcript.length <= base) return next;
-  const transcript = next.transcript.map((it, i) =>
-    i >= base && !it.turnId ? { ...it, turnId } : it,
-  );
+  if (next === prev || next.transcript === prev.transcript) return next;
+  const transcript = next.transcript.map((item, index) => {
+    if (item === prev.transcript[index]) return item;
+    return {
+      ...item,
+      turnId: e.turnId ?? item.turnId,
+      userTurnId: e.userTurnId ?? item.userTurnId,
+      sourceEntryId: e.sourceEntryId ?? item.sourceEntryId,
+    };
+  });
   return { ...next, transcript };
 }
 
@@ -803,6 +835,39 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
   const t = v.transcript;
 
   switch (e.type) {
+    case "task.updated": {
+      let task = e.task;
+      const previous = v.tasks[task.requestId];
+      if (
+        previous &&
+        (task.revision < previous.revision ||
+          (task.revision === previous.revision && task.updatedAt < previous.updatedAt) ||
+          JSON.stringify(task) === JSON.stringify(previous))
+      )
+        return v;
+      // A committed answer cannot be silently replaced or unpublished by
+      // a later snapshot. Evidence may refresh; corrections are separate work.
+      if (previous?.answer) task = { ...task, phase: "complete", answer: previous.answer };
+      const latest = activeTask(v);
+      const isLatest =
+        !latest ||
+        task.requestId === latest.requestId ||
+        task.startedAt > latest.startedAt ||
+        (!previous && task.startedAt === latest.startedAt);
+      const newlyPublished = task.answer && !previous?.answer;
+      return {
+        ...v,
+        tasks: { ...v.tasks, [task.requestId]: task },
+        latestTaskId: isLatest ? task.requestId : v.latestTaskId,
+        summary: {
+          ...v.summary,
+          taskPhase: isLatest ? task.phase : v.summary.taskPhase,
+          taskRequestId: isLatest ? task.requestId : v.summary.taskRequestId,
+          unread: newlyPublished ? !visible : v.summary.unread,
+        },
+      };
+    }
+
     case "session.state":
       return {
         ...v,
@@ -919,6 +984,7 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
       const copy = [...t];
       // The final text is authoritative over accumulated deltas.
       copy[idx] = {
+        ...t[idx],
         kind: "assistant",
         id: e.messageId,
         text: e.text,
@@ -1052,6 +1118,7 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
     }
 
     case "advisor.message":
+      if (t.some((item) => item.id === e.messageId)) return v;
       return {
         ...v,
         transcript: [
@@ -1068,15 +1135,11 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
         ],
       };
 
-    case "advisor.state": {
-      const next = { ...v, advisorStates: { ...v.advisorStates, [e.advisorId]: e.state } };
-      return { ...next, transcript: syncTurnEnd(next) };
-    }
+    case "advisor.state":
+      return { ...v, advisorStates: { ...v.advisorStates, [e.advisorId]: e.state } };
 
-    case "advisor.review": {
-      const next = { ...v, advisorReviewActive: e.active };
-      return { ...next, transcript: syncTurnEnd(next) };
-    }
+    case "advisor.review":
+      return { ...v, advisorReviewActive: e.active };
 
     case "advisor.failed":
       return {
@@ -1211,13 +1274,29 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
         ],
       };
 
-    case "session.failed":
+    case "session.failed": {
+      const task = activeTask(v);
+      const phase = e.error.kind === "engine" ? "interrupted" : "error";
       return {
         ...v,
         error: e.error,
         interrupted: e.error.kind === "engine" ? true : v.interrupted,
+        tasks:
+          task && !task.answer
+            ? {
+                ...v.tasks,
+                [task.requestId]: {
+                  ...task,
+                  phase,
+                  reviewStatus: task.reviewStatus === "pending" ? "incomplete" : task.reviewStatus,
+                  reviewDetail: e.error.message,
+                },
+              }
+            : v.tasks,
+        summary: { ...v.summary, taskPhase: task && !task.answer ? phase : v.summary.taskPhase },
         transcript: [...t, { kind: "system", id: nextId(), text: e.error.message, tone: "error" }],
       };
+    }
 
     case "session.preview":
       return v.previewUrl === e.url ? v : { ...v, previewUrl: e.url };
@@ -1243,62 +1322,29 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
     }
 
     case "session.finished": {
-      // A structural end-of-turn marker: the transcript condenses the turn's
-      // work at it, and it stays `pending` (not announced as finished) until
-      // every advisor has stopped reviewing — "done" with a reviewer still
-      // reading is not done yet.
-      const reviewing = advisorsReviewing(v);
-      const marker: TranscriptItem | null =
-        e.runState === "completed"
+      // Run fate may interrupt work, but never authorizes publication.
+      const task = activeTask(v);
+      const failurePhase =
+        e.runState === "error" ? "error" : e.runState === "interrupted" ? "interrupted" : undefined;
+      const interruptedTask: TaskSnapshot | undefined =
+        failurePhase && task && !task.answer
           ? {
-              kind: "turn-end",
-              id: nextId(),
-              durationMs: e.durationMs,
-              pending: reviewing,
-              at: new Date().toISOString(),
+              ...task,
+              phase: failurePhase,
+              reviewStatus: task.reviewStatus === "pending" ? "incomplete" : task.reviewStatus,
             }
-          : null;
-      // Idempotence under hydrate/live races: a turn-end already at the tail
-      // is the same event applied twice, not a new turn.
-      const tail = v.transcript[v.transcript.length - 1];
-      const isDup = marker && tail?.kind === "turn-end";
-      let transcript = v.transcript;
-      if (marker && !isDup) {
-        // An advisor-triggered revision is the SAME user turn finishing
-        // again, not a new one. Its first "finished" marker already landed
-        // before the review note and the revised answer; leaving it there
-        // splits the turn in two and renders both answers in full. Move the
-        // marker to the tail (summing wall time) so the transcript sees one
-        // turn — pre-review answer, review note, revision — and folds the
-        // superseded draft. Guarded structurally: a user message after the
-        // old marker means a genuinely new turn, whatever the flag says.
-        const prevIdx = lastIndex(transcript, (i) => i.kind === "turn-end");
-        const prev =
-          prevIdx >= 0
-            ? (transcript[prevIdx] as Extract<TranscriptItem, { kind: "turn-end" }>)
-            : null;
-        const sameTurn =
-          prev !== null &&
-          (e.continuation || transcript.slice(prevIdx + 1).some((i) => i.kind === "advisor")) &&
-          !transcript.slice(prevIdx + 1).some((i) => i.kind === "user");
-        if (sameTurn && prev) {
-          transcript = transcript.filter((_, i) => i !== prevIdx);
-          marker.durationMs =
-            prev.durationMs !== undefined || marker.durationMs !== undefined
-              ? (prev.durationMs ?? 0) + (marker.durationMs ?? 0)
-              : undefined;
-        }
-        transcript = [...transcript, marker];
-      }
+          : undefined;
       return {
         ...v,
-        transcript,
+        tasks: interruptedTask
+          ? { ...v.tasks, [interruptedTask.requestId]: interruptedTask }
+          : v.tasks,
         summary: {
           ...v.summary,
           runState: e.runState,
+          taskPhase: interruptedTask?.phase ?? v.summary.taskPhase,
           activity: undefined,
-          // Unread only matters for a session the user is not looking at.
-          unread: !visible,
+          unread: failurePhase ? !visible : v.summary.unread,
         },
       };
     }
@@ -1368,43 +1414,43 @@ export function runStateLabel(s: RunState, activity?: string): string {
   }
 }
 
-/**
- * True while a post-turn review is outstanding — the turn isn't finished yet.
- *
- * `advisorReviewActive` is the worker's own window flag and leads the
- * per-advisor states: OMP can take a beat (or a whole 5-second poll) to
- * report an advisor as `reviewing`, and until it does, scanning
- * `advisorStates` alone answers "nobody is reviewing" for a turn that is
- * demonstrably still under review. That gap is what surfaced finished-turn
- * inbox cards and notifications that then vanished.
- */
+/** Snapshot review phase is authoritative; legacy sessions retain runtime flags. */
 export function advisorsReviewing(v: SessionView): boolean {
+  const task = activeTask(v);
+  if (task) return !task.answer && ["reviewing", "revising", "finalizing"].includes(task.phase);
   return v.advisorReviewActive || Object.values(v.advisorStates).some((st) => st === "reviewing");
 }
 
-/**
- * Hold or release the current turn's end marker against the live review
- * state. A review can also START a beat after `session.finished` landed, so
- * a marker already announced as finished goes back to pending — but only the
- * current turn's, never one an earlier turn has moved past.
- */
-function syncTurnEnd(v: SessionView): TranscriptItem[] {
-  const transcript = v.transcript;
-  if (!advisorsReviewing(v)) {
-    if (!transcript.some((i) => i.kind === "turn-end" && i.pending)) return transcript;
-    return transcript.map((i) =>
-      i.kind === "turn-end" && i.pending ? { ...i, pending: false } : i,
-    );
+/** The newest user request, regardless of its execution/review fate. */
+export function activeTask(view: SessionView): TaskSnapshot | undefined {
+  return view.latestTaskId ? view.tasks[view.latestTaskId] : undefined;
+}
+
+/** Only the backend's explicit publication is an answer. */
+export function publishedAnswer(view: SessionView): PublishedAnswer | undefined {
+  return activeTask(view)?.answer;
+}
+
+/** Shared user-facing task status, independent of transport run state. */
+export function taskPhaseLabel(phase: TaskPhase): string {
+  switch (phase) {
+    case "working":
+      return "Working";
+    case "reviewing":
+      return "Advisors reviewing";
+    case "revising":
+      return "Revising after review";
+    case "finalizing":
+      return "Finalizing answer";
+    case "complete":
+      return "Complete";
+    case "blocked":
+      return "Blocked";
+    case "interrupted":
+      return "Interrupted";
+    case "error":
+      return "Task failed";
   }
-  if (isActiveRunState(v.summary.runState)) return transcript;
-  const idx = lastIndex(transcript, (i) => i.kind === "turn-end");
-  const cur = idx >= 0 ? (transcript[idx] as Extract<TranscriptItem, { kind: "turn-end" }>) : null;
-  if (!cur || cur.pending || transcript.slice(idx + 1).some((i) => i.kind === "user")) {
-    return transcript;
-  }
-  const copy = [...transcript];
-  copy[idx] = { ...cur, pending: true };
-  return copy;
 }
 
 /** Short display name for a provider-qualified model key. */

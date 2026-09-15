@@ -24,11 +24,12 @@ import { createInterface } from "node:readline";
 import type { UsageRecord } from "@orchestrator/protocol";
 import { usageMessageId, usageRecordFromMessage } from "./usage-extract";
 
-interface SessionFileUsage {
+export interface SessionFileUsage {
   ompSessionId: string;
   cwd: string;
   title?: string;
   records: UsageRecord[];
+  advisorIdentities: Map<string, { id: string; name: string }>;
 }
 
 /**
@@ -58,6 +59,7 @@ export async function readSessionFileUsage(
   let cwd = "";
   let title: string | undefined;
   const records: UsageRecord[] = [];
+  const advisorIdentities: SessionFileUsage["advisorIdentities"] = new Map();
 
   const rl = createInterface({
     input: createReadStream(filePath, { encoding: "utf8" }),
@@ -81,6 +83,17 @@ export async function readSessionFileUsage(
       }
       if (entry?.type === "title" && typeof entry.title === "string" && entry.title.trim()) {
         title = entry.title.trim();
+        continue;
+      }
+      if (entry?.type === "custom" && entry.customType === "orchestrator.review-owner") {
+        const owner = entry.data;
+        if (
+          typeof owner?.sdkName === "string" &&
+          typeof owner.advisorId === "string" &&
+          typeof owner.advisorName === "string"
+        ) {
+          advisorIdentities.set(owner.sdkName, { id: owner.advisorId, name: owner.advisorName });
+        }
         continue;
       }
       if (entry?.type !== "message") continue;
@@ -107,5 +120,5 @@ export async function readSessionFileUsage(
   }
 
   if (!ompSessionId && records.length === 0) return null;
-  return { ompSessionId, cwd, title, records };
+  return { ompSessionId, cwd, title, records, advisorIdentities };
 }

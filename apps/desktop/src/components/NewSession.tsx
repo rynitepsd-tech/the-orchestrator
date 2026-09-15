@@ -16,6 +16,7 @@ import { defaultProjectPath, useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
 import { BoltIcon, FolderIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
+import { useWorkspaceChoice, WorkspaceChoice } from "./WorkspaceChoice";
 
 export function NewSession({
   models,
@@ -36,6 +37,7 @@ export function NewSession({
   const updatePrefs = useStore((s) => s.updatePrefs);
 
   const [projectPath, setProjectPath] = useState(() => defaultProjectPath(useStore.getState()));
+  const workspace = useWorkspaceChoice(projectPath);
   const [title, setTitle] = useState("");
   const [modelKey, setModelKey] = useState<string | undefined>(undefined);
   const [effort, setEffort] = useState<string>("");
@@ -76,7 +78,7 @@ export function NewSession({
     };
   }, [projectPath, discoverAdvisors]);
 
-  const canStart = projectPath.trim().length > 0 && !busy;
+  const canStart = projectPath.trim().length > 0 && workspace.ready && !busy;
 
   const start = () => {
     if (!canStart) return;
@@ -87,6 +89,7 @@ export function NewSession({
     }
     onCreate({
       projectPath: projectPath.trim(),
+      workspaceMode: workspace.mode,
       title: title.trim() || undefined,
       model: modelKey,
       thinkingLevel: effort || undefined,
@@ -243,6 +246,8 @@ export function NewSession({
             </>
           )}
         </div>
+
+        <WorkspaceChoice workspace={workspace} disabled={busy} />
 
         <label className="field">
           <span>Session title (optional)</span>

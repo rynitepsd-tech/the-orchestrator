@@ -511,11 +511,15 @@ export async function gitChanges(cwd: string): Promise<GitChanges> {
   const info = await gitInfo(cwd);
   const files: GitChanges["files"] = [];
   try {
-    const { stdout } = await exec("git", ["status", "--porcelain=v1", "-z"], {
-      cwd,
-      timeout: 5000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
+    const { stdout } = await exec(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all", "-z"],
+      {
+        cwd,
+        timeout: 5000,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
     const parts = stdout.split("\0");
     for (let i = 0; i < parts.length; i++) {
       const entry = parts[i];

@@ -11,6 +11,8 @@ import {
   type DiscoveredSession,
   isActiveRunState,
   type SessionLaunchConfig,
+  type SessionSearchHit,
+  type SessionSource,
 } from "@orchestrator/protocol";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -36,6 +38,7 @@ import { PromptDialog } from "./components/PromptDialog";
 import { QuitDialog } from "./components/QuitDialog";
 import { Settings } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
+import { SourceViewer } from "./components/SourceViewer";
 import { TodoStrip } from "./components/TodoStrip";
 import { Transcript } from "./components/Transcript";
 import { UsageCenter } from "./components/UsageCenter";
@@ -48,22 +51,56 @@ import {
   setPrefsSink,
 } from "./lib/prefs";
 import { checkForUpdates, installUpdate } from "./lib/updater";
-import { advisorsReviewing, fmtTokens, modelBasename, runStateLabel, useStore } from "./store";
+import {
+  activeTask,
+  fmtTokens,
+  modelBasename,
+  runStateLabel,
+  type SessionView,
+  taskPhaseLabel,
+  useStore,
+} from "./store";
 
 export function App(): JSX.Element {
   const s = useStore();
   const [creating, setCreating] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [source, setSource] = useState<SessionSource>();
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const sourceRequest = useRef(0);
   /** Per-session preview-pane visibility; the detected URL lives in the view. */
   const [previewOpen, setPreviewOpen] = useState<Record<string, boolean>>({});
   const notifyOk = useRef(false);
-  /**
-   * Sessions whose turn has finished but whose advisors are still reviewing.
-   * The announcement is armed here and fires once the review window closes —
-   * a revised answer is still coming, so "the agent is done" would be a lie.
-   */
-  const notifyArmed = useRef(new Set<string>());
 
   const view = s.visibleSessionId ? s.sessions[s.visibleSessionId] : undefined;
+
+  const openHistorySource = useCallback((hit: SessionSearchHit) => {
+    const generation = ++sourceRequest.current;
+    setSourceLoading(true);
+    void engine
+      .request("sessions.source", {
+        sessionPath: hit.sessionPath,
+        entryId: hit.entryId,
+      })
+      .then((result) => {
+        if (generation === sourceRequest.current) setSource(result);
+      })
+      .catch((e) => {
+        if (generation === sourceRequest.current) useStore.getState().setEngineError(e);
+      })
+      .finally(() => {
+        if (generation === sourceRequest.current) setSourceLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const hit = (e as CustomEvent<SessionSearchHit>).detail;
+      if (hit?.sessionPath && hit.entryId) openHistorySource(hit);
+    };
+    window.addEventListener("orchestrator:open-history", onOpen);
+    return () => window.removeEventListener("orchestrator:open-history", onOpen);
+  }, [openHistorySource]);
 
   // ---- notifications ------------------------------------------------------
   useEffect(() => {
@@ -133,31 +170,12 @@ export function App(): JSX.Element {
         }
       }
 
-      // One notification per USER turn, fired the moment the turn is really
-      // over. `session.finished` alone is not that moment: advisors review
-      // afterwards and the model may revise its answer in a continuation turn
-      // that raises a second `session.finished`. So the finish only ARMS the
-      // announcement; it fires on the first event that leaves the session
-      // completed with no review outstanding.
-      if (
-        before &&
-        e.type === "session.finished" &&
-        e.runState === "completed" &&
-        st.prefs.notifications.completion
-      ) {
-        notifyArmed.current.add(e.sessionId);
-      }
-      if (notifyArmed.current.has(e.sessionId)) {
-        const after = useStore.getState().sessions[e.sessionId];
-        if (!after) notifyArmed.current.delete(e.sessionId);
-        else if (after.summary.runState === "completed" && !advisorsReviewing(after)) {
-          notifyArmed.current.delete(e.sessionId);
-          // Not while the user is already watching it: a background session,
-          // OR the visible one while the window is unfocused (the canonical
-          // "⌘-Tab away and wait" flow the old visible-only gate inverted).
-          const watching =
-            useStore.getState().visibleSessionId === e.sessionId && document.hasFocus();
-          if (!watching) notify(`${after.summary.title} finished`, "The agent is done.");
+      // Publication, not the end of an agent run, is the completion boundary.
+      if (e.type === "task.updated" && e.task.answer && e.task.phase === "complete") {
+        const previous = before?.tasks[e.task.requestId]?.answer;
+        const watching = st.visibleSessionId === e.sessionId && document.hasFocus();
+        if (before && !previous && !watching && st.prefs.notifications.completion) {
+          notify(`${before.summary.title} finished`, "The final answer is ready.");
         }
       }
     };
@@ -422,9 +440,27 @@ export function App(): JSX.Element {
       const remembered = prefs.sessionPresetByPath[d.path];
       const preset = remembered ? prefs.presets.find((p) => p.name === remembered) : undefined;
       const advisors = preset?.advisors.map((a) => ({ ...a })) ?? [];
-      const proj = await engine.request("project.open", { path: d.cwd });
+      const oldView = Object.values(useStore.getState().sessions).find(
+        (v) => v.summary.ompSessionPath === d.path,
+      );
+      if (
+        oldView &&
+        !oldView.interrupted &&
+        oldView.summary.runState !== "hibernated" &&
+        oldView.summary.runState !== "interrupted" &&
+        oldView.summary.runState !== "error"
+      ) {
+        useStore.getState().select(oldView.summary.sessionId);
+        return oldView.summary.sessionId;
+      }
+      const oldDraft = oldView ? useStore.getState().drafts[oldView.summary.sessionId] : undefined;
+      // Closing an idle/stopped worker does not send a prompt. Keep its UI
+      // transcript until replacement succeeds, so failed recovery loses nothing.
+      if (oldView) await engine.request("sessions.close", { sessionId: oldView.summary.sessionId });
+      const projectPath = d.projectPath ?? d.cwd;
+      const proj = await engine.request("project.open", { path: projectPath });
       const res = await engine.request("sessions.create", {
-        projectPath: d.cwd,
+        projectPath,
         title: d.title,
         advisors,
         resumeSessionPath: d.path,
@@ -438,6 +474,8 @@ export function App(): JSX.Element {
       });
       useStore.getState().addProject(proj.project);
       useStore.getState().addSession(res.session, advisors, { resumed: true });
+      if (oldDraft) useStore.getState().setDraft(res.session.sessionId, oldDraft);
+      if (oldView) useStore.getState().removeSession(oldView.summary.sessionId);
       if (preset?.model) {
         void engine
           .request("session.setModel", {
@@ -462,6 +500,90 @@ export function App(): JSX.Element {
     } finally {
       setCreating(false);
       resuming.current = null;
+    }
+  };
+
+  const openSourceConversation = async (): Promise<void> => {
+    if (!source) return;
+    const discovered = await engine.request("sessions.discover", {});
+    const d = discovered.sessions.find((entry) => entry.path === source.hit.sessionPath);
+    if (!d) throw new Error("This source session is no longer available.");
+    const id = await resumeSession(d);
+    if (!id)
+      throw new Error("Could not open this conversation. The source remains available here.");
+    await refetchTranscript(id);
+    const st = useStore.getState();
+    const v = st.sessions[id];
+    const present =
+      v?.transcript.some(
+        (item) => item.sourceEntryId === source.hit.entryId || item.id === source.hit.entryId,
+      ) ||
+      Object.values(v?.tasks ?? {}).some((task) => task.answer?.messageId === source.hit.entryId);
+    if (!present) {
+      throw new Error(
+        "The conversation is open, but this source is outside its current rendered history. Read it here; no conversation branch has been changed.",
+      );
+    }
+    st.setTranscriptJump({ sessionId: id, entryId: source.hit.entryId });
+    setSource(undefined);
+  };
+
+  const asDiscovered = (v: SessionView): DiscoveredSession => ({
+    ompSessionId: v.summary.ompSessionId ?? "",
+    path: v.summary.ompSessionPath!,
+    cwd: v.summary.workspacePath ?? v.summary.projectPath,
+    projectPath: v.summary.projectPath,
+    workspaceMode: v.summary.workspaceMode,
+    title: v.summary.title,
+    messageCount: v.summary.messageCount,
+    sizeBytes: 0,
+    openInThisApp: false,
+  });
+
+  const resumeView = async (v: SessionView): Promise<void> => {
+    if (!v.summary.ompSessionPath)
+      throw new Error("This session has no persisted transcript to restore.");
+    if (!(await resumeSession(asDiscovered(v))))
+      throw new Error("Session could not be restored. Its transcript is preserved.");
+  };
+
+  const recoverable = new Map<string, DiscoveredSession>();
+  for (const d of s.discovered) {
+    if (s.prefs.openSessionPaths.includes(d.path) && !d.openInThisApp && !d.cwdMissing) {
+      recoverable.set(d.path, d);
+    }
+  }
+  for (const v of Object.values(s.sessions)) {
+    if (
+      v.summary.ompSessionPath &&
+      (v.interrupted || v.summary.runState === "hibernated" || v.summary.runState === "interrupted")
+    )
+      recoverable.set(v.summary.ompSessionPath, asDiscovered(v));
+  }
+  for (const v of Object.values(s.sessions)) {
+    if (
+      v.summary.ompSessionPath &&
+      !v.interrupted &&
+      !["hibernated", "interrupted", "error"].includes(v.summary.runState)
+    ) {
+      recoverable.delete(v.summary.ompSessionPath);
+    }
+  }
+
+  const restoreSessions = async (): Promise<void> => {
+    if (restoring || resuming.current) return;
+    setRestoring(true);
+    const failures: string[] = [];
+    try {
+      // Sequential restore avoids a burst of worker/MCP startup. No prompt is replayed.
+      for (const d of recoverable.values()) {
+        if (!(await resumeSession(d))) failures.push(d.title);
+        useStore.getState().setMainView("inbox");
+      }
+      if (failures.length)
+        throw new Error(`Could not restore: ${failures.join(", ")}. Other sessions were restored.`);
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -534,21 +656,16 @@ export function App(): JSX.Element {
     if (!s.visibleSessionId) return;
     const id = s.visibleSessionId;
     const view = useStore.getState().sessions[id];
-    // A hibernated session wakes transparently: respawn its worker from the
-    // persisted file, then deliver the prompt to the fresh session.
-    if (view?.summary.runState === "hibernated" && view.summary.ompSessionPath) {
-      const d: DiscoveredSession = {
-        ompSessionId: view.summary.ompSessionId ?? "",
-        path: view.summary.ompSessionPath,
-        cwd: view.summary.projectPath,
-        title: view.summary.title,
-        messageCount: view.summary.messageCount,
-        sizeBytes: 0,
-        openInThisApp: false,
-      };
+    // Only the message the user just submitted is sent after recovery.
+    // The interrupted task's previous prompt is never automatically repeated.
+    if (
+      view?.summary.ompSessionPath &&
+      (view.interrupted ||
+        view.summary.runState === "hibernated" ||
+        view.summary.runState === "interrupted")
+    ) {
       void (async () => {
-        useStore.getState().removeSession(id);
-        const newId = await resumeSession(d);
+        const newId = await resumeSession(asDiscovered(view));
         if (newId) sendTo(newId, text, whenBusy, attachments);
         else useStore.getState().setComposerPrefill({ sessionId: id, text });
       })();
@@ -694,14 +811,13 @@ export function App(): JSX.Element {
 
   const showInspector = s.inspectorOpen && s.mainView !== "usage";
 
-  // Live status for the breadcrumb: only worth showing while something moves.
-  const crumbStatus = view
-    ? !isActiveRunState(view.summary.runState) && advisorsReviewing(view)
-      ? "Advisors reviewing…"
-      : isActiveRunState(view.summary.runState)
+  const task = view ? activeTask(view) : undefined;
+  const crumbStatus =
+    task && task.phase !== "complete"
+      ? taskPhaseLabel(task.phase)
+      : view && isActiveRunState(view.summary.runState)
         ? (view.summary.activity ?? runStateLabel(view.summary.runState))
-        : undefined
-    : undefined;
+        : undefined;
 
   const projectName = view
     ? projectDisplayName(view.summary.projectPath, s.prefs.projectAliases)
@@ -852,6 +968,11 @@ export function App(): JSX.Element {
       )}
 
       <main className="main">
+        {sourceLoading && (
+          <div className="hint source-loading" role="status">
+            Opening historical source…
+          </div>
+        )}
         {/* Dead sign-in banner: the engine refuses sessions on these
             providers (auth gate) — say why and route to the fix. */}
         {s.mainView !== "settings" &&
@@ -880,7 +1001,12 @@ export function App(): JSX.Element {
         {s.mainView === "usage" ? (
           <UsageCenter />
         ) : s.mainView === "inbox" ? (
-          <Inbox />
+          <Inbox
+            onResume={resumeView}
+            onRestore={restoreSessions}
+            restoring={restoring}
+            restoreCount={recoverable.size}
+          />
         ) : (
           <>
             {s.engineStage === "offline" && (
@@ -929,19 +1055,7 @@ export function App(): JSX.Element {
                       <button
                         className="btn"
                         style={{ marginLeft: 8 }}
-                        onClick={() => {
-                          const d: DiscoveredSession = {
-                            ompSessionId: view.summary.ompSessionId ?? "",
-                            path: view.summary.ompSessionPath!,
-                            cwd: view.summary.projectPath,
-                            title: view.summary.title,
-                            messageCount: view.summary.messageCount,
-                            sizeBytes: 0,
-                            openInThisApp: false,
-                          };
-                          useStore.getState().removeSession(view.summary.sessionId);
-                          void resumeSession(d);
-                        }}
+                        onClick={() => void resumeView(view).catch((e) => s.setEngineError(e))}
                       >
                         Resume Session
                       </button>
@@ -968,7 +1082,11 @@ export function App(): JSX.Element {
                       runState={view.summary.runState}
                       onSend={send}
                       onAbort={abort}
-                      disabled={s.engineStage === "offline" || Boolean(view.interrupted)}
+                      disabled={
+                        s.engineStage !== "ready" ||
+                        creating ||
+                        (Boolean(view.interrupted) && !view.summary.ompSessionPath)
+                      }
                     />
                   </div>
 
@@ -1008,6 +1126,14 @@ export function App(): JSX.Element {
       </main>
 
       {showInspector && <Inspector view={view} />}
+      {source && (
+        <SourceViewer
+          key={`${source.hit.sessionPath}:${source.hit.entryId}`}
+          source={source}
+          onClose={() => setSource(undefined)}
+          onOpenConversation={openSourceConversation}
+        />
+      )}
 
       {s.mainView === "settings" && <Settings onClose={() => s.setMainView("sessions")} />}
 

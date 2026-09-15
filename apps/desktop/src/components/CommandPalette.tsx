@@ -1,9 +1,10 @@
 /**
  * Command palette (⌘⇧P) and quick session switcher (⌘K).
  *
- * One component, two modes. Commands are registered centrally here; every
+ * Commands, quick switching, and persisted transcript content search; every
  * entry performs a real action — no dead rows.
  */
+import type { SessionSearchHit } from "@orchestrator/protocol";
 import { isActiveRunState } from "@orchestrator/protocol";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JSX } from "react";
@@ -16,19 +17,58 @@ interface Command {
   id: string;
   label: string;
   hint?: string;
+  keepOpen?: boolean;
   run: () => void;
 }
 
 export function CommandPalette(): JSX.Element {
   const store = useStore();
-  const mode = store.paletteMode;
+  const [historySearch, setHistorySearch] = useState(false);
+  const mode = historySearch ? "history" : store.paletteMode;
+  const [searchHits, setSearchHits] = useState<SessionSearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [truncated, setTruncated] = useState(false);
+  const [retry, setRetry] = useState(0);
   const [query, setQuery] = useState("");
   const [sel, setSel] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
+  }, [mode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSearchHits([]);
+    setSearchError("");
+    setTruncated(false);
+    if (!historySearch || !query.trim()) {
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const timer = setTimeout(() => {
+      void engine
+        .request("sessions.search", { query: query.trim(), limit: 50 })
+        .then((result) => {
+          if (!cancelled) {
+            setSearchHits(result.hits);
+            setTruncated(result.truncated);
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) setSearchError(String((error as { message?: string })?.message ?? error));
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [historySearch, query, retry]);
 
   const close = () => store.setPalette(false);
 
@@ -42,6 +82,15 @@ export function CommandPalette(): JSX.Element {
         label: "Switch Session…",
         hint: "⌘K",
         run: () => store.setPalette(true, "sessions"),
+      },
+      {
+        id: "search-history",
+        label: "Search All Saved Transcripts…",
+        keepOpen: true,
+        run: () => {
+          setHistorySearch(true);
+          setQuery("");
+        },
       },
       {
         id: "usage",
@@ -139,7 +188,16 @@ export function CommandPalette(): JSX.Element {
 
   const q = query.trim().toLowerCase();
 
-  const rows = useMemo(() => {
+  const rows = useMemo((): Command[] => {
+    if (mode === "history") {
+      return searchHits.map((hit) => ({
+        id: `${hit.sessionPath}:${hit.entryId}`,
+        label: hit.snippet,
+        hint: `${hit.title} · ${basename(hit.projectPath)} · ${hit.role === "user" ? "You" : "Assistant"}`,
+        run: () =>
+          window.dispatchEvent(new CustomEvent("orchestrator:open-history", { detail: hit })),
+      }));
+    }
     if (mode === "sessions") {
       const views = store.order
         .map((id) => store.sessions[id])
@@ -151,26 +209,37 @@ export function CommandPalette(): JSX.Element {
             v.summary.projectPath.toLowerCase().includes(q) ||
             (v.summary.model ?? "").toLowerCase().includes(q),
         );
-      return views.map((v) => ({
-        id: v.summary.sessionId,
-        label: v.summary.title,
-        hint: `${basename(v.summary.projectPath)} · ${modelBasename(v.summary.model)} · ${
-          v.summary.runState === "completed" && advisorsReviewing(v)
-            ? "Advisors reviewing"
-            : runStateLabel(v.summary.runState)
-        }`,
-        run: () => store.select(v.summary.sessionId),
-      }));
+      return [
+        {
+          id: "search-history",
+          label: q
+            ? `Search saved transcripts for “${query.trim()}”`
+            : "Search All Saved Transcripts…",
+          hint: "Includes closed sessions and older messages",
+          keepOpen: true,
+          run: () => setHistorySearch(true),
+        },
+        ...views.map((v) => ({
+          id: v.summary.sessionId,
+          label: v.summary.title,
+          hint: `${basename(v.summary.projectPath)} · ${modelBasename(v.summary.model)} · ${
+            v.summary.runState === "completed" && advisorsReviewing(v)
+              ? "Advisors reviewing"
+              : runStateLabel(v.summary.runState)
+          }`,
+          run: () => store.select(v.summary.sessionId),
+        })),
+      ];
     }
     return commands.filter((c) => !q || c.label.toLowerCase().includes(q));
-  }, [mode, q, commands, store]);
+  }, [mode, q, query, commands, store, searchHits]);
 
   useEffect(() => setSel(0), [q, mode]);
 
   const runSel = (i: number) => {
     const row = rows[i];
     if (!row) return;
-    close();
+    if (!row.keepOpen) close();
     row.run();
   };
 
@@ -180,14 +249,28 @@ export function CommandPalette(): JSX.Element {
         <input
           ref={inputRef}
           className="palette-input"
-          placeholder={mode === "sessions" ? "Switch to session…" : "Run command…"}
+          aria-label={
+            mode === "history"
+              ? "Search all saved transcripts"
+              : mode === "sessions"
+                ? "Switch session"
+                : "Run command"
+          }
+          maxLength={mode === "history" ? 1000 : undefined}
+          placeholder={
+            mode === "history"
+              ? "Search all saved transcripts…"
+              : mode === "sessions"
+                ? "Switch to session…"
+                : "Run command…"
+          }
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape") close();
             else if (e.key === "ArrowDown") {
               e.preventDefault();
-              setSel((n) => Math.min(rows.length - 1, n + 1));
+              setSel((n) => Math.max(0, Math.min(rows.length - 1, n + 1)));
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
               setSel((n) => Math.max(0, n - 1));
@@ -197,6 +280,39 @@ export function CommandPalette(): JSX.Element {
             }
           }}
         />
+        {mode === "history" && (
+          <div style={{ padding: "8px 14px" }}>
+            <button
+              className="btn-ghost"
+              onClick={() => {
+                setHistorySearch(false);
+                setQuery("");
+              }}
+            >
+              Back to {store.paletteMode === "sessions" ? "sessions" : "commands"}
+            </button>
+            <div className="hint" role="status">
+              {searching
+                ? "Searching saved transcripts…"
+                : !q
+                  ? "Search message content across all projects."
+                  : `${searchHits.length} matching messages`}
+            </div>
+            {searchError && (
+              <div role="alert">
+                <p>{searchError}</p>
+                <button className="btn" onClick={() => setRetry((value) => value + 1)}>
+                  Retry search
+                </button>
+              </div>
+            )}
+            {truncated && (
+              <p className="hint">
+                Results are incomplete. Refine your search; some transcripts may be unreadable.
+              </p>
+            )}
+          </div>
+        )}
         <div className="palette-list" role="listbox">
           {rows.map((r, i) => (
             <button
@@ -206,14 +322,30 @@ export function CommandPalette(): JSX.Element {
               aria-selected={i === sel}
               onMouseEnter={() => setSel(i)}
               onClick={() => runSel(i)}
+              style={
+                mode === "history"
+                  ? {
+                      flexDirection: "column",
+                      alignItems: "flex-start",
+                      whiteSpace: "normal",
+                      overflowWrap: "anywhere",
+                    }
+                  : undefined
+              }
             >
               <span>{r.label}</span>
               {r.hint && <span className="hint">{r.hint}</span>}
             </button>
           ))}
-          {rows.length === 0 && (
+          {rows.length === 0 && !searching && !searchError && (
             <div className="empty">
-              {mode === "sessions" ? "No open sessions." : "No matching commands."}
+              {mode === "history"
+                ? q
+                  ? "No matching messages. Try different words."
+                  : "Enter words from a conversation to find its source."
+                : mode === "sessions"
+                  ? "No open sessions."
+                  : "No matching commands."}
             </div>
           )}
         </div>

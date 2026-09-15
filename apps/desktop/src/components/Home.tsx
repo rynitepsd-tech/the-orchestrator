@@ -17,6 +17,7 @@ import { projectDisplayName, projectParent, type SessionPreset } from "../lib/pr
 import { defaultProjectPath, modelBasename, useStore } from "../store";
 import { FolderIcon } from "./icons";
 import { PresetForm } from "./PresetForm";
+import { useWorkspaceChoice, WorkspaceChoice } from "./WorkspaceChoice";
 
 export function Home({
   busy,
@@ -49,6 +50,7 @@ export function Home({
   const [projectPath, setProjectPath] = useState(
     () => defaultProjectPath(useStore.getState()) || projects[0] || "",
   );
+  const workspace = useWorkspaceChoice(projectPath, disabled);
   const [projectMenu, setProjectMenu] = useState(false);
   const [text, setText] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("always-ask");
@@ -106,7 +108,7 @@ export function Home({
   const folder = projectPath ? projectDisplayName(projectPath, prefs.projectAliases) : undefined;
   // Attachments alone are a valid first message (a screenshot IS the prompt).
   const canLaunch = Boolean(
-    (text.trim() || attachments.length) && projectPath && !busy && !disabled,
+    (text.trim() || attachments.length) && projectPath && workspace.ready && !busy && !disabled,
   );
 
   const launch = () => {
@@ -114,6 +116,7 @@ export function Home({
     onLaunch(
       {
         projectPath,
+        workspaceMode: workspace.mode,
         model: preset?.model,
         thinkingLevel: preset?.thinkingLevel,
         fastMode: preset?.fastMode || undefined,
@@ -147,6 +150,7 @@ export function Home({
           </>
         )}
       </h1>
+      <WorkspaceChoice workspace={workspace} disabled={busy || disabled} />
 
       <div
         className={`home-composer${dragOver ? " drag-over" : ""}`}

@@ -1,7 +1,7 @@
 # Session model
 
 This document defines what "a session" means in The Orchestrator, because the word covers
-five different things that have different lifetimes and different owners. Getting them
+seven different things that have different lifetimes and different owners. Getting them
 confused is the source of most incorrect assumptions about the product ("switching tabs
 stopped my agent", "closing the window lost my work", "two windows can edit one transcript").
 
@@ -9,7 +9,7 @@ Related reading: [ARCHITECTURE.md](./ARCHITECTURE.md) for process topology,
 [OMP_COMPATIBILITY.md](./OMP_COMPATIBILITY.md) for the upstream constraints that shaped it,
 [USAGE_MODEL.md](./USAGE_MODEL.md) for how usage is attributed across these identities.
 
-## 1. Five distinct identities
+## 1. Seven distinct identities
 
 | Identity | Owner | Lifetime | Type |
 | --- | --- | --- | --- |
@@ -18,6 +18,8 @@ Related reading: [ARCHITECTURE.md](./ARCHITECTURE.md) for process topology,
 | Active runtime | supervisor | from spawn to worker exit | a `Worker` (an OS process) |
 | Visible UI session | React store | a render | `visibleSessionId?: string` |
 | Persisted session | the filesystem | until the user deletes it | `DiscoveredSession` |
+| User request / task id | harness finalizer | persisted request, including revisions | `TaskSnapshot.requestId` / `EventBase.userTurnId` |
+| Execution turn id | worker | one primary execution attempt | `EventBase.turnId` |
 
 ### Orchestrator session id
 
@@ -58,7 +60,7 @@ emit({
 
 `RuntimeManager` intercepts that event and calls `supervisor.noteSessionPersisted(...)`,
 which stamps `ompSessionPath` / `ompSessionId` onto the worker's `SessionSummary`. Those two
-fields are the only bridge between the app's identity space and OMP's.
+fields identify the persisted counterpart of a live runtime.
 
 ### Active runtime
 
@@ -93,15 +95,16 @@ it via `getAgentDir()`, it never hardcodes it):
 ~/.omp/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
 ```
 
-- `<encoded-cwd>` is OMP's encoding of the project working directory, so all sessions for one
-  project share a directory. This is why `SessionManager.list(projectPath)` is cheap.
+- `<encoded-cwd>` encodes the actual tool checkout. Isolated worktrees have separate directories;
+  discovery maps them back to their logical project for grouping.
 - `<timestamp>_<uuid>` makes filenames sort chronologically and stay unique.
 - The file is JSON Lines: one appended record per event. It is append-oriented, which is
   exactly why concurrent writers are dangerous (see §5).
 
-The Orchestrator writes nothing of its own beside these files. There is no parallel database,
-no sidecar index, no mirrored transcript. Everything the app knows about a past session is
-read back out of OMP's store.
+Task snapshots, staged answers, and immutable reviewer-round ownership use OMP custom entries.
+Only a persisted task's `answer.messageId` commits a staged answer. There is no mirrored transcript.
+App-only preferences, sourced project decisions, and managed worktree metadata live under
+Application Support; decisions are never automatically injected into model context.
 
 ## 3. Run state machine
 
@@ -114,9 +117,9 @@ completed, interrupted, error, hibernated
 
 The active states — the ones in which the engine is doing work — are
 `queued`, `starting`, `thinking`, `streaming`, `tool`, `waiting`, `stopping`.
-`idle`, `completed`, `interrupted`, `error` and `hibernated` are inactive. `isActiveRunState(s)` is the
-single predicate; the sidebar's spinner, the composer's busy affordance and
-`WorkerSupervisor.activeCount()` all derive from the same list rather than re-deciding.
+`idle`, `completed`, `interrupted`, `error` and `hibernated` are inactive execution states.
+They are not publication claims: task phases and unfinished queued requests are tracked separately.
+The transcript, inbox, unread completion state and notifications use explicit task snapshots.
 
 ```mermaid
 stateDiagram-v2
@@ -134,9 +137,9 @@ stateDiagram-v2
     thinking --> waiting: approval or extension prompt pending
     waiting --> thinking: approval/prompt resolved
 
-    thinking --> completed: agent_end (isTerminal)
-    streaming --> completed: agent_end (isTerminal)
-    tool --> completed: agent_end (isTerminal)
+    thinking --> completed: harness settles request
+    streaming --> completed: harness settles request
+    tool --> completed: harness settles request
     completed --> queued: next prompt
 
     idle --> stopping: session.abort
@@ -159,10 +162,8 @@ stateDiagram-v2
 
 Where each transition comes from:
 
-- `starting`, `thinking`, `streaming`, `tool`, `idle`, `completed` are inferred by
-  `EventMapper` (`packages/omp-adapter/src/event-mapper.ts`) from upstream events
-  (`agent_start`, `turn_start`, `text_delta`, `thinking_delta` / `reasoning_delta`,
-  `tool_execution_start`, `tool_execution_end`, `turn_end`, `agent_end`).
+- `starting`, `thinking`, `streaming`, `tool`, and `idle` are mapped from upstream activity.
+  A raw `agent_end` does not publish an answer. The worker owns the final execution outcome.
 - `queued` and `stopping` are set by the worker's command loop when it accepts a prompt or
   begins an abort.
 - `interrupted` is set by the abort path, or by the supervisor when a worker process dies.
@@ -172,76 +173,59 @@ Where each transition comes from:
   `extension.ui.respond`, or an abort, which cancels any prompt pending on that session rather than
   leaving it stuck in `waiting` forever.
 
-### Aborted turns must report `interrupted`, never `completed`
+### Task finalization and publication
 
-This needed care because **two** places could plausibly emit a terminal outcome, and the one
-that sees the upstream event does not know the user's intent.
+Each accepted new prompt gets a durable request id. A queued prompt creates a different request;
+steering updates the current request's explicit intent. Execution turn ids can change across
+revisions without changing which user request owns the answer.
 
-1. `EventMapper` sees `agent_end`. An aborted run reaches `agent_end` exactly like a
-   successful one. So the mapper deliberately does *not* emit `session.finished`:
+`TaskSnapshot.phase` is `working`, `reviewing`, `revising`, `finalizing`, `complete`,
+`blocked`, `interrupted`, or `error`. The primary calls the essential `submit_answer` tool with
+the request id, complete user-facing text, and finding dispositions. Ordinary assistant messages
+remain progress or drafts. There is no last-message fallback if the primary omits submission.
 
-   > the mapper reports activity; the runtime reports fate.
+Before publication, the harness settles request-owned finite jobs, subagents and result delivery.
+Long-running managed servers are not completion gates. Each candidate receives a fresh SDK
+reviewer roster with durable source-name ownership for its exact request and revision; old
+callbacks cannot attach their findings to a newer request. Review requires a true
+`waitForAdvisorCatchup` result and healthy reviewers that actually yielded. False, timeout,
+or unavailable review becomes `blocked` with an incomplete-review explanation.
 
-   It only calls `onRunState("completed")` as an activity hint.
+The primary, not the reviewer or harness, adjudicates non-nit findings with revision-specific
+`accepted`, `rejected`, or `unresolved` dispositions and concrete rationales. The harness anchors
+revision instructions to the original request and explicit intent updates. Automatic convergence
+is bounded to three submitted revisions; unresolved findings stop publication. Explicit retry
+starts a fresh bounded attempt rather than silently rerunning the user's original prompt.
 
-2. The worker's `session.prompt` handler is the sole emitter of `session.finished`. It
-   computes the outcome itself:
+Publication persists the canonical answer before emitting `task.updated`. Later progress and
+review findings cannot replace or unpublish it. Late findings remain visible follow-up information.
+Replay restores the same answer identity and exact source entry id. Legacy transcripts remain
+readable without being retroactively labeled as reviewed publications.
 
-   ```ts
-   let outcome: "completed" | "interrupted" | "error" = "completed";
-   try {
-     await s.prompt(text, { streamingBehavior: behavior });
-     // abort() RESOLVES the prompt rather than rejecting it, so trust the
-     // run state the abort handler recorded.
-     if (runState === "interrupted" || runState === "stopping") outcome = "interrupted";
-   } catch (e) {
-     outcome = /abort/i.test(msg) ? "interrupted" : "error";
-   } finally {
-     setRunState(outcome);
-     emit({ type: "session.finished", sessionId, runState: outcome });
-   }
-   ```
+### Stop and recovery
 
-   Note the subtlety in the comment: upstream `abort()` *resolves* the in-flight `prompt()`
-   promise instead of rejecting it, so a naive `try/catch` would classify every abort as a
-   clean completion.
+Stop fences publication, clears host and SDK prompt queues, cancels owned finite jobs and reviewer
+work, and aborts with the SDK's user-interrupt reason. It cannot be undone by a late review result.
+The worker's request runner and explicit review-retry path own `session.finished`; raw SDK
+`agent_end` cannot convert an interrupted request into a completed one.
 
-3. As a second line of defence, `setRunState` refuses the walk-back:
+`session.finished` describes execution settlement, not answer publication. On a process boundary,
+unfinished task snapshots become interrupted. Restoring a remembered session opens its durable
+history in a fresh worker without resending any prompt. Retry review and newly submitted user
+messages are explicit actions.
 
-   ```ts
-   if ((runState === "stopping" || runState === "interrupted") && s === "completed") return;
-   ```
+### Verification evidence
 
-   So even a late `agent_end`-derived `completed` arriving after the abort cannot overwrite
-   the real outcome.
+Live command and browser observations are attached to their owning request. Records retain
+output, artifacts, observed status, and bounded Git-workspace fingerprints. Missing exit codes
+remain unknown; invocation success alone is not verification success. Browser behavior without
+browser evidence remains unverified.
 
-`session.finished` is emitted exactly once per turn, carrying the state that actually
-occurred. The store's reducer trusts it and also sets `unread: !visible` from it.
+Ignored files, external state, and sensitive-file contents are outside the fingerprint's coverage.
+If tool activity overlaps revision capture, or the workspace cannot be fingerprinted reliably,
+evidence says its coverage is unavailable/stale rather than claiming freshness. Later workspace
+edits make earlier coverage stale. Refresh recomputes coverage; it does not rerun checks.
 
-**Advisor-triggered continuation turns are the one exception to "the prompt handler is the
-sole emitter".** Advisors review *after* `turn_end`, so by the time a note lands the owning
-prompt has already resolved and emitted `session.finished`. A fresh agent run with no prompt
-from the host — the revision — starts in one of two ways:
-
-- **A `blocker`** makes OMP itself start the run (`steer` + `triggerTurn`).
-- **A `concern`** does not: upstream routes a post-turn concern to its "preserve" channel — the
-  card is appended to context and shown, and nothing runs, so the model would first read it on
-  the user's *next* prompt. The worker closes that gap. When an advisor card is surfaced while
-  the agent loop is idle, the tail of the post-turn review window (after `waitForAdvisorCatchup`
-  drains every note) sends a hidden `advisor-followup` custom message with `triggerTurn: true`,
-  and the primary addresses the note now. Bounded to **one host follow-up per user turn** (the
-  revision is reviewed too; a further note on it stays a visible card), skipped after a user
-  Stop (`interrupted`), and the review window stays open across the follow-up so no finished
-  alert fires for an answer about to be revised. `nit`s remain non-interrupting asides, as
-  upstream intends.
-
-Either way the worker spots the run (an `agent_start` with no current turn), and on its terminal
-`agent_end` emits a second `session.finished` flagged `continuation: true`. The store does not
-treat that as a new turn: it *moves* the turn-end marker to the tail (summing wall time) so the
-transcript sees one segment — pre-review answer, review note, revision — and folds the
-pre-review answer into a collapsed "Draft" row. Without this, the two full answers rendered back
-to back. The relocation is guarded structurally: a user message after the old marker (a queued
-follow-up) always means a genuinely new turn, whatever the flag says.
 
 ## 4. Concurrent execution
 
@@ -263,9 +247,9 @@ accident, and it holds because of three separate facts:
    background session's transcript, usage, context and advisor states keep accumulating while
    you look at something else.
 
-3. **Prompts are acknowledged, not awaited.** The worker starts the turn in a detached async
-   IIFE and returns `{ accepted: true, mode }` immediately, precisely so "the user can switch
-   sessions while this one keeps working". The host is never blocked on a running turn.
+3. **Prompts are acknowledged, not awaited.** The worker owns a serial queue of durable user
+   requests and returns `{ accepted: true, mode }` immediately. The host is never blocked on a
+   running request, and queued requests retain workspace ownership across intermediate finishes.
 
 Therefore `visibleSessionId !== <the set of session ids in an active run state>` is a normal,
 fully supported state. Several sessions may be in `thinking`/`tool`/`streaming` at once, each
@@ -275,11 +259,25 @@ shows per-session state for all of them.
 The only visible-session-dependent behaviour is presentation:
 
 - `select(id)` clears `unread` for that session.
-- `session.finished` sets `unread: !visible`.
-- `App.tsx` raises a native notification only when a **background** session completes, or when
-  a background session's advisor raises a `blocker`.
+- A newly published `task.updated` answer sets the session's unread completion state.
+- `App.tsx` raises a completion notification for a new background publication; raw run completion
+  or a merely closed advisor window is insufficient.
 
 None of these touch the engine.
+
+### Code workspaces and scoped shipping
+
+New Git sessions default to isolated worktrees rooted at committed `HEAD`, with unique branches.
+The logical project and actual checkout are distinct protocol fields. No uncommitted files,
+dependencies, or secrets are copied. Shared mode remains explicit. Resume trusts the persisted
+checkout; a fork shares that checkout rather than pretending to provide new file isolation.
+
+Managed worktrees survive session closure and are not automatically deleted. Shipping commits
+selected complete files, not selected hunks, through a temporary index while retaining unrelated
+staged entries. Repositories with active commit hooks or mandatory signing must commit in a
+terminal; the app refuses to bypass those policies. Integration requires clean source and target
+trees and performs conflict preflight. Workspace locks include all unfinished queued tasks and
+both roots involved in integration; they do not coordinate external Git/CLI writers.
 
 ## 5. Single-writer enforcement
 

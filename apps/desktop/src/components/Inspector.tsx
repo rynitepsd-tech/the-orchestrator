@@ -25,6 +25,7 @@ import {
   useStore,
 } from "../store";
 import { Markdown } from "./Markdown";
+import { ProjectHistory } from "./ProjectHistory";
 import { ResizeHandle } from "./ResizeHandle";
 import { Diff } from "./Transcript";
 
@@ -225,7 +226,8 @@ export function QuotaSection(): JSX.Element {
 }
 
 function ChangesTab({ view }: { view: SessionView }): JSX.Element {
-  const changes = useStore((s) => s.changes[view.summary.projectId]);
+  const workspacePath = view.summary.workspacePath ?? view.summary.projectPath;
+  const changes = useStore((s) => s.changes[workspacePath]);
   const setChanges = useStore((s) => s.setChanges);
   const sessions = useStore((s) => s.sessions);
   const [selected, setSelected] = useState<string | null>(null);
@@ -236,15 +238,22 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
     null,
   );
   const [shipError, setShipError] = useState<string | null>(null);
+  const [shipPaths, setShipPaths] = useState<string[]>([]);
+  const [integrationNote, setIntegrationNote] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const c = await engine.request("project.changes", { path: view.summary.projectPath });
-      setChanges(view.summary.projectId, c);
+      const c = await engine.request("project.changes", { path: workspacePath });
+      setChanges(workspacePath, c);
+      setShipPaths((paths) =>
+        paths.filter((path) =>
+          c.files.some((file) => file.path === path || file.renamedFrom === path),
+        ),
+      );
     } catch {
       /* non-git projects render the empty state */
     }
-  }, [view.summary.projectId, view.summary.projectPath, setChanges]);
+  }, [workspacePath, setChanges]);
 
   // Refresh when the panel opens and again whenever this project's sessions
   // settle (a finished turn usually means files changed).
@@ -252,8 +261,8 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
     void refresh();
   }, [refresh]);
   const projectRunStates = Object.values(sessions)
-    .filter((v) => v.summary.projectId === view.summary.projectId)
-    .map((v) => v.summary.runState)
+    .filter((v) => (v.summary.workspacePath ?? v.summary.projectPath) === workspacePath)
+    .map((v) => `${v.summary.runState}:${v.summary.taskPhase ?? ""}`)
     .join(",");
   useEffect(() => {
     void refresh();
@@ -264,7 +273,7 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
     setLoading(true);
     setDiff(null);
     try {
-      setDiff(await engine.request("project.diff", { path: view.summary.projectPath, file }));
+      setDiff(await engine.request("project.diff", { path: workspacePath, file }));
     } catch {
       setDiff(null);
     } finally {
@@ -272,20 +281,57 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
     }
   };
 
-  const activeHere = Object.values(sessions).filter(
-    (v) => v.summary.projectId === view.summary.projectId && isActiveRunState(v.summary.runState),
-  ).length;
+  const busyAt = (path: string) =>
+    Object.values(sessions).some(
+      (session) =>
+        (session.summary.workspacePath ?? session.summary.projectPath) === path &&
+        (isActiveRunState(session.summary.runState) ||
+          ["working", "reviewing", "revising", "finalizing"].includes(
+            session.summary.taskPhase ?? "",
+          )),
+    );
+  const activeHere = busyAt(workspacePath);
+  const isolated = view.summary.workspaceMode === "isolated";
+  const selectedFiles = changes?.files.filter((file) => shipPaths.includes(file.path)) ?? [];
 
-  // One confirm, then the whole exit ramp: branch if needed, commit, push, PR.
+  const integrate = async () => {
+    if (shipping || activeHere || busyAt(view.summary.projectPath)) return;
+    const yes = await ask(
+      `Merge committed workspace changes into ${view.summary.projectPath}? Both folders must be clean and all work stopped. Conflicts are reported without resetting either folder.`,
+      { title: "Integrate into project", kind: "info" },
+    );
+    if (!yes) return;
+    setShipping(true);
+    setShipError(null);
+    setIntegrationNote(null);
+    try {
+      const result = await engine.request("project.integrate", { path: workspacePath }, 180_000);
+      setIntegrationNote(
+        result.integrated
+          ? "Committed workspace changes are integrated into the project."
+          : [
+              result.note ?? "Integration has conflicts. Both folders are retained.",
+              ...result.conflicts,
+            ].join("\n"),
+      );
+      await refresh();
+    } catch (error) {
+      setShipError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setShipping(false);
+    }
+  };
+
+  // Selection includes entire paths, never claims same-file hunk attribution.
   const ship = async () => {
-    if (!changes || shipping) return;
+    if (!changes || shipping || activeHere || !selectedFiles.length) return;
     const onDefault = changes.branch === "main" || changes.branch === "master";
     const yes = await ask(
-      `Commit ${fmtCount(changes.files.length)} changed file${changes.files.length === 1 ? "" : "s"}${
+      `Commit ${fmtCount(selectedFiles.length)} selected file${selectedFiles.length === 1 ? "" : "s"}${
         onDefault
           ? `, on a new branch (you're on ${changes.branch})`
           : ` on ${changes.branch ?? "the current branch"}`
-      }, push, and open a pull request?`,
+      }, push, and open a pull request? All working-copy edits in these files are included; unrelated staged paths are excluded.`,
       { title: "Commit, Push & PR", kind: "info" },
     );
     if (!yes) return;
@@ -295,7 +341,7 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
     try {
       const res = await engine.request(
         "project.ship",
-        { path: view.summary.projectPath, title: view.summary.title },
+        { path: workspacePath, title: view.summary.title, files: shipPaths },
         180_000,
       );
       setShipped({ prUrl: res.prUrl, branch: res.branch, note: res.note });
@@ -309,6 +355,34 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
 
   const shipStatus = (
     <>
+      <div className="hint" style={{ margin: "6px 0", overflowWrap: "anywhere" }}>
+        {isolated ? "Isolated workspace" : "Shared working tree"} · {workspacePath}
+        {!isolated &&
+          " · File selection includes all edits in each selected file, including other sessions’ edits."}
+      </div>
+      {activeHere && (
+        <div className="hint">Stop work and wait for review/finalization before shipping.</div>
+      )}
+      {integrationNote && (
+        <div className="banner" role="status" style={{ whiteSpace: "pre-wrap" }}>
+          {integrationNote}
+        </div>
+      )}
+      {isolated && (
+        <button
+          className="btn"
+          disabled={
+            shipping ||
+            activeHere ||
+            busyAt(view.summary.projectPath) ||
+            Boolean(changes?.files.length)
+          }
+          onClick={() => void integrate()}
+          title="Merge committed work into the logical project; no reset or stash"
+        >
+          {shipping ? "Working…" : "Integrate into project"}
+        </button>
+      )}
       {shipError && <div className="banner">{shipError}</div>}
       {shipped && (
         <div className="ship-result">
@@ -361,33 +435,43 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
         </button>
         <button
           className="btn btn-primary"
-          disabled={shipping}
+          disabled={shipping || activeHere || selectedFiles.length === 0}
           onClick={() => void ship()}
-          title="Commit everything, push (branching off the default branch if needed), and open a PR"
+          title="Commit selected file paths, preserve unrelated staged files, push and open a PR"
         >
-          {shipping ? "Shipping…" : "Commit, Push & PR"}
+          {shipping ? "Shipping…" : `Ship selected (${selectedFiles.length})`}
         </button>
       </div>
       {shipStatus}
-      {activeHere > 1 && (
-        <div className="hint" style={{ margin: "6px 0" }}>
-          {activeHere} active sessions share this working tree — changes are not attributable to one
-          session.
-        </div>
-      )}
       <div className="changes-list">
         {changes.files.map((f) => (
-          <button
-            key={f.path}
-            className={`change-row${selected === f.path ? " selected" : ""}`}
-            onClick={() => void openDiff(f.path)}
-            title={f.renamedFrom ? `from ${f.renamedFrom}` : f.path}
-          >
-            <span className={`status-badge s-${f.status === "?" ? "u" : f.status.toLowerCase()}`}>
-              {f.status}
-            </span>
-            <span className="mono change-path">{f.path}</span>
-          </button>
+          <div className="row" key={f.path}>
+            <input
+              type="checkbox"
+              aria-label={`Include ${f.path} in commit`}
+              checked={shipPaths.includes(f.path)}
+              disabled={shipping || activeHere}
+              onChange={(event) => {
+                const paths = f.renamedFrom ? [f.path, f.renamedFrom] : [f.path];
+                setShipPaths((current) =>
+                  event.target.checked
+                    ? [...new Set([...current, ...paths])]
+                    : current.filter((path) => !paths.includes(path)),
+                );
+              }}
+            />
+            <button
+              className={`change-row${selected === f.path ? " selected" : ""}`}
+              style={{ flex: 1 }}
+              onClick={() => void openDiff(f.path)}
+              title={f.renamedFrom ? `from ${f.renamedFrom}` : f.path}
+            >
+              <span className={`status-badge s-${f.status === "?" ? "u" : f.status.toLowerCase()}`}>
+                {f.status}
+              </span>
+              <span className="mono change-path">{f.path}</span>
+            </button>
+          </div>
         ))}
       </div>
       {selected && (
@@ -422,6 +506,7 @@ function ChangesTab({ view }: { view: SessionView }): JSX.Element {
 }
 
 function FilesTab({ view }: { view: SessionView }): JSX.Element {
+  const workspacePath = view.summary.workspacePath ?? view.summary.projectPath;
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<string[]>([]);
   const [truncated, setTruncated] = useState(false);
@@ -437,7 +522,7 @@ function FilesTab({ view }: { view: SessionView }): JSX.Element {
     const t = setTimeout(() => {
       void engine
         .request("project.files", {
-          path: view.summary.projectPath,
+          path: workspacePath,
           query: query.trim() || undefined,
           limit: 500,
         })
@@ -453,7 +538,7 @@ function FilesTab({ view }: { view: SessionView }): JSX.Element {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [view.summary.projectPath, query]);
+  }, [workspacePath, query]);
 
   return (
     <div>
@@ -470,7 +555,7 @@ function FilesTab({ view }: { view: SessionView }): JSX.Element {
             className={`change-row${preview?.file === f ? " selected" : ""}`}
             onClick={() =>
               void engine
-                .request("project.readFile", { path: view.summary.projectPath, file: f })
+                .request("project.readFile", { path: workspacePath, file: f })
                 .then(setPreview)
                 .catch(() => {})
             }
@@ -770,6 +855,7 @@ export function Inspector({ view }: { view?: SessionView }): JSX.Element {
     { id: "usage", label: "Usage" },
     { id: "changes", label: "Changes" },
     { id: "files", label: "Files" },
+    { id: "history", label: "History" },
     ...(filePreview ? [{ id: "preview" as const, label: "File" }] : []),
   ];
 
@@ -804,9 +890,17 @@ export function Inspector({ view }: { view?: SessionView }): JSX.Element {
         ) : inspectorTab === "usage" ? (
           <UsageTab view={view} />
         ) : inspectorTab === "changes" ? (
-          <ChangesTab view={view} />
+          <ChangesTab key={view.summary.workspacePath ?? view.summary.projectPath} view={view} />
+        ) : inspectorTab === "history" ? (
+          <ProjectHistory
+            key={view.summary.projectPath}
+            projectPath={view.summary.projectPath}
+            onOpenHit={(hit) =>
+              window.dispatchEvent(new CustomEvent("orchestrator:open-history", { detail: hit }))
+            }
+          />
         ) : (
-          <FilesTab view={view} />
+          <FilesTab key={view.summary.workspacePath ?? view.summary.projectPath} view={view} />
         )}
       </div>
     </aside>

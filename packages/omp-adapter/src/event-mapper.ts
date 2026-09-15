@@ -64,6 +64,8 @@ interface MapperContext {
   sessionId: string;
   /** Called when the mapper infers a run-state transition. */
   onRunState?: (state: RunState, activity?: string) => void;
+  /** Persisted OMP entry identity, when the live notification is already stored. */
+  sourceEntryId?: (message: unknown) => string | undefined;
 }
 
 /** Tracks per-message identity so deltas can be attributed to a message. */
@@ -112,10 +114,12 @@ export class EventMapper {
               type: "user.message",
               sessionId,
               messageId: `${sessionId}:u${++this.#messageSeq}`,
+              sourceEntryId: this.#ctx.sourceEntryId?.(ev.message),
               text: textOf(ev.message),
             },
           ];
         }
+        if (role !== "assistant") return [];
         // A new assistant message begins; allocate a fresh id.
         this.#currentMessageId = `${sessionId}:m${++this.#messageSeq}`;
         return [];
@@ -138,6 +142,7 @@ export class EventMapper {
             type: "assistant.message.end",
             sessionId,
             messageId: id,
+            sourceEntryId: this.#ctx.sourceEntryId?.(msg),
             text: textOf(msg),
             thinking: thinkingOf(msg) || undefined,
             model: msg?.model,
@@ -352,7 +357,11 @@ export class EventMapper {
    */
   mapAdvisorCard(msg: OmpEvent): ProductEvent[] {
     const sessionId = this.#ctx.sessionId;
-    return advisorEventsFromCard(sessionId, msg, () => `${sessionId}:adv${++this.#messageSeq}`);
+    return advisorEventsFromCard(
+      sessionId,
+      msg,
+      () => `${sessionId}:advisor:${crypto.randomUUID()}`,
+    );
   }
 
   #mapMessageUpdate(ev: OmpEvent): ProductEvent[] {
@@ -480,7 +489,9 @@ export function advisorEventsFromCard(
   const at =
     typeof msg?.timestamp === "number"
       ? new Date(msg.timestamp).toISOString()
-      : new Date().toISOString();
+      : typeof msg?.timestamp === "string"
+        ? msg.timestamp
+        : new Date().toISOString();
   const out: ProductEvent[] = [];
   for (const n of notes) {
     const text = typeof n?.note === "string" ? n.note : "";

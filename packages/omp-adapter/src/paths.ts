@@ -6,7 +6,7 @@
  * realpath'd root.
  */
 import { realpathSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 /**
  * Resolve the parent directory through symlinks, keeping the final segment
@@ -19,6 +19,16 @@ export function realParentPath(absPath: string): string {
     return join(realpathSync(dirname(absPath)), basename(absPath));
   } catch {
     return absPath;
+  }
+}
+
+/** Stable project identity through symlink aliases, including a missing leaf folder. */
+export function canonicalPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return realParentPath(absolute);
   }
 }
 

@@ -5,6 +5,7 @@
  * into these so the UI never imports OMP internals and upstream churn is
  * absorbed in one place.
  */
+import type { TaskPhase } from "./tasks";
 
 // ---------------------------------------------------------------------------
 // Identity
@@ -326,6 +327,8 @@ export function fromOmpAdvisorSelector(selector?: string): {
 
 export interface SessionLaunchConfig {
   projectPath: string;
+  /** Isolated sessions start from the repository's committed HEAD. */
+  workspaceMode?: "shared" | "isolated";
   title?: string;
   /** Model key; omitted means "use OMP's configured default". */
   model?: string;
@@ -350,8 +353,14 @@ export interface SessionSummary {
   sessionId: SessionId;
   projectId: ProjectId;
   projectPath: string;
+  /** Actual tool cwd; projectPath remains the logical project for grouping. */
+  workspacePath?: string;
+  workspaceMode?: "shared" | "isolated";
+  workspaceBranch?: string;
   title: string;
   runState: RunState;
+  taskPhase?: TaskPhase;
+  taskRequestId?: string;
   /** Short live-activity label, e.g. "Editing session.ts". */
   activity?: string;
   model?: string;
@@ -373,6 +382,9 @@ export interface DiscoveredSession {
   ompSessionId: string;
   path: string;
   cwd: string;
+  /** Logical project root for managed worktrees; cwd remains the tool workspace. */
+  projectPath?: string;
+  workspaceMode?: "shared" | "isolated";
   title: string;
   created?: string;
   modified?: string;

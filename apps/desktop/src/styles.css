@@ -3412,3 +3412,60 @@ button {
   background: var(--text-faint);
   opacity: 0.5;
 }
+
+/* Published results, observed evidence, and exact historical sources. */
+.inbox .row,
+.inbox-approval,
+.evidence-list .row {
+  flex-wrap: wrap;
+}
+.inbox-title,
+.inbox-snippet {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.evidence-list {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.evidence-list .tool-card {
+  margin-top: 8px;
+}
+.evidence-body {
+  padding: 10px 12px;
+}
+.evidence-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  font-size: 12px;
+}
+.evidence-meta dt {
+  color: var(--text-muted);
+}
+.evidence-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.source-dialog {
+  width: min(840px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.source-dialog h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.source-content {
+  overflow: auto;
+  min-height: 0;
+}
+.source-dialog .modal-foot {
+  flex-wrap: wrap;
+}
+.source-loading {
+  padding: 8px 16px;
+}

@@ -28,6 +28,7 @@
  */
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import type { CustomToolContext, SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import {
   advisorUsageFromStats,
   contextUsageOf,
@@ -50,8 +51,11 @@ import {
   redactValue,
   type UsageRecord,
 } from "@orchestrator/protocol";
-import { UsageAccumulator } from "@orchestrator/usage";
+import { UsageAccumulator, usageKey } from "@orchestrator/usage";
 import { classifyError } from "./classify-error";
+import { EvidenceTracker } from "./evidence";
+import type { AnswerSubmission, ReviewOwner, StoredTask } from "./finalization";
+import { ANSWER_ENTRY_TYPE, TASK_ENTRY_TYPE, TaskFinalizer } from "./finalization";
 import type { TestProvider } from "./supervisor";
 
 // ---------------------------------------------------------------------------
@@ -123,22 +127,49 @@ let historyBase = 0; // local sequence of history[0]
  */
 let turnCounter = 0;
 let currentTurnId: string | undefined;
+let finalizer: TaskFinalizer | undefined;
+let ownedRun = false;
+let stopped = false;
+let cancelReview: (() => void) | undefined;
+const promptQueue: Array<{
+  requestId: string;
+  text: string;
+  images: Array<{ type: "image"; data: string; mimeType: string }>;
+}> = [];
+const preexistingJobs = new Set<string>();
+const pendingSubagents = new Set<string>();
+interface ReviewerIdentity extends ReviewOwner {
+  advisorId: string;
+  advisorName: string;
+}
+const reviewOwners = new Map<string, ReviewerIdentity>();
+const activeReviewNames = new Set<string>();
+let activeReviewOwner: ReviewOwner | undefined;
+let unownedReviewNote = false;
 const beginTurn = (): string => {
   currentTurnId = `t${++turnCounter}`;
   return currentTurnId;
 };
-/**
- * An advisor-triggered continuation turn: OMP starts a fresh agent run after
- * a post-turn review note (blocker/concern) without any prompt from the host.
- * The prompt handler owns `session.finished` for the turns it starts; a
- * continuation has no owner, so the subscriber below must emit it instead —
- * flagged, so the UI folds the revision into the user turn it revises rather
- * than showing two finished answers back to back.
- */
-let continuationStartedAt: number | undefined;
+// Execution IDs change for each primary run; request IDs survive revisions.
 
 const emit = (event: ProductEvent) => {
-  const stamped = currentTurnId ? { ...event, turnId: currentTurnId } : event;
+  const reviewer =
+    event.type === "advisor.message" ? reviewOwners.get(event.advisorName) : undefined;
+  const stamped = {
+    ...event,
+    ...(event.type !== "advisor.message" && currentTurnId ? { turnId: currentTurnId } : {}),
+    ...(event.type !== "advisor.message" && finalizer?.currentId
+      ? { userTurnId: finalizer.currentId }
+      : {}),
+    ...(reviewer
+      ? {
+          userTurnId: reviewer.requestId,
+          advisorId: reviewer.advisorId,
+          advisorName: reviewer.advisorName,
+        }
+      : {}),
+    ...(event.type === "task.updated" ? { userTurnId: event.task.requestId } : {}),
+  };
   history.push(stamped);
   if (history.length > HISTORY_CAP) {
     history.splice(0, history.length - HISTORY_CAP);
@@ -150,6 +181,36 @@ const emit = (event: ProductEvent) => {
     sessionId: boot.sessionId,
     event: stamped,
   });
+  if (event.type === "advisor.message") {
+    if (reviewer) {
+      finalizer?.finding(
+        {
+          id: event.messageId,
+          advisorName: reviewer.advisorName,
+          severity: event.severity,
+          text: event.text,
+        },
+        reviewer,
+      );
+    } else {
+      unownedReviewNote = true;
+      emit({
+        type: "session.notice",
+        sessionId: boot.sessionId,
+        level: "warning",
+        source: "advisor",
+        message: `An advisor note has no recorded review owner. It remains visible but cannot certify a task: ${event.text}`,
+      });
+    }
+  }
+  if (
+    finalizer?.currentId &&
+    (event.type === "tool.start" || event.type === "tool.update" || event.type === "tool.end")
+  ) {
+    void evidenceTracker.observe(stamped, finalizer.currentId).catch((error) => {
+      err(`evidence observation failed: ${String(error)}`);
+    });
+  }
 };
 let seq = 0;
 
@@ -164,6 +225,9 @@ function settleCrash(origin: string, e: unknown): void {
     stack: (e as Error)?.stack,
   });
   try {
+    stopped = true;
+    promptQueue.length = 0;
+    finalizer?.fail(`Worker failure: ${String((e as Error)?.message ?? e)}`);
     // Only a session that LOOKS busy needs settling — an idle session's
     // background hiccup is a log line, not a failure banner.
     const active = !["idle", "completed", "interrupted", "error"].includes(runState);
@@ -213,6 +277,83 @@ function setRunState(s: RunState, activity?: string): void {
 }
 
 const OMP = await import("@oh-my-pi/pi-coding-agent");
+const reviewStatusSchema = OMP.z.enum(["pending", "passed", "incomplete", "not-required"]);
+const storedTaskSchema = OMP.z.object({
+  task: OMP.z.object({
+    requestId: OMP.z.string(),
+    prompt: OMP.z.string(),
+    phase: OMP.z.enum([
+      "working",
+      "reviewing",
+      "revising",
+      "finalizing",
+      "complete",
+      "blocked",
+      "interrupted",
+      "error",
+    ]),
+    revision: OMP.z.number().int().nonnegative(),
+    reviewStatus: reviewStatusSchema,
+    reviewDetail: OMP.z.string().optional(),
+    findings: OMP.z.array(
+      OMP.z.object({
+        id: OMP.z.string(),
+        advisorName: OMP.z.string(),
+        severity: OMP.z.enum(["nit", "concern", "blocker", "unknown"]),
+        text: OMP.z.string(),
+        revision: OMP.z.number().int().nonnegative(),
+        resolution: OMP.z.enum(["pending", "accepted", "rejected", "unresolved"]),
+        rationale: OMP.z.string().optional(),
+      }),
+    ),
+    evidence: OMP.z.array(
+      OMP.z.object({
+        id: OMP.z.string(),
+        requestId: OMP.z.string(),
+        callId: OMP.z.string(),
+        kind: OMP.z.enum(["command", "browser"]),
+        label: OMP.z.string(),
+        status: OMP.z.enum(["passed", "failed", "observed", "unknown"]),
+        exitCode: OMP.z.number().optional(),
+        output: OMP.z.string().optional(),
+        artifactPaths: OMP.z.array(OMP.z.string()).optional(),
+        startedAt: OMP.z.string(),
+        finishedAt: OMP.z.string(),
+        revision: OMP.z.string().optional(),
+        stale: OMP.z.boolean(),
+        detail: OMP.z.string().optional(),
+      }),
+    ),
+    answer: OMP.z
+      .object({
+        id: OMP.z.string(),
+        requestId: OMP.z.string(),
+        messageId: OMP.z.string(),
+        text: OMP.z.string(),
+        at: OMP.z.string(),
+        revision: OMP.z.number().int().nonnegative(),
+        reviewStatus: reviewStatusSchema,
+      })
+      .optional(),
+    startedAt: OMP.z.string(),
+    updatedAt: OMP.z.string(),
+    completedAt: OMP.z.string().optional(),
+  }),
+  candidate: OMP.z
+    .object({
+      text: OMP.z.string(),
+      messageId: OMP.z.string(),
+      revision: OMP.z.number().int().nonnegative(),
+    })
+    .optional(),
+});
+const reviewOwnerSchema = OMP.z.object({
+  sdkName: OMP.z.string(),
+  requestId: OMP.z.string(),
+  revision: OMP.z.number().int().nonnegative(),
+  advisorId: OMP.z.string(),
+  advisorName: OMP.z.string(),
+});
 
 const authStorage = await OMP.discoverAuthStorage(boot.agentDir);
 const modelRegistry = new OMP.ModelRegistry(authStorage as never);
@@ -269,6 +410,111 @@ const sessionManager = boot.resumeSessionPath
       OMP.SessionManager.getDefaultSessionDir(boot.projectPath, boot.agentDir),
     );
 
+const evidenceTracker = new EvidenceTracker(boot.projectPath);
+finalizer = new TaskFinalizer({
+  persist(record) {
+    sessionManager.appendCustomEntry(TASK_ENTRY_TYPE, record);
+    sessionManager.flushSync();
+  },
+  updated(task) {
+    emit({ type: "task.updated", sessionId: boot.sessionId, task });
+  },
+  notice(message) {
+    emit({ type: "session.notice", sessionId: boot.sessionId, level: "warning", message });
+  },
+  stage(text, requestId, revision) {
+    startReviewRound(requestId, revision, text);
+    return sessionManager.appendCustomMessageEntry(
+      ANSWER_ENTRY_TYPE,
+      text,
+      false,
+      { requestId, revision },
+      "agent",
+    );
+  },
+  reviewRequired() {
+    return [...advisors.values()].some((advisor) => advisor.enabled);
+  },
+  async review(owner) {
+    if (![...advisors.values()].some((advisor) => advisor.enabled)) return true;
+    if (typeof session.waitForAdvisorCatchup !== "function") return false;
+    if (
+      activeReviewOwner?.requestId !== owner.requestId ||
+      activeReviewOwner.revision !== owner.revision ||
+      unownedReviewNote
+    )
+      return false;
+    setAdvisorReview(true);
+    refreshAdvisors();
+    const cancelled = Promise.withResolvers<boolean>();
+    cancelReview = () => cancelled.resolve(false);
+    try {
+      const caughtUp = await Promise.race([
+        session.waitForAdvisorCatchup(ADVISOR_CATCHUP_MS),
+        cancelled.promise,
+      ]);
+      sweepAdvisorCards();
+      const stats = session.getAdvisorStats();
+      const configured = [...advisors.values()].filter((advisor) => advisor.enabled).length;
+      const current = stats.advisors.filter((advisor) => activeReviewNames.has(advisor.name));
+      const overview = session
+        .getAdvisorStatusOverview()
+        .advisors.filter((advisor) => activeReviewNames.has(advisor.name));
+      return (
+        caughtUp === true &&
+        !unownedReviewNote &&
+        current.length === configured &&
+        current.every(
+          (advisor) => !["error", "quota_exhausted", "no_model", "paused"].includes(advisor.status),
+        ) &&
+        overview.length === configured &&
+        overview.every((advisor) => advisor.yielded)
+      );
+    } finally {
+      cancelReview = undefined;
+      setAdvisorReview(false);
+      refreshAdvisors();
+    }
+  },
+  async settleWork() {
+    const deadline = Date.now() + ADVISOR_CATCHUP_MS;
+    while (!stopped && Date.now() < deadline) {
+      const snapshot = session.getAsyncJobSnapshot();
+      const pending = snapshot?.running.some((job) => !preexistingJobs.has(job.id));
+      if (
+        !pending &&
+        pendingSubagents.size === 0 &&
+        !snapshot?.delivery.queued &&
+        !snapshot?.delivery.delivering &&
+        !session.isStreaming
+      )
+        return true;
+      const delay = Promise.withResolvers<void>();
+      setTimeout(delay.resolve, 100);
+      await delay.promise;
+    }
+    return false;
+  },
+  async revise(instruction) {
+    if (stopped) throw new Error("Stopped work cannot restart automatically.");
+    beginTurn();
+    await session.sendCustomMessage(
+      {
+        customType: "orchestrator.finalize",
+        content: `Active harness requestId: ${finalizer!.currentId}.\n${instruction}`,
+        display: false,
+        attribution: "agent",
+        details: { requestId: finalizer!.currentId },
+      },
+      { triggerTurn: true },
+    );
+    await session.waitForIdle();
+  },
+  evidence(requestId) {
+    return evidenceTracker.refresh(requestId);
+  },
+});
+
 // `Settings.init` is a memoized process singleton. One session per process
 // makes that harmless, and it is the only initializer exported publicly.
 const settings = await OMP.Settings.init({ cwd: boot.projectPath, agentDir: boot.agentDir });
@@ -307,6 +553,60 @@ const created = await OMP.createAgentSession({
   thinkingLevel: boot.thinkingLevel as never,
   sessionManager,
   settings,
+  customTools: [
+    {
+      name: "submit_answer",
+      label: "Stage user answer",
+      loadMode: "essential",
+      description:
+        "Explicitly stage the complete user-facing answer for the active harness request. Does not publish until required work and advisor review settle. Use the requestId supplied by the harness. Supply finding IDs, their reviewed revision, and concrete disposition rationales; never replace an answer with a reply to a reviewer.",
+      parameters: OMP.z.object({
+        requestId: OMP.z.string(),
+        text: OMP.z.string(),
+        dispositions: OMP.z.array(
+          OMP.z.object({
+            findingId: OMP.z.string(),
+            revision: OMP.z.number().int().nonnegative(),
+            resolution: OMP.z.enum(["accepted", "rejected", "unresolved"]),
+            rationale: OMP.z.string(),
+          }),
+        ),
+      }),
+      async execute(
+        _callId: string,
+        input: AnswerSubmission,
+        _onUpdate: unknown,
+        context: CustomToolContext,
+        signal?: AbortSignal,
+      ) {
+        if (signal?.aborted || stopped) throw new Error("Stopped work cannot submit an answer.");
+        if (context.sessionManager.getSessionId() !== sessionManager.getSessionId()) {
+          throw new Error("Only the primary session may stage the user-facing answer.");
+        }
+        const jobs = session.getAsyncJobSnapshot();
+        if (
+          pendingSubagents.size ||
+          jobs?.running.some((job) => !preexistingJobs.has(job.id)) ||
+          jobs?.delivery.queued ||
+          jobs?.delivery.delivering
+        ) {
+          throw new Error(
+            "Required finite work or its result delivery remains pending. Wait for it, inspect the results, then submit the answer.",
+          );
+        }
+        const revision = finalizer!.submit(input);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Candidate revision ${revision} staged, not published. Finish the current run without repeating the answer; the harness will review it and request any necessary revision.`,
+            },
+          ],
+          details: { requestId: input.requestId, revision },
+        };
+      },
+    },
+  ],
   // Defence in depth even at one session per process.
   agentRegistry: new OMP.AgentRegistry(),
   enableMCP: boot.enableMCP,
@@ -314,17 +614,14 @@ const created = await OMP.createAgentSession({
   // A missing UI must never imply consent; approvals bridge to the host.
   autoApprove: boot.autoApprove,
   hasUI: true,
-  // Advisors interject mid-turn as steering messages; without this, the
-  // model's post-advisory message reads as a reply to the reviewer and the
-  // user never gets a clean final answer.
+  // Only an explicit primary-authored submission may become the canonical answer.
   appendSystemPrompt:
-    "Advisor agents may interject review notes (as <advisory> messages) while you work. " +
-    "Weigh them on their merits — but your final message each turn must be a complete, " +
-    "standalone answer addressed to the user. The user did not write the advisory and " +
-    'does not see it: never address the advisor, never open with "you\'re right" or ' +
-    '"the advisor\'s concern is legitimate", and never let a revision read as a reply to ' +
-    "the review. Restate the full, corrected outcome for the user as if it were your " +
-    "first and only answer.\n" +
+    "Advisor agents may interject visible review notes as <advisory> messages. " +
+    "You own the user-facing answer; assess reviewer findings separately, with explicit " +
+    "accepted/rejected/unresolved dispositions and concrete rationales. At completion, " +
+    "call submit_answer with the current harness requestId and a complete standalone " +
+    "answer addressed to the user, not the reviewer. Ordinary assistant messages are " +
+    "progress, not publication. Never claim completion with required finite work pending.\n" +
     "The UI renders GitHub-flavored markdown only — no LaTeX or math delimiters. Write " +
     "status labels and emphasis as plain markdown (e.g. **P0 — ship-blocking**), never " +
     "\\textcolor or $…$.\n" +
@@ -342,6 +639,9 @@ const created = await OMP.createAgentSession({
     "enumerating more than three parallel items.",
 } as never);
 const session = created.session;
+// The host owns all revision starts. Preserve advisor cards instead of allowing
+// upstream blocker notes to launch hidden primary turns after Stop/publication.
+session.prepareForHeadlessAdvisorDrain();
 
 /**
  * Probe optional upstream capabilities ONCE, loudly, at boot. These are the
@@ -673,7 +973,14 @@ const uiContext: any = {
 // Event stream
 // ---------------------------------------------------------------------------
 
-const mapper = new EventMapper({ sessionId: boot.sessionId, onRunState: setRunState });
+const mapper = new EventMapper({
+  sessionId: boot.sessionId,
+  onRunState: setRunState,
+  sourceEntryId(message) {
+    const leaf = sessionManager.getLeafEntry();
+    return leaf?.type === "message" && leaf.message === message ? leaf.id : undefined;
+  },
+});
 
 // --- streaming coalescing -------------------------------------------------
 const textBuf = new Map<string, string>();
@@ -763,18 +1070,6 @@ function checkPersisted(): void {
  */
 const lastAdvisorState = new Map<string, string>();
 
-/**
- * Whether a post-turn advisor review is actually in flight.
- *
- * OMP's `PerAdvisorStat.status === "running"` only means the advisor RUNTIME
- * is alive — a healthy advisor reports "running" forever, even between
- * reviews. Mapping that straight to "reviewing" left every finished turn
- * showing "advisors are still reviewing" until the end of time. The real
- * signal is `waitForAdvisorCatchup`: a review window opens when a terminal
- * turn ends and closes when the advisors' backlog (and their emitted notes)
- * has drained.
- */
-let advisorReviewGen = 0;
 let advisorReviewInFlight = false;
 const ADVISOR_CATCHUP_MS = 10 * 60_000;
 
@@ -791,118 +1086,6 @@ function setAdvisorReview(active: boolean): void {
   emit({ type: "advisor.review", sessionId: boot.sessionId, active });
 }
 
-/** The optional upstream surface this watch needs; probed, never assumed. */
-interface AdvisorReviewSession {
-  isAdvisorActive?: () => boolean;
-  waitForAdvisorCatchup?: (timeoutMs: number) => Promise<unknown>;
-}
-
-/**
- * A reviewer note that landed after the primary's final answer.
- *
- * OMP routes a `concern` raised once the turn has ended to its "preserve"
- * channel: the card is appended to context and shown in the UI, and nothing
- * runs — the model first reads it on the user's NEXT prompt. Only a `blocker`
- * starts a continuation turn upstream. From the user's chair the reviewer
- * "left a note and nobody read it". So when a card is surfaced while the agent
- * is idle, the review-window tail starts one host-initiated continuation turn
- * and the primary addresses the note now. One per user turn: the revision is
- * reviewed too, and a further note on it stays a visible card instead of
- * looping the two agents.
- */
-let lateAdvisoryPending = false;
-let lateAdvisoryFollowUpUsed = false;
-const LATE_ADVISORY_NUDGE =
-  "One or more advisor notes (the <advisory> messages above) arrived after your final " +
-  "answer. Act on them now: apply and verify any change they warrant, or state briefly " +
-  "why a point does not apply. Then restate the complete, corrected outcome for the user " +
-  "as a standalone answer — the user did not see the note.";
-
-/** The optional upstream surface the follow-up needs; probed, never assumed. */
-interface LateAdvisorySession {
-  isStreaming?: boolean;
-  /** The live agent-core loop; a preserved card only ever lands while it is idle. */
-  agent?: { state?: { isStreaming?: boolean } };
-  sendCustomMessage?: (
-    message: { customType: string; content: string; display: boolean; attribution: "agent" },
-    options: { triggerTurn: boolean },
-  ) => Promise<boolean>;
-}
-
-function noteAdvisorCardSurfaced(): void {
-  const s = session as unknown as LateAdvisorySession;
-  if (!s.agent?.state?.isStreaming) lateAdvisoryPending = true;
-}
-
-/**
- * Start the follow-up turn for a late note, if one is due. Resolves when that
- * turn has ENDED (upstream awaits the whole agent run), returning whether it
- * ran at all — the caller keeps the review window open across it so the UI
- * never announces a finished turn that is about to be revised.
- */
-async function continueForLateAdvisory(): Promise<boolean> {
-  if (!lateAdvisoryPending || lateAdvisoryFollowUpUsed) return false;
-  const s = session as unknown as LateAdvisorySession;
-  if (typeof s.sendCustomMessage !== "function") return false;
-  // A user Stop preserved the note precisely so nothing auto-resumes; a turn
-  // already running reads the card itself.
-  if (runState === "interrupted" || runState === "stopping" || s.isStreaming || hibernating) {
-    return false;
-  }
-  lateAdvisoryPending = false;
-  lateAdvisoryFollowUpUsed = true;
-  try {
-    return await s.sendCustomMessage(
-      {
-        customType: "advisor-followup",
-        content: LATE_ADVISORY_NUDGE,
-        display: false,
-        attribution: "agent",
-      },
-      { triggerTurn: true },
-    );
-  } catch (e) {
-    err(`late advisory follow-up failed: ${String(e)}`);
-    return false;
-  }
-}
-
-function beginAdvisorReviewWatch(): void {
-  const s = session as unknown as AdvisorReviewSession;
-  const catchup = s.waitForAdvisorCatchup;
-  if (advisors.size === 0 || !s.isAdvisorActive?.() || typeof catchup !== "function") {
-    // No review is coming for this turn. Cancel any window a previous turn
-    // left open and close it now, so the turn is announced as settled instead
-    // of waiting on a catchup that will never be observed.
-    advisorReviewGen++;
-    setAdvisorReview(false);
-    return;
-  }
-  const gen = ++advisorReviewGen;
-  setAdvisorReview(true);
-  refreshAdvisors(); // "reviewing" goes out before session.finished does
-  void (async () => {
-    try {
-      // Give the just-ended turn a beat to land in the advisors' queues, or
-      // the catchup wait can resolve before the review it should cover starts.
-      const settle = Promise.withResolvers<void>();
-      setTimeout(settle.resolve, 1_000);
-      await settle.promise;
-      await catchup.call(s, ADVISOR_CATCHUP_MS);
-    } catch {
-      /* the wait must never wedge the finished state */
-    }
-    if (gen !== advisorReviewGen) return; // a newer turn owns the window now
-    // The catchup drained every note the review produced. If one was parked
-    // in context with no turn to read it, run that turn now; its own
-    // agent_end re-arms this watch and owns the window from there.
-    if (await continueForLateAdvisory()) return;
-    if (gen !== advisorReviewGen) return;
-    setAdvisorReview(false);
-    refreshAdvisors();
-  })();
-}
-
 function refreshAdvisors(): void {
   let stats: any;
   try {
@@ -912,12 +1095,30 @@ function refreshAdvisors(): void {
   }
   if (!stats) return;
 
-  ingestAndShare(advisorUsageFromStats(usageCtx, stats));
+  const records = advisorUsageFromStats(usageCtx, stats);
+  for (const record of records) {
+    const sdkName = record.actorName ?? "";
+    const reviewer = reviewOwners.get(sdkName);
+    if (!reviewer) continue;
+    record.actorId = `advisor:${reviewer.advisorId}`;
+    record.actorName = reviewer.advisorName;
+    // Each round owns a separate cumulative stream; grouping still uses the
+    // stable configured advisor, so resets neither lose tokens nor add UI rows.
+    record.key = usageKey({
+      sessionId: usageCtx.sessionId,
+      actorId: record.actorId,
+      messageId: `cumulative:${sdkName}`,
+    });
+  }
+  ingestAndShare(records);
 
   for (const per of stats.advisors ?? []) {
-    const name = String(per?.name ?? "");
-    if (!name) continue;
-    const id = `advisor:${name}`;
+    const sdkName = String(per?.name ?? "");
+    if (!activeReviewNames.has(sdkName)) continue;
+    const reviewer = reviewOwners.get(sdkName);
+    if (!reviewer) continue;
+    const name = reviewer.advisorName;
+    const id = reviewer.advisorId;
     const cfg = advisors.get(id);
     // Fault states win outright. Otherwise the REVIEW WINDOW decides, not
     // `status === "running"`: an advisor that was just handed the turn can
@@ -990,7 +1191,7 @@ const surfacedAdvisorCards = new Set<string>();
 let advisorCardsSeen = ((session as any)?.agent?.state?.messages ?? []).length;
 function advisorCardKey(m: any): string {
   const c = typeof m?.content === "string" ? m.content : JSON.stringify(m?.content ?? "");
-  return `${m?.timestamp ?? ""}:${c.length}:${c.slice(0, 120)}`;
+  return `${m?.timestamp ?? ""}:${c}`;
 }
 function isAdvisorCardMessage(m: any): boolean {
   return m?.role === "custom" && m?.customType === "advisor";
@@ -1007,7 +1208,7 @@ function sweepAdvisorCards(): void {
     const key = advisorCardKey(m);
     if (surfacedAdvisorCards.has(key)) continue;
     surfacedAdvisorCards.add(key);
-    noteAdvisorCardSurfaced();
+    // emit() records the normalized finding with the active candidate revision.
     for (const o of mapper.mapAdvisorCard(m)) {
       flush();
       emit(o);
@@ -1034,15 +1235,14 @@ function scanForPreviewUrl(text: string | undefined): void {
 }
 
 session.subscribe((ev: any) => {
-  // Advisor-triggered continuation turns never pass through the prompt
-  // handler; the raw agent_start is their turn boundary.
   if (ev?.type === "agent_start") {
-    // Whatever cards sit in context, this turn reads them.
-    lateAdvisoryPending = false;
-    if (!currentTurnId) {
-      beginTurn();
-      continuationStartedAt = Date.now();
+    session.prepareForHeadlessAdvisorDrain();
+    if (stopped || finalizer?.current?.answer) {
+      session.clearQueue({ forInterrupt: true });
+      void session.abort({ reason: OMP.USER_INTERRUPT_LABEL });
+      return;
     }
+    if (!currentTurnId) beginTurn();
   }
   // Surface silently-steered advisor cards before this event's own items, so
   // a note lands ahead of the revision it triggered (see sweepAdvisorCards).
@@ -1056,9 +1256,15 @@ session.subscribe((ev: any) => {
     if (ev.type === "message_start") return; // end carries the render
     if (surfacedAdvisorCards.has(key)) return;
     surfacedAdvisorCards.add(key);
-    noteAdvisorCardSurfaced();
   }
   for (const o of mapper.map(ev)) {
+    if (
+      o.type === "tool.start" &&
+      o.toolName !== "submit_answer" &&
+      finalizer?.invalidateCandidate()
+    ) {
+      session.setAdvisorEnabled(false);
+    }
     if (o.type === "assistant.text") {
       textBuf.set(o.messageId, (textBuf.get(o.messageId) ?? "") + o.delta);
       scheduleFlush();
@@ -1084,36 +1290,10 @@ session.subscribe((ev: any) => {
   }
   if (ev?.type === "agent_end") {
     flush();
-    // The review window opens FIRST. Refreshing before it opened published a
-    // fresh "idle" for every advisor — and seeded the change-dedupe map with
-    // it — in the very instant the review was starting.
-    //
-    // For owned prompts this runs before the prompt resolves (so the host has
-    // the window open before `session.finished` lands), and it equally covers
-    // advisor-triggered continuation turns that never reach the prompt handler.
-    if (ev.isTerminal !== false) beginAdvisorReviewWatch();
     refreshAdvisors();
     emitUsage();
     emitContext();
     checkPersisted();
-    // A continuation turn has no prompt handler to close it. Announce its end
-    // here — exactly once, with the state that actually occurred — so the
-    // host learns the revised answer is the real finish of the user's turn.
-    if (ev.isTerminal !== false && continuationStartedAt !== undefined) {
-      const startedAt = continuationStartedAt;
-      continuationStartedAt = undefined;
-      const outcome =
-        runState === "interrupted" || runState === "stopping" ? "interrupted" : "completed";
-      setRunState(outcome);
-      emit({
-        type: "session.finished",
-        sessionId: boot.sessionId,
-        runState: outcome,
-        durationMs: Date.now() - startedAt,
-        continuation: true,
-      });
-      currentTurnId = undefined;
-    }
   }
 });
 
@@ -1139,6 +1319,11 @@ setInterval(() => {
  * the session file open is worse than a bounded exit.
  */
 async function disposeAndExit(): Promise<void> {
+  if (ownedRun) {
+    stopped = true;
+    promptQueue.length = 0;
+    finalizer?.stop("Worker exited before finalization. Resume explicitly.");
+  }
   setTimeout(() => process.exit(0), 3_000).unref?.();
   try {
     await session.dispose();
@@ -1150,6 +1335,7 @@ async function disposeAndExit(): Promise<void> {
 
 function maybeHibernate(): void {
   if (hibernating || IDLE_HIBERNATE_MS === 0) return;
+  if (ownedRun || promptQueue.length || pendingSubagents.size) return;
   const parked =
     (runState === "idle" || runState === "completed") &&
     pendingApprovals.size === 0 &&
@@ -1181,6 +1367,7 @@ if (eventBus) {
     const id = String(data?.id ?? "");
     if (!id) return;
     if (data.status === "started") {
+      pendingSubagents.add(id);
       subagentStartMs.set(id, Date.now());
       subagentToolCalls.set(id, 0);
       emit({
@@ -1194,6 +1381,7 @@ if (eventBus) {
         startedAt: new Date().toISOString(),
       });
     } else {
+      pendingSubagents.delete(id);
       emit({
         type: "subagent.end",
         sessionId: boot.sessionId,
@@ -1247,64 +1435,64 @@ if (eventBus) {
 // ---------------------------------------------------------------------------
 
 async function applyAdvisors(list: AdvisorConfig[]): Promise<AdvisorConfig[]> {
+  refreshAdvisors();
+  session.setAdvisorEnabled(false);
   advisors.clear();
-  for (const a of list) advisors.set(a.id, a);
-  const s: any = session;
-  if (typeof s.applyAdvisorConfigs === "function") {
-    const enabled = list.filter((a) => a.enabled);
-    await s.applyAdvisorConfigs(enabled.map(toOmpAdvisor), undefined);
-    // applyAdvisorConfigs only STORES the roster; the runtime builds when the
-    // session-level advisor toggle flips on (session-advisors.ts upstream).
-    // Enabling with an empty roster would start OMP's default advisor, so the
-    // toggle tracks whether this session actually has enabled advisors.
-    s.setAdvisorEnabled?.(enabled.length > 0);
-    if (enabled.length > 0 && !s.isAdvisorActive?.()) {
-      // The toggle was flipped but no runtime came up — usually the advisor
-      // model could not resolve. Say so instead of showing idle advisors.
-      for (const a of enabled) {
-        emit({
-          type: "advisor.failed",
-          sessionId: boot.sessionId,
-          advisorId: a.id,
-          advisorName: a.name,
-          error: {
-            kind: "model-unavailable",
-            message: `Could not start — its model${a.model ? ` (${a.model})` : ""} did not resolve.`,
-          },
-          primaryUnaffected: true,
-        });
-      }
-    }
-  } else if (list.some((a) => a.enabled)) {
-    // Never show advisors as configured when the runtime cannot actually run
-    // them — that would be a silent lie about what is reviewing the session.
-    err("applyAdvisorConfigs missing upstream; advisors not started", { kind: "configuration" });
-    for (const a of list) {
-      emit({
-        type: "advisor.failed",
-        sessionId: boot.sessionId,
-        advisorId: a.id,
-        advisorName: a.name,
-        error: {
-          kind: "configuration",
-          message: "This OMP build does not support session advisors.",
-        },
-        primaryUnaffected: true,
-      });
-    }
-    return list;
-  }
-  for (const a of list) {
+  for (const advisor of list) {
+    advisors.set(advisor.id, advisor);
     emit({
       type: "advisor.state",
       sessionId: boot.sessionId,
-      advisorId: a.id,
-      advisorName: a.name,
-      state: a.enabled ? "idle" : "disabled",
-      model: a.model,
+      advisorId: advisor.id,
+      advisorName: advisor.name,
+      state: advisor.enabled ? "idle" : "disabled",
+      model: advisor.model,
     });
   }
   return list;
+}
+
+/**
+ * OMP notes carry their configured advisor name, but no request/revision.
+ * A unique SDK roster per immutable review round turns that supported source
+ * name into a durable ownership key. Old callbacks retain their OLD key even
+ * when cancellation races delivery; they can never target the next request.
+ */
+function startReviewRound(requestId: string, revision: number, candidate?: string): void {
+  refreshAdvisors();
+  session.setAdvisorEnabled(false);
+  activeReviewNames.clear();
+  activeReviewOwner = { requestId, revision };
+  unownedReviewNote = false;
+  const enabled = [...advisors.values()].filter((advisor) => advisor.enabled);
+  const configs = enabled.map((advisor) => {
+    const sdkName = `review-${crypto.randomUUID()}`;
+    const identity: ReviewerIdentity = {
+      requestId,
+      revision,
+      advisorId: advisor.id,
+      advisorName: advisor.name,
+    };
+    reviewOwners.set(sdkName, identity);
+    activeReviewNames.add(sdkName);
+    sessionManager.appendCustomEntry("orchestrator.review-owner", { sdkName, ...identity });
+    return { ...toOmpAdvisor(advisor), name: sdkName };
+  });
+  const task = finalizer!.records.get(requestId)?.task;
+  session.applyAdvisorConfigs(
+    configs as never,
+    [
+      `Review only request ${requestId}, candidate revision ${revision}. Your findings remain owned by this snapshot even if later primary work appears.`,
+      `Original request and intent updates:\n${task?.prompt ?? ""}`,
+      candidate === undefined
+        ? "This is the working revision; no answer has been submitted yet."
+        : `The complete primary-authored candidate under review:\n${candidate}`,
+      `Prior findings and primary dispositions:\n${JSON.stringify(task?.findings ?? [])}`,
+    ].join("\n\n"),
+  );
+  session.setAdvisorEnabled(enabled.length > 0);
+  session.prepareForHeadlessAdvisorDrain();
+  sessionManager.flushSync();
 }
 
 if (advisors.size) await applyAdvisors([...advisors.values()]);
@@ -1330,6 +1518,7 @@ if (boot.resumeSessionPath) {
   try {
     const entries = (sessionManager as any).getBranch?.() ?? [];
     for (const ev of replayEventsFromEntries(boot.sessionId, entries)) history.push(ev);
+    restoreTasks(entries);
   } catch (e) {
     err(`resume replay failed: ${String(e)}`);
   }
@@ -1353,6 +1542,79 @@ out({
 // ---------------------------------------------------------------------------
 // Command loop
 // ---------------------------------------------------------------------------
+function restoreTasks(entries: SessionEntry[]): void {
+  reviewOwners.clear();
+  const records: StoredTask[] = [];
+  for (const entry of entries) {
+    if (entry.type === "custom" && entry.customType === TASK_ENTRY_TYPE) {
+      records.push(storedTaskSchema.parse(entry.data));
+    } else if (entry.type === "custom" && entry.customType === "orchestrator.review-owner") {
+      const { sdkName, ...identity } = reviewOwnerSchema.parse(entry.data);
+      reviewOwners.set(sdkName, identity);
+    }
+  }
+  finalizer!.restore(records);
+  for (const record of finalizer!.records.values()) evidenceTracker.restore(record.task.evidence);
+}
+
+/** The queue belongs to user requests, not OMP's same-request follow-up queue. */
+async function runQueuedPrompts(): Promise<void> {
+  if (ownedRun || stopped) return;
+  ownedRun = true;
+  try {
+    while (promptQueue.length && !stopped) {
+      const prompt = promptQueue.shift()!;
+      finalizer!.activate(prompt.requestId);
+      preexistingJobs.clear();
+      for (const job of session.getAsyncJobSnapshot()?.running ?? []) preexistingJobs.add(job.id);
+      beginTurn();
+      setRunState("queued");
+      const startedAt = Date.now();
+      let outcome: Extract<RunState, "completed" | "interrupted" | "error"> = "completed";
+      try {
+        startReviewRound(prompt.requestId, 0);
+        if (stopped) break;
+        await session.sendCustomMessage(
+          {
+            customType: "orchestrator.request",
+            content: `Active harness requestId: ${prompt.requestId}. Preserve this ID across revisions. At completion call submit_answer with a complete user-facing answer and explicit review dispositions.`,
+            display: false,
+            attribution: "agent",
+            details: { requestId: prompt.requestId },
+          },
+          { triggerTurn: false },
+        );
+        if (stopped) break;
+        await session.prompt(prompt.text, {
+          images: prompt.images.length ? prompt.images : undefined,
+        });
+        await session.waitForIdle();
+        if (!stopped) await finalizer!.finalize();
+        if (stopped || finalizer!.current?.phase === "interrupted") outcome = "interrupted";
+      } catch (error) {
+        outcome = stopped || /abort/i.test(String(error)) ? "interrupted" : "error";
+        if (outcome === "error") {
+          finalizer!.fail(String((error as Error)?.message ?? error));
+          emit({ type: "session.failed", sessionId: boot.sessionId, error: classifyError(error) });
+        } else finalizer!.stop();
+      } finally {
+        flush();
+        if (stopped) outcome = "interrupted";
+        setRunState(outcome);
+        emit({
+          type: "session.finished",
+          sessionId: boot.sessionId,
+          runState: outcome,
+          durationMs: Date.now() - startedAt,
+        });
+        currentTurnId = undefined;
+        checkPersisted();
+      }
+    }
+  } finally {
+    ownedRun = false;
+  }
+}
 
 async function handle(req: any): Promise<unknown> {
   const s: any = session;
@@ -1360,10 +1622,7 @@ async function handle(req: any): Promise<unknown> {
   lastActivityMs = Date.now();
   switch (req.type) {
     case "session.prompt": {
-      const busy = Boolean(s.isStreaming);
-      // Upstream throws AgentBusyError if prompt() is called mid-stream with
-      // no streamingBehavior, so the behaviour is always explicit.
-      const behavior = req.payload.whenBusy === "queue" ? "followUp" : "steer";
+      const busy = ownedRun || Boolean(s.isStreaming);
       if (busy && req.payload.whenBusy === "reject") throw new Error("Session is busy");
 
       // Attachments: images become real ImageContent the model can see
@@ -1396,20 +1655,6 @@ async function handle(req: any): Promise<unknown> {
         }
       }
 
-      // A halted advisor runtime never retries on its own; a fresh user turn
-      // is the natural retry boundary. Rebuild failed advisors so one bad
-      // spell doesn't silence review for the rest of the session.
-      if (advisors.size > 0 && [...lastAdvisorState.values()].includes("failed")) {
-        try {
-          await applyAdvisors([...advisors.values()]);
-          for (const [id, st] of lastAdvisorState) {
-            if (st === "failed") lastAdvisorState.delete(id);
-          }
-        } catch {
-          /* advisor revival must never block the prompt */
-        }
-      }
-
       // Auto-title: name the session from its first real prompt (the way
       // Codex and Claude do). OMP gates this itself — already-named sessions,
       // greetings/low-signal input, and PI_NO_TITLE all skip — and applies
@@ -1426,63 +1671,49 @@ async function handle(req: any): Promise<unknown> {
         }
       }
 
-      // Only the prompt that STARTS a turn owns its lifecycle. A steer or
-      // queue into an already-running turn resolves as soon as it is
-      // delivered — emitting `finished` there would declare the turn done
-      // while the owning prompt is still mid-flight.
-      const owning = !busy;
-      if (owning) {
-        beginTurn();
-        continuationStartedAt = undefined; // this turn has an owner
-        lateAdvisoryFollowUpUsed = false; // a fresh user turn earns a fresh follow-up
-        setRunState("queued");
-      }
-      const turnStartedAt = Date.now();
-      // The turn runs in the background: the host gets an immediate ack so the
-      // user can switch sessions while this one keeps working.
-      void (async () => {
-        // `finished` must be emitted exactly once, with the state that
-        // actually occurred — an aborted turn must never report "completed".
-        let outcome: Extract<RunState, "completed" | "interrupted" | "error"> = "completed";
-        try {
-          await s.prompt(promptText, {
-            streamingBehavior: behavior,
+      const nowBusy = ownedRun || Boolean(s.isStreaming);
+      if (nowBusy && req.payload.whenBusy === "reject") throw new Error("Session is busy");
+      if (nowBusy && req.payload.whenBusy !== "queue") {
+        if (stopped)
+          throw new Error(
+            "The stopped run is still settling. Start a new request after it settles.",
+          );
+        finalizer!.steer(promptText);
+        session.setAdvisorEnabled(false);
+        void s
+          .prompt(promptText, {
+            streamingBehavior: "steer",
             images: images.length ? images : undefined,
-          });
-          // abort() resolves the prompt rather than rejecting it, so trust the
-          // run state the abort handler recorded.
-          if (runState === "interrupted" || runState === "stopping") outcome = "interrupted";
-        } catch (e) {
-          const msg = String((e as Error)?.message ?? e);
-          outcome = /abort/i.test(msg) ? "interrupted" : "error";
-          if (outcome === "error") {
-            emit({ type: "session.failed", sessionId: boot.sessionId, error: classifyError(e) });
-          }
-        } finally {
-          flush();
-          if (owning) {
-            setRunState(outcome);
+          })
+          .catch((error: unknown) => {
+            finalizer!.fail(String(error));
             emit({
-              type: "session.finished",
+              type: "session.failed",
               sessionId: boot.sessionId,
-              runState: outcome,
-              durationMs: Date.now() - turnStartedAt,
+              error: classifyError(error),
             });
-            // The turn is over; post-turn chatter (advisor polling, context
-            // updates) belongs to no turn until the next prompt begins one.
-            currentTurnId = undefined;
-          }
-          checkPersisted();
-        }
-      })();
-      return {
-        accepted: true,
-        mode: busy ? (behavior === "steer" ? "steered" : "queued") : "started",
-      };
+          });
+        return { accepted: true, mode: "steered" };
+      }
+      if (stopped && nowBusy) throw new Error("The stopped run is still settling.");
+      const requestId = finalizer!.create(promptText);
+      promptQueue.push({ requestId, text: promptText, images });
+      if (!nowBusy) stopped = false;
+      void runQueuedPrompts().catch((error) => settleCrash("request queue", error));
+      return { accepted: true, mode: nowBusy ? "queued" : "started" };
     }
 
-    case "session.abort":
+    case "session.abort": {
       requireCap("abort", "aborting a running turn");
+      stopped = true;
+      promptQueue.length = 0;
+      finalizer!.stop();
+      cancelReview?.();
+      session.clearQueue({ forInterrupt: true });
+      session.setAdvisorEnabled(false);
+      const ownerId = session.getAgentId();
+      if (ownerId) session.asyncJobManager?.cancelAll({ ownerId }, OMP.USER_INTERRUPT_LABEL);
+      session.prepareForHeadlessAdvisorDrain();
       setRunState("stopping");
       // Cancel any prompts blocked on user input, or the abort would hang
       // behind a dialog nobody can answer any more.
@@ -1494,9 +1725,49 @@ async function handle(req: any): Promise<unknown> {
         pendingUi.delete(id);
         p.resolve({ value: undefined, cancelled: true });
       }
-      await s.abort();
+      await session.abort({ reason: OMP.USER_INTERRUPT_LABEL });
       setRunState("interrupted");
       return { aborted: true };
+    }
+
+    case "session.task.retryReview": {
+      if (ownedRun || session.isStreaming)
+        throw new Error("Wait for the current run to settle before retrying review.");
+      ownedRun = true;
+      stopped = false;
+      const requestId = String(req.payload.requestId);
+      try {
+        const retry = finalizer!.retry(requestId);
+        void retry
+          .catch((error) => {
+            finalizer!.fail(String(error));
+            emit({
+              type: "session.failed",
+              sessionId: boot.sessionId,
+              error: classifyError(error),
+            });
+          })
+          .finally(() => {
+            ownedRun = false;
+            currentTurnId = undefined;
+            setRunState(stopped ? "interrupted" : "completed");
+            emit({
+              type: "session.finished",
+              sessionId: boot.sessionId,
+              runState: stopped ? "interrupted" : "completed",
+            });
+            if (!stopped)
+              void runQueuedPrompts().catch((error) => settleCrash("request queue", error));
+          });
+      } catch (error) {
+        ownedRun = false;
+        throw error;
+      }
+      return { accepted: true };
+    }
+
+    case "session.evidence.refresh":
+      return { evidence: await finalizer!.refreshEvidence(String(req.payload.requestId)) };
 
     case "session.compact":
       requireCap("compact", "compaction");
@@ -1517,7 +1788,7 @@ async function handle(req: any): Promise<unknown> {
 
     case "session.rewind": {
       requireCap("navigateTree", "rewinding the conversation");
-      if (s.isStreaming) throw new Error("Stop the run before rewinding.");
+      if (ownedRun || s.isStreaming) throw new Error("Stop the run before rewinding.");
       // navigateTree stays in the SAME session file and hands the target
       // message's text back for editing. Conversation-only: files on disk
       // keep whatever state the agent left them in.
@@ -1530,6 +1801,7 @@ async function handle(req: any): Promise<unknown> {
       try {
         const entries = (sessionManager as any).getBranch?.() ?? [];
         for (const ev of replayEventsFromEntries(boot.sessionId, entries)) history.push(ev);
+        restoreTasks(entries);
       } catch (e) {
         err(`post-rewind replay failed: ${String(e)}`);
       }
@@ -1606,6 +1878,7 @@ async function handle(req: any): Promise<unknown> {
     }
 
     case "session.advisors.set":
+      if (ownedRun) throw new Error("Wait for the task to settle before changing its reviewers.");
       return { advisors: await applyAdvisors(req.payload.advisors ?? []) };
 
     case "session.advisors.get":

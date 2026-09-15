@@ -5,10 +5,10 @@
  * The host negotiates on connect via `hello`; a mismatch surfaces as an
  * actionable engine error rather than mysterious runtime failures.
  */
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 
 /** Oldest protocol version this build can still talk to. */
-const MIN_SUPPORTED_PROTOCOL_VERSION = 1 as const;
+const MIN_SUPPORTED_PROTOCOL_VERSION = 2 as const;
 
 export function isProtocolCompatible(remote: number): boolean {
   return (

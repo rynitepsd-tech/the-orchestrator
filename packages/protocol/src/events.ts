@@ -19,6 +19,7 @@ import type {
   SessionId,
   UsageBreakdown,
 } from "./domain";
+import type { TaskSnapshot } from "./tasks";
 
 export interface EventBase {
   sessionId: SessionId;
@@ -29,6 +30,10 @@ export interface EventBase {
    * from files written before this field existed.
    */
   turnId?: string;
+  /** Durable user request identity, unchanged across revision executions. */
+  userTurnId?: string;
+  /** OMP's persisted entry identity, used for exact source navigation. */
+  sourceEntryId?: string;
 }
 
 // --- lifecycle -------------------------------------------------------------
@@ -300,13 +305,6 @@ export interface SessionFinished extends EventBase {
   runState: Extract<RunState, "completed" | "interrupted" | "error">;
   /** Wall-clock length of the turn, when the runtime measured it. */
   durationMs?: number;
-  /**
-   * This turn was an advisor-triggered continuation of the turn before it —
-   * the model revised its answer after a post-turn review note. No user
-   * prompt started it. The UI treats the previous turn's end as superseded:
-   * one user turn, one "finished" marker, placed after the revised answer.
-   */
-  continuation?: boolean;
 }
 
 /**
@@ -367,10 +365,16 @@ export interface ExtensionUIRequested extends EventBase {
     | { kind: "unsupported"; description: string };
 }
 
+export interface TaskUpdated extends EventBase {
+  type: "task.updated";
+  task: TaskSnapshot;
+}
+
 // --- union -----------------------------------------------------------------
 
 export type ProductEvent =
   | SessionStateChanged
+  | TaskUpdated
   | SessionTitleChanged
   | AssistantTextDelta
   | AssistantThinkingDelta
