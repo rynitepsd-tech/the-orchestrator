@@ -119,7 +119,7 @@ try {
   if (!ready) throw new Error("engine never became ready");
 
   const info = findEvent("engine.ready").event.info;
-  check("reports the pinned OMP version", info.ompVersion === "18.1.11", `OMP ${info.ompVersion}`);
+  check("reports the pinned OMP version", info.ompVersion === "18.4.2", `OMP ${info.ompVersion}`);
   check("engine architecture reported", info.arch === process.arch, info.arch);
 
   // 2. discovers the user's real OMP config

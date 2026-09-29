@@ -146,6 +146,7 @@ export class EventMapper {
             text: textOf(msg),
             thinking: thinkingOf(msg) || undefined,
             model: msg?.model,
+            servedModel: servedModelOf(msg),
           },
         ];
       }
@@ -310,6 +311,22 @@ export class EventMapper {
         ];
       }
 
+      case "thinking_level_changed": {
+        // `configured` is the user's selector when it differs from the
+        // effective level (i.e. "auto"); `resolved` is what auto picked for
+        // this turn once classified.
+        const e = ev as any;
+        const configured = e.configured ?? e.thinkingLevel;
+        return [
+          {
+            type: "session.thinkingLevel",
+            sessionId,
+            level: configured ? String(configured) : undefined,
+            resolved: e.resolved ? String(e.resolved) : undefined,
+          },
+        ];
+      }
+
       case "todo_auto_clear":
         // The runtime cleared the checklist; without this the pinned todo
         // panel shows stale tasks forever.
@@ -418,6 +435,19 @@ export function textOf(message: any): string {
     .filter((p: any) => p?.type === "text" && typeof p.text === "string")
     .map((p: any) => p.text)
     .join("");
+}
+
+/**
+ * The model that actually served a message, when a router or gateway reported
+ * one different from the model requested. OMP recovers it from signed
+ * thinking blocks or OpenRouter reasoning details as `upstreamModel`.
+ */
+export function servedModelOf(msg: any): string | undefined {
+  const upstream = typeof msg?.upstreamModel === "string" ? msg.upstreamModel.trim() : "";
+  if (!upstream) return undefined;
+  const requested = typeof msg?.model === "string" ? msg.model : "";
+  const bare = (id: string) => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
+  return bare(upstream) === bare(requested) ? undefined : upstream;
 }
 
 /** Concatenate thinking/reasoning parts of an OMP message. */

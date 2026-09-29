@@ -169,6 +169,14 @@ export interface SessionView {
   interrupted?: boolean;
   /** Local dev-server origin seen in tool output; offers the preview pane. */
   previewUrl?: string;
+  /** The current model has a slow mode (flex / low-priority tier). */
+  slowModeAvailable?: boolean;
+  /** OMP's live Claude usage-limit status while slow mode matters. */
+  slowModeLabel?: string;
+  /** Last model a router reported serving in place of the requested one. */
+  servedModel?: string;
+  /** The live context window the worker reports for the current model. */
+  liveContextWindow?: number;
 }
 
 /**
@@ -831,6 +839,42 @@ function reduce(v: SessionView, e: ProductEvent, visible: boolean): SessionView 
   return stampTurn(v, reduceInner(v, e, visible), e);
 }
 
+/** Settle an assistant message: the final text is authoritative over deltas. */
+function applyAssistantEnd(
+  v: SessionView,
+  e: Extract<ProductEvent, { type: "assistant.message.end" }>,
+): SessionView {
+  const t = v.transcript;
+  const idx = lastIndex(t, (x) => x.kind === "assistant" && x.id === e.messageId);
+  if (idx < 0) {
+    if (!e.text && !e.thinking) return v;
+    return {
+      ...v,
+      transcript: [
+        ...t,
+        {
+          kind: "assistant",
+          id: e.messageId,
+          text: e.text,
+          thinking: e.thinking ?? "",
+          streaming: false,
+        },
+      ],
+    };
+  }
+  const copy = [...t];
+  copy[idx] = {
+    ...t[idx],
+    kind: "assistant",
+    id: e.messageId,
+    text: e.text,
+    thinking:
+      e.thinking ?? (t[idx] as Extract<TranscriptItem, { kind: "assistant" }>).thinking ?? "",
+    streaming: false,
+  };
+  return { ...v, transcript: copy };
+}
+
 function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): SessionView {
   const t = v.transcript;
 
@@ -964,35 +1008,29 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
     }
 
     case "assistant.message.end": {
-      const idx = lastIndex(t, (x) => x.kind === "assistant" && x.id === e.messageId);
-      if (idx < 0) {
-        if (!e.text && !e.thinking) return v;
-        return {
-          ...v,
-          transcript: [
-            ...t,
-            {
-              kind: "assistant",
-              id: e.messageId,
-              text: e.text,
-              thinking: e.thinking ?? "",
-              streaming: false,
-            },
-          ],
-        };
-      }
-      const copy = [...t];
-      // The final text is authoritative over accumulated deltas.
-      copy[idx] = {
-        ...t[idx],
-        kind: "assistant",
-        id: e.messageId,
-        text: e.text,
-        thinking:
-          e.thinking ?? (t[idx] as Extract<TranscriptItem, { kind: "assistant" }>).thinking ?? "",
-        streaming: false,
+      // A router or gateway may answer with a different model than requested.
+      // Say so once per change, not on every message; a reply from the
+      // requested model clears the memory so a later swap is announced again.
+      const answered = Boolean(e.text || e.thinking);
+      const tracked = e.servedModel ?? (answered ? undefined : v.servedModel);
+      const announce = Boolean(e.servedModel && e.servedModel !== v.servedModel);
+      const next = applyAssistantEnd(
+        tracked === v.servedModel ? v : { ...v, servedModel: tracked },
+        e,
+      );
+      if (!announce) return next;
+      return {
+        ...next,
+        transcript: [
+          ...next.transcript,
+          {
+            kind: "system",
+            id: nextId(),
+            text: `Served by ${e.servedModel}${e.model ? `, not the requested ${e.model}` : ""}`,
+            tone: "warn",
+          },
+        ],
       };
-      return { ...v, transcript: copy };
     }
 
     case "tool.start": {
@@ -1232,6 +1270,27 @@ function reduceInner(v: SessionView, e: ProductEvent, visible: boolean): Session
 
     case "session.fastMode":
       return { ...v, summary: { ...v.summary, fastMode: e.enabled } };
+
+    case "session.slowMode":
+      return {
+        ...v,
+        summary: { ...v.summary, slowMode: e.enabled },
+        slowModeAvailable: e.available,
+        slowModeLabel: e.label,
+      };
+
+    case "session.extendedContext":
+      return {
+        ...v,
+        summary: { ...v.summary, extendedContext: e.enabled },
+        liveContextWindow: e.contextWindow,
+      };
+
+    case "session.thinkingLevel":
+      return {
+        ...v,
+        summary: { ...v.summary, thinkingLevel: e.level, thinkingResolved: e.resolved },
+      };
 
     case "session.compacted":
       return {

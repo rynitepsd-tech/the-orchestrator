@@ -20,8 +20,8 @@ import { engine } from "../engine-client";
 import { type Attachment, pickFileAttachments, storeBlob } from "../lib/attachments";
 import type { SessionPreset } from "../lib/prefs";
 import { modelBasename, useStore } from "../store";
-import { EffortPicker } from "./EffortPicker";
-import { BoltIcon } from "./icons";
+import { EffortPicker, effortLabel } from "./EffortPicker";
+import { BoltIcon, ExpandIcon, HourglassIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 import { PromptDialog } from "./PromptDialog";
 
@@ -60,6 +60,19 @@ export function Composer({
   const fastMode = useStore((s) =>
     sessionId ? Boolean(s.sessions[sessionId]?.summary.fastMode) : false,
   );
+  const slowMode = useStore((s) =>
+    sessionId ? Boolean(s.sessions[sessionId]?.summary.slowMode) : false,
+  );
+  const slowAvailable = useStore((s) =>
+    sessionId ? Boolean(s.sessions[sessionId]?.slowModeAvailable) : false,
+  );
+  const slowLabel = useStore((s) => (sessionId ? s.sessions[sessionId]?.slowModeLabel : undefined));
+  const extendedContext = useStore((s) =>
+    sessionId ? Boolean(s.sessions[sessionId]?.summary.extendedContext) : false,
+  );
+  const liveContextWindow = useStore((s) =>
+    sessionId ? s.sessions[sessionId]?.liveContextWindow : undefined,
+  );
 
   // Pre-flight contract, T3-style: the PRESET this session runs with sits on
   // the composer. Picking one applies its model/effort/fast mode live.
@@ -83,6 +96,19 @@ export function Composer({
     if (Boolean(p.fastMode) !== fastMode) {
       void engine
         .request("session.setFastMode", { sessionId, enabled: Boolean(p.fastMode) })
+        .catch(() => {});
+    }
+    if (Boolean(p.slowMode) !== slowMode) {
+      void engine
+        .request("session.setSlowMode", { sessionId, enabled: Boolean(p.slowMode) })
+        .catch(() => {});
+    }
+    if (Boolean(p.extendedContext) !== extendedContext) {
+      void engine
+        .request("session.setExtendedContext", {
+          sessionId,
+          enabled: Boolean(p.extendedContext),
+        })
         .catch(() => {});
     }
     // The preset is the whole launch contract, so its advisor roster applies
@@ -112,6 +138,8 @@ export function Composer({
       model: summary?.model,
       thinkingLevel: summary?.thinkingLevel,
       fastMode: fastMode || undefined,
+      slowMode: slowMode || undefined,
+      extendedContext: extendedContext || undefined,
       advisors,
     });
     useStore.getState().setSessionPreset(sessionId, name);
@@ -217,6 +245,82 @@ export function Composer({
       {fastMode ? "Fast" : ""}
     </button>
   );
+
+  const toggleSlow = () => {
+    if (!sessionId) return;
+    void engine
+      .request("session.setSlowMode", { sessionId, enabled: !slowMode })
+      .then((r) => {
+        if (!r.ok) {
+          useStore.getState().setEngineError({
+            kind: "engine",
+            message: "The current model has no slow mode to toggle.",
+          } as never);
+        }
+      })
+      .catch(() => {});
+  };
+
+  // Slow mode only exists for some models (OpenAI/Google flex tier, Claude
+  // subscription low-priority lane) — hide the control rather than offer a
+  // switch that does nothing.
+  const slowToggle = slowAvailable ? (
+    <button
+      type="button"
+      className={`ctl-chip slow-toggle${slowMode ? " on" : ""}`}
+      title={
+        (slowMode
+          ? "Slow mode is ON — cheaper, lower-priority service; responses can be slower or pause for capacity. Click to turn off."
+          : "Turn on slow mode: cheaper flex tier on OpenAI/Google, or keep a Claude subscription working at low priority after its limit.") +
+        (slowLabel ? `\n${slowLabel}` : "")
+      }
+      aria-pressed={slowMode}
+      onClick={toggleSlow}
+      disabled={disabled}
+    >
+      <HourglassIcon />
+      {slowMode ? (slowLabel ?? "Slow") : ""}
+    </button>
+  ) : null;
+
+  // The catalogue's figure is a floor: OMP can resolve a larger live window,
+  // so once on, show what the worker actually reports.
+  const extendedWindow =
+    extendedContext && liveContextWindow ? liveContextWindow : modelInfo?.extendedContextWindow;
+  const toggleContext = () => {
+    if (!sessionId) return;
+    void engine
+      .request("session.setExtendedContext", { sessionId, enabled: !extendedContext })
+      .then((r) => {
+        if (!r.ok) {
+          useStore.getState().setEngineError({
+            kind: "engine",
+            message: "Extended context could not be changed for this session.",
+          } as never);
+        }
+      })
+      .catch(() => {});
+  };
+
+  // Only for models whose window grows with OMP's extended-context setting.
+  const contextToggle =
+    extendedWindow && modelInfo ? (
+      <button
+        type="button"
+        className={`ctl-chip ctx-toggle${extendedContext ? " on" : ""}`}
+        title={
+          extendedContext
+            ? `Extended context is ON — up to ${formatTokens(extendedWindow)} tokens. Long prompts may be billed at premium long-context rates. Click to go back to ${formatTokens(modelInfo.contextWindow)}.`
+            : `Use extended context: raise this model's window from ${formatTokens(modelInfo.contextWindow)} to ${formatTokens(extendedWindow)} tokens. Long prompts may be billed at premium long-context rates.`
+        }
+        aria-pressed={extendedContext}
+        onClick={toggleContext}
+        disabled={disabled}
+      >
+        <ExpandIcon />
+        {extendedContext ? formatTokens(extendedWindow) : ""}
+      </button>
+    ) : null;
 
   // Live mirrors for the draft-parking cleanup below — an effect cleanup
   // closes over the state from when it ran, not the state at switch time.
@@ -391,6 +495,7 @@ export function Composer({
               <EffortPicker
                 efforts={efforts}
                 value={summary?.thinkingLevel ?? ""}
+                resolved={summary?.thinkingResolved}
                 onChange={(lvl) => {
                   if (summary?.model) setLiveModel(summary.model, lvl || undefined);
                 }}
@@ -586,9 +691,13 @@ export function Composer({
             onClick={() => setModelPop((v) => !v)}
           >
             {modelBasename(summary?.model)}
-            {summary?.thinkingLevel ? ` · ${summary.thinkingLevel}` : ""}
+            {summary?.thinkingLevel
+              ? ` · ${effortLabel(summary.thinkingLevel, summary.thinkingResolved)}`
+              : ""}
           </button>
           {fastToggle}
+          {slowToggle}
+          {contextToggle}
           <select
             className="ctl-chip ctl-select"
             value={approvalMode}
@@ -652,4 +761,11 @@ export function Composer({
       )}
     </div>
   );
+}
+
+/** 1_050_000 → "1.05M", 272_000 → "272K". */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(2))}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
 }

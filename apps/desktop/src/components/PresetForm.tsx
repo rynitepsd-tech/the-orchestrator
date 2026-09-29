@@ -10,7 +10,7 @@ import type { JSX } from "react";
 import { useState } from "react";
 import type { SessionPreset } from "../lib/prefs";
 import { EffortPicker } from "./EffortPicker";
-import { BoltIcon } from "./icons";
+import { BoltIcon, ExpandIcon, HourglassIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 
 export const RECOMMENDED_ADVISORS: AdvisorConfig[] = [
@@ -47,6 +47,8 @@ export function PresetForm({
   const [model, setModel] = useState<string | undefined>(initial?.model);
   const [effort, setEffort] = useState(initial?.thinkingLevel ?? "");
   const [fastMode, setFastMode] = useState(Boolean(initial?.fastMode));
+  const [slowMode, setSlowMode] = useState(Boolean(initial?.slowMode));
+  const [extendedContext, setExtendedContext] = useState(Boolean(initial?.extendedContext));
   const [advisors, setAdvisors] = useState<AdvisorConfig[]>(
     initial?.advisors.map((a) => ({ ...a })) ?? RECOMMENDED_ADVISORS.map((a) => ({ ...a })),
   );
@@ -77,6 +79,8 @@ export function PresetForm({
       model,
       thinkingLevel: effort || undefined,
       fastMode: fastMode || undefined,
+      slowMode: slowMode || undefined,
+      extendedContext: extendedContext || undefined,
       advisors: advisors
         .filter((a) => a.name.trim())
         .map((a) => ({ ...a, name: a.name.trim(), id: `advisor:${a.name.trim()}` })),
@@ -121,6 +125,36 @@ export function PresetForm({
         </span>
         <span className="hint">priority tier on OpenAI / Anthropic</span>
       </label>
+
+      {(selectedModel?.slowMode || slowMode) && (
+        <label className="row check-row">
+          <input
+            type="checkbox"
+            checked={slowMode}
+            onChange={(e) => setSlowMode(e.target.checked)}
+          />
+          <span>
+            <HourglassIcon /> Slow mode
+          </span>
+          <span className="hint">cheaper flex tier, or low priority past a Claude limit</span>
+        </label>
+      )}
+
+      {(selectedModel?.extendedContextWindow || extendedContext) && (
+        <label className="row check-row">
+          <input
+            type="checkbox"
+            checked={extendedContext}
+            onChange={(e) => setExtendedContext(e.target.checked)}
+          />
+          <span>
+            <ExpandIcon /> Extended context
+          </span>
+          <span className="hint">
+            larger window where the model has one; long prompts may cost more
+          </span>
+        </label>
+      )}
 
       <div className="field">
         <div className="row">

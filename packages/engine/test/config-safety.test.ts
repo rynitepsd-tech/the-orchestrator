@@ -35,6 +35,18 @@ describe("upstream config safety", () => {
       "setRuntimeApiKey",
       "settings.set(",
       "Settings.set(",
+      // OMP 18.4 settings-registry handles: `handle.set(settings, v)` and
+      // friends persist to config.yml. Only `override` (runtime) is allowed.
+      ".set(settings",
+      ".unset(settings",
+      "writeValue(",
+      "writeEntry(",
+      "writeMember(",
+      "unsetGlobalValue(",
+      // Upstream's `setSlowMode` persists `providers.anthropic.slowMode` for
+      // Claude models; the worker must go through its override-based
+      // `applySlowMode` instead.
+      ".setSlowMode?.(true",
     ];
     for (const f of files) {
       const src = readFileSync(f, "utf8");

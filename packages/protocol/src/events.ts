@@ -72,6 +72,11 @@ export interface AssistantMessageComplete extends EventBase {
   text: string;
   thinking?: string;
   model?: string;
+  /**
+   * The model that actually served this message, when a router or gateway
+   * reported one different from the model requested (OMP's `upstreamModel`).
+   */
+  servedModel?: string;
 }
 
 export interface UserMessageAdded extends EventBase {
@@ -289,6 +294,34 @@ export interface FastModeChanged extends EventBase {
   active: boolean;
 }
 
+export interface SlowModeChanged extends EventBase {
+  type: "session.slowMode";
+  /** Slow mode is on for the current model. */
+  enabled: boolean;
+  /** The current model has a slow mode at all. */
+  available: boolean;
+  /**
+   * OMP's live status for a Claude subscription's usage-limit stage, e.g.
+   * "low priority until 14:30 · 62% left". Absent outside those stages.
+   */
+  label?: string;
+}
+
+export interface ExtendedContextChanged extends EventBase {
+  type: "session.extendedContext";
+  enabled: boolean;
+  /** The current model's effective window after the change. */
+  contextWindow?: number;
+}
+
+export interface ThinkingLevelChanged extends EventBase {
+  type: "session.thinkingLevel";
+  /** Configured selector: an effort name, "auto", or undefined for default. */
+  level?: string;
+  /** The effort "auto" picked for this turn, once classified. */
+  resolved?: string;
+}
+
 export interface SessionCompacted extends EventBase {
   type: "session.compacted";
   freedTokens?: number;
@@ -397,6 +430,9 @@ export type ProductEvent =
   | ContextChanged
   | ModelChanged
   | FastModeChanged
+  | SlowModeChanged
+  | ExtendedContextChanged
+  | ThinkingLevelChanged
   | SessionCompacted
   | SessionFailed
   | SessionFinished

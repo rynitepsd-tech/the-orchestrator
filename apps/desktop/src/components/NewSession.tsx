@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { projectDisplayName, projectParent, type SessionPreset } from "../lib/prefs";
 import { defaultProjectPath, useStore } from "../store";
 import { EffortPicker } from "./EffortPicker";
-import { BoltIcon, FolderIcon } from "./icons";
+import { BoltIcon, ExpandIcon, FolderIcon, HourglassIcon } from "./icons";
 import { ModelPicker } from "./ModelPicker";
 import { useWorkspaceChoice, WorkspaceChoice } from "./WorkspaceChoice";
 
@@ -42,6 +42,8 @@ export function NewSession({
   const [modelKey, setModelKey] = useState<string | undefined>(undefined);
   const [effort, setEffort] = useState<string>("");
   const [fastMode, setFastMode] = useState(false);
+  const [slowMode, setSlowMode] = useState(false);
+  const [extendedContext, setExtendedContext] = useState(false);
   const [advisors, setAdvisors] = useState<AdvisorConfig[]>([]);
   const [advisorsLoading, setAdvisorsLoading] = useState(false);
   const [advisorsSource, setAdvisorsSource] = useState<"project" | "session">("project");
@@ -94,6 +96,11 @@ export function NewSession({
       model: modelKey,
       thinkingLevel: effort || undefined,
       fastMode: fastMode || undefined,
+      // Only send what the chosen model can honour; OMP's default model is
+      // unknown here, so both stay off for it.
+      slowMode: (slowMode && selectedModel?.slowMode) || undefined,
+      extendedContext:
+        (extendedContext && Boolean(selectedModel?.extendedContextWindow)) || undefined,
       advisors,
     });
   };
@@ -102,6 +109,8 @@ export function NewSession({
     setModelKey(p.model);
     setEffort(p.thinkingLevel ?? "");
     setFastMode(Boolean(p.fastMode));
+    setSlowMode(Boolean(p.slowMode));
+    setExtendedContext(Boolean(p.extendedContext));
     if (p.advisors.length) {
       advisorOverride.current = true;
       setAdvisors(p.advisors.map((a) => ({ ...a })));
@@ -118,6 +127,8 @@ export function NewSession({
       model: modelKey,
       thinkingLevel: effort || undefined,
       fastMode: fastMode || undefined,
+      slowMode: slowMode || undefined,
+      extendedContext: extendedContext || undefined,
       advisors,
     });
     setPresetDraft(null);
@@ -293,6 +304,39 @@ export function NewSession({
           <span className="hint">priority tier on OpenAI / Anthropic; toggleable in-session</span>
         </label>
 
+        {selectedModel?.slowMode && (
+          <label className="row check-row">
+            <input
+              type="checkbox"
+              checked={slowMode}
+              onChange={(e) => setSlowMode(e.target.checked)}
+            />
+            <span>
+              <HourglassIcon /> Slow mode
+            </span>
+            <span className="hint">
+              cheaper flex tier, or low priority past a Claude limit; toggleable in-session
+            </span>
+          </label>
+        )}
+
+        {selectedModel?.extendedContextWindow && (
+          <label className="row check-row">
+            <input
+              type="checkbox"
+              checked={extendedContext}
+              onChange={(e) => setExtendedContext(e.target.checked)}
+            />
+            <span>
+              <ExpandIcon /> Extended context
+            </span>
+            <span className="hint">
+              {formatTokens(selectedModel.contextWindow)} →{" "}
+              {formatTokens(selectedModel.extendedContextWindow)} tokens; long prompts may cost more
+            </span>
+          </label>
+        )}
+
         <div className="field">
           <div className="row">
             <span>Advisors</span>
@@ -430,6 +474,8 @@ function presetTitle(p: SessionPreset): string {
   const parts = [p.model ?? "OMP default"];
   if (p.thinkingLevel) parts.push(p.thinkingLevel);
   if (p.fastMode) parts.push("fast mode");
+  if (p.slowMode) parts.push("slow mode");
+  if (p.extendedContext) parts.push("extended context");
   const on = p.advisors.filter((a) => a.enabled).map((a) => a.name);
   if (on.length) parts.push(`advisors: ${on.join(", ")}`);
   return parts.join(" · ");
@@ -486,4 +532,11 @@ function AdvisorEditor({
       )}
     </div>
   );
+}
+
+/** 1_050_000 → "1.05M", 272_000 → "272K". */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(2))}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
 }

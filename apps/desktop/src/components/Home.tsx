@@ -120,6 +120,8 @@ export function Home({
         model: preset?.model,
         thinkingLevel: preset?.thinkingLevel,
         fastMode: preset?.fastMode || undefined,
+        slowMode: preset?.slowMode || undefined,
+        extendedContext: preset?.extendedContext || undefined,
         advisors: preset?.advisors ?? [],
         approvalMode: approvalMode === "always-ask" ? undefined : approvalMode,
       },
@@ -215,7 +217,7 @@ export function Home({
             value={preset?.name ?? ""}
             title={
               preset
-                ? `${modelBasename(preset.model)}${preset.thinkingLevel ? ` · ${preset.thinkingLevel}` : ""}${preset.fastMode ? " · fast" : ""}${(() => {
+                ? `${modelBasename(preset.model)}${preset.thinkingLevel ? ` · ${preset.thinkingLevel}` : ""}${preset.fastMode ? " · fast" : ""}${preset.slowMode ? " · slow" : ""}${preset.extendedContext ? " · ext ctx" : ""}${(() => {
                     const on = preset.advisors.filter((a) => a.enabled);
                     return on.length
                       ? ` · advisors: ${on.map((a) => a.name).join(", ")}`

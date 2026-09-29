@@ -2204,6 +2204,20 @@ button {
   color: var(--warn);
   border-color: var(--warn);
 }
+.ctl-chip.slow-toggle {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctl-chip.slow-toggle.on {
+  color: var(--teal);
+  border-color: var(--teal);
+}
+.ctl-chip.ctx-toggle.on {
+  color: var(--link);
+  border-color: var(--link);
+}
 .attach-chip {
   padding: 4px 9px;
   font-size: 15px;

@@ -46,6 +46,8 @@ describe("OMP pin coherence", () => {
     const manifest = "packages/omp-adapter/package.json";
     expect(dependencyVersion(manifest, "@oh-my-pi/pi-coding-agent")).toBe(PIN);
     expect(dependencyVersion(manifest, "@oh-my-pi/pi-ai")).toBe(PIN);
+    // The adapter reads curated extended-context maxima from the catalog.
+    expect(dependencyVersion(manifest, "@oh-my-pi/pi-catalog")).toBe(PIN);
   });
 
   test("the build constant and the smoke assertion agree", () => {

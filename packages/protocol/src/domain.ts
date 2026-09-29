@@ -105,7 +105,13 @@ export interface ModelInfo {
   provider: string;
   api?: string;
   reasoning: boolean;
+  /** Standard window: what the model runs with while extended context is off. */
   contextWindow: number;
+  /**
+   * The larger window OMP's extended-context setting unlocks for this model,
+   * usually at premium long-context pricing. Undefined when there is none.
+   */
+  extendedContextWindow?: number;
   maxTokens: number;
   /** Undefined when the model reports no thinking support. */
   thinking?: ThinkingSupport;
@@ -116,6 +122,11 @@ export interface ModelInfo {
     cacheRead: number;
     cacheWrite: number;
   };
+  /**
+   * True when OMP's slow mode applies: the cheaper `flex` tier on OpenAI and
+   * Google, or the low-priority subscription lane on direct Anthropic.
+   */
+  slowMode?: boolean;
   /** True when credentials for this provider are configured and usable. */
   authenticated: boolean;
 }
@@ -338,6 +349,10 @@ export interface SessionLaunchConfig {
   approvalMode?: ApprovalMode;
   /** Start with fast mode (provider priority tier) on. */
   fastMode?: boolean;
+  /** Start with slow mode (flex / low-priority tier) on. */
+  slowMode?: boolean;
+  /** Start with OMP's extended context windows on for this session only. */
+  extendedContext?: boolean;
   /** Resume an existing OMP session file instead of creating a new one. */
   resumeSessionPath?: string;
 }
@@ -366,7 +381,14 @@ export interface SessionSummary {
   model?: string;
   /** Fast mode (provider priority tier) enabled for the current model family. */
   fastMode?: boolean;
+  /** Slow mode (flex / low-priority tier) enabled for the current model. */
+  slowMode?: boolean;
+  /** Extended context windows on for this session. */
+  extendedContext?: boolean;
+  /** Configured selector: an effort name, or "auto" to pick one per turn. */
   thinkingLevel?: string;
+  /** The effort "auto" resolved to for the latest turn, once classified. */
+  thinkingResolved?: string;
   advisorCount: number;
   /** OMP's own session file, when persisted. */
   ompSessionPath?: string;

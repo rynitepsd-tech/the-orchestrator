@@ -412,3 +412,60 @@ describe("tool detail mapping", () => {
     expect(JSON.stringify(start.args)).not.toContain("sk-super-secret-value");
   });
 });
+
+describe("model features from OMP 18.x", () => {
+  test("thinking_level_changed reports the configured selector and what auto resolved", () => {
+    const out = mapAll([
+      {
+        type: "thinking_level_changed",
+        thinkingLevel: "high",
+        configured: "auto",
+        resolved: "high",
+      },
+    ]);
+    expect(out).toEqual([
+      { type: "session.thinkingLevel", sessionId: "S1", level: "auto", resolved: "high" },
+    ]);
+  });
+
+  test("a plain effort change carries the level itself and no resolution", () => {
+    const out = mapAll([{ type: "thinking_level_changed", thinkingLevel: "xhigh" }]);
+    expect(out).toEqual([
+      { type: "session.thinkingLevel", sessionId: "S1", level: "xhigh", resolved: undefined },
+    ]);
+  });
+
+  test("an upstream model different from the requested one is reported as served", () => {
+    const out = mapAll([
+      { type: "message_start", message: { role: "assistant" } },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+          model: "anthropic/claude-opus-5-5",
+          upstreamModel: "claude-sonnet-5",
+        },
+      },
+    ]);
+    const end = out.find((e) => e.type === "assistant.message.end") as any;
+    expect(end.servedModel).toBe("claude-sonnet-5");
+  });
+
+  test("the same model behind a router prefix is not reported as a substitution", () => {
+    const out = mapAll([
+      { type: "message_start", message: { role: "assistant" } },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+          model: "anthropic/claude-opus-5-5",
+          upstreamModel: "claude-opus-5-5",
+        },
+      },
+    ]);
+    const end = out.find((e) => e.type === "assistant.message.end") as any;
+    expect(end.servedModel).toBeUndefined();
+  });
+});

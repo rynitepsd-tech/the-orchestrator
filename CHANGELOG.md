@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.8.0
+
+- **Updated the embedded OMP from 18.1.11 to 18.4.2** — 33 upstream releases. New models arrive
+  with it, including Claude Opus 5.5 (OMP's new Anthropic default), GPT-6 Sol, Luna and Astra
+  fixes, Grok 4.7, DeepSeek V4.1, Qwen 3.8, Gemini 3.8 Flash and the StepFun and Muse Code
+  providers. Effort ladders now reach `xhigh` and `max` where models support them, and the picker
+  shows them without code changes. A live turn on Claude Opus 5.5 completed on this build.
+- **Claude's client-version gate no longer needs an app update.** OMP now adopts the Claude Code
+  version Anthropic asks for and retries, instead of failing until a new release ships.
+- **Auto effort.** The effort picker offers `auto`: OMP picks an effort each turn from how
+  open-ended the request is, and the composer shows what it chose (for example `auto · high`).
+- **Slow mode.** A new toggle beside fast mode, shown only for models that have one: the cheaper
+  `flex` tier on OpenAI and Google, or keeping a Claude subscription working at low priority after
+  its limit, with OMP's live status (e.g. "low priority until 14:30 · 62% left"). OMP's own
+  `/slow` saves this to your global OMP config for Claude; the app keeps it per session and never
+  writes the config.
+- **Extended context.** A per-session toggle for models whose window grows at premium pricing,
+  such as GPT-5.6 and GPT-6 on Codex (272K → up to 1M). The picker shows each model's extended
+  window; the composer shows the live one.
+- **Served-by notice.** When a router or gateway answers with a different model than the one you
+  picked, the transcript says so.
+- **The model picker lists only chat models.** OMP's catalogue now includes embedding, speech,
+  image, video and judge models; a session cannot converse with them, so they are no longer
+  offered.
+- **Usage includes spend with no transcript message.** OMP 18.3.5 turned on prompt-cache warming
+  by default (it replays a request shortly before its cache expires, only when that is expected to
+  save money), and auto effort runs a small classifier. Both are recorded by OMP as model-usage
+  entries, which the usage views now count, labelled by purpose.
+- **Fixed before it shipped: two silent breakages in the upgrade itself.** OMP 18.4 removed the
+  settings call the worker used to enforce the session's approval mode, and the old code skipped
+  silently — "always ask" would have stopped gating writes. OMP 18.3 also reshaped its credential
+  store, which would have shown every provider as disconnected and refused every session. Both are
+  now routed through small compatibility layers that fail loudly, with tests that run against the
+  real OMP package so the next reshaping fails a test instead of a user.
+- **"Always ask" now actually asks for file writes and edits.** Tools gated by OMP's own tier
+  system (file writes, plain edits, eval, browser, MCP) were refused with "requires approval but
+  no interactive UI available" instead of prompting — true in every earlier release. They now
+  show the same approval card as shell commands: Allow runs the tool, Deny blocks it. Shell
+  commands are still asked exactly once. OMP extensions also get their full runtime (messages,
+  model and effort changes, compaction) and the `session_start` event, as in OMP's own headless
+  modes; switching to a different session from an extension command is not offered.
+
 ## 0.7.1
 
 - **Final answers lead; supporting activity stays compact.** Review status, time, and copy

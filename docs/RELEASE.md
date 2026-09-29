@@ -50,8 +50,8 @@ builds and then fails at runtime inside the packaged bundle.
 
 Check, in order:
 
-1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`18.1.11` as
-   of 0.6.10 — the exact string is in `packages/engine/package.json` and
+1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`18.4.2` as
+   of 0.8.0 — the exact string is in `packages/engine/package.json` and
    `packages/omp-adapter/package.json`, which must agree).
 2. `OMP_VERSION` in `scripts/build-engine.ts` matches that version exactly. The constant is what the
    build prints and what the smoke test asserts against.
@@ -89,7 +89,7 @@ What each step is for:
 | `bun test` | Usage de-duplication, concurrency, adapter, and protocol suites. The concurrency suite drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | All passing, zero failures. |
 | `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~96 MB) and `pi_natives.darwin-arm64.node` (~155 MB) in `resources/engine/`. |
 | `bunx tauri build` | Builds the Vite frontend, compiles the Rust binary, and bundles `resources/engine` into the app as `Contents/Resources/engine`. | `The Orchestrator.app` and `The Orchestrator_<version>_aarch64.dmg` under `apps/desktop/src-tauri/target/release/bundle/`. |
-| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 25/25 checks passed. |
+| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 31/31 checks passed. |
 
 The engine build must run before `tauri build`. `tauri.conf.json` declares
 `"resources": { "../../../resources/engine": "engine" }`, so the bundler copies whatever is in that
@@ -105,11 +105,11 @@ and cannot resolve at bundle time; removing the flags breaks the compile.
 `scripts/smoke-packaged.ts` is the only test that exercises the shipping artifact. It catches the
 class of failure that does not exist in a source checkout: a missing native addon, an architecture
 mismatch, a bundler-stripped dynamic import, or config discovery that only worked from the repo. Its
-25 checks cover engine architecture against the host, addon presence beside the binary, boot to
+31 checks cover engine architecture against the host, addon presence beside the binary, boot to
 `engine.ready`, the reported OMP version, OMP agent-directory discovery, model registry load,
 provider resolution from existing credentials, project open, session discovery, the approval bridge
-(a gated tool call actually stops and waits for `approval.respond`), transcript replay on resume,
-session fork, shutdown ack, and clean exit — all driven against the engine binary inside the built
+(a gated tool call actually stops and waits for `approval.respond`), reviewed answer publication
+and its retained evidence, transcript replay on resume, session fork, shutdown ack, and clean exit — all driven against the engine binary inside the built
 `.app`, not the source tree.
 
 It accepts an app path as its first argument, which is how you test a DMG-installed copy:
@@ -146,7 +146,7 @@ bun run build:engine -- --target=both
 | `x64` | `bun-darwin-x64` | `pi_natives.darwin-x64-baseline.node` |
 
 Cross-target builds need the matching addon package installed at **the pinned OMP version**, for
-example `bun add -d @oh-my-pi/pi-natives-darwin-x64@18.1.11`. The script fails loudly with that
+example `bun add -d @oh-my-pi/pi-natives-darwin-x64@18.4.2`. The script fails loudly with that
 exact hint when the addon is missing. The version in that command must match the pin everywhere it
 appears in the repo — `@oh-my-pi/pi-coding-agent` in `packages/engine/package.json` and
 `packages/omp-adapter/package.json`, the `OMP_VERSION` constant in `scripts/build-engine.ts`, and

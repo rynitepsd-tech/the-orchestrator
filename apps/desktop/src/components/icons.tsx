@@ -28,6 +28,24 @@ export function BoltIcon({ size = 13 }: { size?: number }): JSX.Element {
   );
 }
 
+/** Slow mode: an hourglass — cheaper, lower-priority service. */
+export function HourglassIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg {...base(size)} aria-hidden="true">
+      <path d="M6 3h12M6 21h12M7 3c0 5 10 5 10 9s-10 4-10 9M17 3c0 5-10 5-10 9s10 4 10 9" />
+    </svg>
+  );
+}
+
+/** Extended context: outward brackets — a larger window. */
+export function ExpandIcon({ size = 13 }: { size?: number }): JSX.Element {
+  return (
+    <svg {...base(size)} aria-hidden="true">
+      <path d="M8 4H4v4M16 4h4v4M8 20H4v-4M16 20h4v-4" />
+    </svg>
+  );
+}
+
 export function FolderIcon({ size = 13 }: { size?: number }): JSX.Element {
   return (
     <svg {...base(size)} aria-hidden="true">

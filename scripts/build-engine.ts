@@ -28,7 +28,7 @@ const OUT = join(ROOT, "resources", "engine");
 const ENTRY = join(ROOT, "packages", "engine", "src", "main.ts");
 
 /** OMP version this build is pinned to. Must match package.json exactly. */
-const OMP_VERSION = "18.1.11";
+const OMP_VERSION = "18.4.2";
 
 interface Target {
   key: "arm64" | "x64";

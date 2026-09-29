@@ -1,3 +1,4 @@
+export * from "./auth-compat";
 export * from "./discovery";
 export * from "./event-mapper";
 export * from "./fork";

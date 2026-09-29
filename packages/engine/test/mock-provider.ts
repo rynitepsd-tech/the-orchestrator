@@ -9,6 +9,7 @@
  *   mock-<tag>   text -> bash tool call echoing <TAG> -> final text
  *   mock-slow    long slow stream, for abort/concurrency tests
  *   mock-error   immediate provider error
+ *   mock-write   write tool call creating gated.txt -> final text
  */
 const enc = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -130,6 +131,34 @@ export function startMockProvider(): MockServer {
               send(chunk(model, responseId, {}, "stop"));
             }
             send(usageChunk(model, responseId, 80, 10));
+            done();
+            return;
+          }
+
+          if (model === "mock-write") {
+            send(chunk(model, responseId, { role: "assistant", content: "" }));
+            if (!hasToolResult) {
+              send(
+                chunk(model, responseId, {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: `call_write_${requests}`,
+                      type: "function",
+                      function: {
+                        name: "write",
+                        arguments: JSON.stringify({ path: "gated.txt", content: "GATED-WRITE\n" }),
+                      },
+                    },
+                  ],
+                }),
+              );
+              send(chunk(model, responseId, {}, "tool_calls"));
+            } else {
+              send(chunk(model, responseId, { content: "WRITE-DONE" }));
+              send(chunk(model, responseId, {}, "stop"));
+            }
+            send(usageChunk(model, responseId, 60, 10));
             done();
             return;
           }

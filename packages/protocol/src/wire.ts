@@ -205,6 +205,8 @@ export interface RequestPayloads {
   };
   "session.setModel": { sessionId: SessionId; model: string; thinkingLevel?: string };
   "session.setFastMode": { sessionId: SessionId; enabled: boolean };
+  "session.setSlowMode": { sessionId: SessionId; enabled: boolean };
+  "session.setExtendedContext": { sessionId: SessionId; enabled: boolean };
   "session.setTitle": { sessionId: SessionId; title: string };
   "session.setApprovalMode": { sessionId: SessionId; mode: ApprovalMode };
   "session.transcript": { sessionId: SessionId; sinceSequence?: number };
@@ -331,6 +333,10 @@ export interface ResponsePayloads {
   "session.setModel": { ok: boolean; model: string };
   /** ok=false means the current model has no fast/priority tier to toggle. */
   "session.setFastMode": { ok: boolean; enabled: boolean; active: boolean };
+  /** ok=false means the current model has no slow mode. */
+  "session.setSlowMode": { ok: boolean; enabled: boolean; label?: string };
+  /** contextWindow is the current model's effective window afterwards. */
+  "session.setExtendedContext": { ok: boolean; enabled: boolean; contextWindow?: number };
   "session.setTitle": { ok: boolean };
   "session.setApprovalMode": { ok: boolean };
   "session.transcript": { events: ProductEvent[]; sequence: number };
@@ -463,6 +469,8 @@ export const REQUEST_TYPES = [
   "session.fork",
   "session.setModel",
   "session.setFastMode",
+  "session.setSlowMode",
+  "session.setExtendedContext",
   "session.setTitle",
   "session.setApprovalMode",
   "session.transcript",

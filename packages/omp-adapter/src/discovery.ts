@@ -12,7 +12,9 @@ import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 // Same exact version as pi-coding-agent's own pi-ai dependency (both pinned),
 // so this resolves to the one shared registry instance.
-import { getProviderDefinition } from "@oh-my-pi/pi-ai";
+import { getProviderDefinition, serviceTierFamily } from "@oh-my-pi/pi-ai";
+// Same pin again: the curated extended-context maxima live in the catalog.
+import { resolveMaxContextWindow } from "@oh-my-pi/pi-catalog/compat/context-window";
 import * as OMP from "@oh-my-pi/pi-coding-agent";
 import {
   type AuthStorage,
@@ -31,6 +33,13 @@ import {
   type ProviderInfo,
   toOmpAdvisorSelector,
 } from "@orchestrator/protocol";
+import {
+  credentialOrigin,
+  listDisabledCredentials,
+  providerHasAuth,
+  reloadCredentials,
+  usageReports,
+} from "./auth-compat";
 import { isInsideRoot } from "./paths";
 
 const exec = promisify(execFile);
@@ -66,13 +75,62 @@ export function newModelRegistry(auth: AuthStorage): ModelRegistry {
 }
 
 /**
+ * Model kinds a session can hold a conversation with. OMP's catalogue also
+ * carries role-specific runners (embedding, rerank, speech, image, video,
+ * judge, search, tiny title models); an absent kind means chat.
+ */
+function isChatModel(m: { kind?: unknown }): boolean {
+  return m.kind === undefined || m.kind === null || m.kind === "chat";
+}
+
+/**
+ * The larger window a model reaches when OMP's `extendedContext` setting is
+ * on, or undefined when it has none. The registry is built with the setting
+ * off, so `contextWindow` is the standard (standard-pricing) window; this is
+ * the curated or live-advertised maximum the setting unlocks.
+ */
+function extendedContextWindowOf(m: any): number | undefined {
+  const standard = Number(m.contextWindow ?? 0);
+  let maximum: number | undefined;
+  try {
+    maximum = resolveMaxContextWindow(m);
+  } catch {
+    maximum = undefined;
+  }
+  const live = Number(m.maxContextWindow ?? 0);
+  const best = Math.max(maximum ?? 0, Number.isFinite(live) ? live : 0);
+  return best > standard ? best : undefined;
+}
+
+/**
+ * Whether OMP's slow mode (`AgentSession.setSlowMode`) does anything for this
+ * model: the `flex` tier on the OpenAI and Google families, or the
+ * low-priority subscription lane on direct Anthropic. Mirrors upstream's
+ * private `#slowModeTarget` so the UI can hide the control instead of
+ * offering a switch that silently fails.
+ */
+export function slowModeAvailable(model: unknown): boolean {
+  if (!model || typeof model !== "object") return false;
+  const m = model as { provider?: unknown };
+  if (m.provider === "anthropic") return true;
+  try {
+    const family = serviceTierFamily(model as never);
+    return family === "openai" || family === "google";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Normalize OMP's model catalogue.
  *
  * `thinking` is taken verbatim from the model, never invented — the new-session
  * sheet must only offer effort levels the selected model actually supports.
+ * Non-chat runners are dropped: a session cannot converse with an embedding
+ * or speech model, and listing them buried the real choices.
  */
 export function listModels(registry: ModelRegistry, auth: AuthStorage): ModelInfo[] {
-  const all = registry.getAll() as any[];
+  const all = (registry.getAll() as any[]).filter(isChatModel);
   const authCache = new Map<string, boolean>();
 
   const isAuthed = (provider: string): boolean => {
@@ -80,7 +138,7 @@ export function listModels(registry: ModelRegistry, auth: AuthStorage): ModelInf
     if (hit !== undefined) return hit;
     let ok = false;
     try {
-      ok = Boolean((auth as any).hasAuth?.(provider) ?? (auth as any).has?.(provider));
+      ok = providerHasAuth(auth as never, provider);
     } catch {
       ok = false;
     }
@@ -96,6 +154,7 @@ export function listModels(registry: ModelRegistry, auth: AuthStorage): ModelInf
     api: m.api ? String(m.api) : undefined,
     reasoning: Boolean(m.reasoning),
     contextWindow: Number(m.contextWindow ?? 0),
+    extendedContextWindow: extendedContextWindowOf(m),
     maxTokens: Number(m.maxTokens ?? 0),
     thinking:
       m.thinking && Array.isArray(m.thinking.efforts)
@@ -110,6 +169,7 @@ export function listModels(registry: ModelRegistry, auth: AuthStorage): ModelInf
           cacheWrite: Number(m.cost.cacheWrite ?? 0),
         }
       : undefined,
+    slowMode: slowModeAvailable(m) || undefined,
     authenticated: isAuthed(String(m.provider)),
   }));
 }
@@ -151,14 +211,10 @@ export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderI
   for (const [name, list] of byProvider) {
     let credentialSource: string | undefined;
     try {
-      // Returns { kind, envVar? } — naive String() rendered "[object Object]".
-      const origin = (auth as any).getCredentialOrigin?.(name);
-      credentialSource =
-        origin && typeof origin === "object"
-          ? [origin.kind, origin.envVar && `(${origin.envVar})`].filter(Boolean).join(" ")
-          : origin
-            ? String(origin)
-            : undefined;
+      const origin = credentialOrigin(auth as never, name);
+      credentialSource = origin
+        ? [origin.kind, origin.envVar && `(${origin.envVar})`].filter(Boolean).join(" ")
+        : undefined;
     } catch {
       credentialSource = undefined;
     }
@@ -191,34 +247,28 @@ export function listProviders(models: ModelInfo[], auth: AuthStorage): ProviderI
  *
  * The storage is reloaded from SQLite before answering. Credential state
  * changes in OTHER processes — a worker tombstoning the credential when its
- * refresh fails, or `omp login` restoring it — and `hasAuth` alone serves a
- * possibly-stale in-memory view. `reload()` is one equality-guarded SQLite
- * read; gate call sites are human-frequency, so the cost is irrelevant and
- * the answer must be current in both directions.
+ * refresh fails, or `omp login` restoring it — and the in-memory view may be
+ * stale. The reload is one SQLite read; gate call sites are human-frequency,
+ * so the cost is irrelevant and the answer must be current in both directions.
+ *
+ * Tombstoned rows are never part of OMP's active credential set, so a
+ * provider whose only credential is a tombstone reads as unusable here.
  */
 export async function providerAuthHealth(
   auth: AuthStorage,
   provider: string,
 ): Promise<{ usable: boolean; disabledCause?: string }> {
-  const a = auth as any;
-  const usable = (): boolean => {
-    try {
-      return Boolean(a.hasAuth?.(provider) ?? a.has?.(provider));
-    } catch {
-      return false;
-    }
-  };
   try {
-    await a.reload?.();
+    await reloadCredentials(auth as never);
   } catch {
     /* corrupt store: answer from the in-memory view rather than exploding */
   }
-  if (usable()) return { usable: true };
+  // No try/catch: an OMP whose credential API we cannot read must surface as
+  // an error at the gate, not as a plausible-looking "not connected".
+  if (providerHasAuth(auth as never, provider)) return { usable: true };
   let disabledCause: string | undefined;
   try {
-    const tombstones = await a.listDisabledCredentials?.(provider);
-    const cause = Array.isArray(tombstones) ? tombstones[0]?.cause : undefined;
-    disabledCause = cause ? String(cause) : undefined;
+    disabledCause = (await listDisabledCredentials(auth as never, provider))[0]?.cause;
   } catch {
     disabledCause = undefined;
   }
@@ -229,11 +279,8 @@ export async function providerAuthHealth(
 export async function listDisabledProviderCauses(auth: AuthStorage): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   try {
-    const tombstones = await (auth as any).listDisabledCredentials?.();
-    for (const t of Array.isArray(tombstones) ? tombstones : []) {
-      if (t?.provider && t?.cause && !out.has(String(t.provider))) {
-        out.set(String(t.provider), String(t.cause));
-      }
+    for (const t of await listDisabledCredentials(auth as never)) {
+      if (!out.has(t.provider)) out.set(t.provider, t.cause);
     }
   } catch {
     /* no tombstone API in this OMP build: nothing to report */
@@ -248,11 +295,8 @@ export async function listDisabledProviderCauses(auth: AuthStorage): Promise<Map
  * caller surfaces "not reported by provider" rather than a guess.
  */
 export async function fetchProviderQuotas(auth: AuthStorage): Promise<unknown[]> {
-  const fn = (auth as any).fetchUsageReports;
-  if (typeof fn !== "function") return [];
   try {
-    const reports = await fn.call(auth);
-    return Array.isArray(reports) ? reports : reports ? [reports] : [];
+    return await usageReports(auth as never);
   } catch {
     return [];
   }

@@ -37,6 +37,7 @@ import {
   primaryUsageFromTurn,
   realParentPath,
   replayEventsFromEntries,
+  slowModeAvailable,
   subagentUsageFromMessage,
   toOmpAdvisor,
 } from "@orchestrator/omp-adapter";
@@ -56,6 +57,7 @@ import { classifyError } from "./classify-error";
 import { EvidenceTracker } from "./evidence";
 import type { AnswerSubmission, ReviewOwner, StoredTask } from "./finalization";
 import { ANSWER_ENTRY_TYPE, TASK_ENTRY_TYPE, TaskFinalizer } from "./finalization";
+import { loadSettingLookup, settingOverrides } from "./settings-override";
 import type { TestProvider } from "./supervisor";
 
 // ---------------------------------------------------------------------------
@@ -76,6 +78,10 @@ interface WorkerBoot {
   resumeSessionPath?: string;
   approvalMode?: ApprovalMode;
   fastMode?: boolean;
+  /** Start with slow mode (flex / low-priority tier) on. */
+  slowMode?: boolean;
+  /** Start with OMP's extended context windows on (session-only override). */
+  extendedContext?: boolean;
   enableMCP: boolean;
   enableLsp: boolean;
   autoApprove: boolean;
@@ -518,6 +524,8 @@ finalizer = new TaskFinalizer({
 // `Settings.init` is a memoized process singleton. One session per process
 // makes that harmless, and it is the only initializer exported publicly.
 const settings = await OMP.Settings.init({ cwd: boot.projectPath, agentDir: boot.agentDir });
+/** Runtime-only, per-session overrides of OMP settings (never persisted). */
+const settingsOverride = settingOverrides(settings, await loadSettingLookup());
 
 /**
  * The ACP bridge only gates {bash, edit, delete, move}; every other tool
@@ -533,16 +541,34 @@ const settings = await OMP.Settings.init({ cwd: boot.projectPath, agentDir: boot
  * content edits must fall through to the tier gate in always-ask.
  */
 function applyApprovalSettings(mode: ApprovalMode): void {
-  const st: any = settings;
-  if (typeof st.override !== "function") return;
+  // Fail closed: if the tier gate cannot be told the mode, it stays at OMP's
+  // default ("yolo") and every non-bridge tool would run unprompted. Both
+  // writes are read back; any failure throws to the caller.
+  settingsOverride.overrideVerified("tools.approvalMode", mode);
+  settingsOverride.overrideVerified("tools.approval", {
+    bash: "allow",
+    delete: "allow",
+    move: "allow",
+  });
+}
+try {
+  applyApprovalSettings(approvalMode);
+} catch (e) {
+  err(`refusing to start: approval mode could not be enforced: ${String(e)}`);
+  throw e;
+}
+
+// Extended context is a registry-wide OMP setting; one session per process
+// makes a runtime override a per-session choice that never touches config.
+// Applied before the session exists so its catalog is built with it.
+if (boot.extendedContext) {
   try {
-    st.override("tools.approvalMode", mode);
-    st.override("tools.approval", { bash: "allow", delete: "allow", move: "allow" });
+    settingsOverride.overrideVerified("extendedContext", true);
+    await (modelRegistry as any).reapplyModelPolicies?.();
   } catch (e) {
-    err(`approval settings override failed: ${String(e)}`);
+    err(`extended context could not be enabled at boot: ${String(e)}`);
   }
 }
-applyApprovalSettings(approvalMode);
 
 const created = await OMP.createAgentSession({
   cwd: boot.projectPath, // always explicit; never setProjectDir/process.chdir
@@ -850,6 +876,53 @@ const clientBridge = {
 (session as any).setClientBridge?.(clientBridge);
 
 /**
+ * OMP's TIER gate (write, plain edit, eval, browser, MCP…) prompts through the
+ * extension runner's UI as `select("Allow tool: <name>\n<details>",
+ * ["Approve", "Deny"])`. Route that to the same approval card, pending map and
+ * resolution path the ACP bridge uses, so the user sees one kind of approval
+ * whichever gate asked. Returns the option OMP expects, or undefined when the
+ * request was cancelled (turn aborted) — which OMP treats as a denial.
+ */
+async function requestTierApproval(prompt: string): Promise<string | undefined> {
+  const [head = "", ...rest] = prompt.split("\n");
+  const toolName = head.replace(/^Allow tool:\s*/, "").trim() || "tool";
+  const approvalId = interactionId("appr");
+  emit({
+    type: "approval.request",
+    sessionId: boot.sessionId,
+    approvalId,
+    toolName,
+    summary: head,
+    detail: rest.join("\n").trim() || undefined,
+    options: [
+      { id: "Approve", label: "Allow", kind: "allow" },
+      { id: "Deny", label: "Deny", kind: "deny" },
+    ],
+  });
+  enterWaiting();
+  const result = await new Promise<{ optionId: string } | { cancelled: true }>((resolve) => {
+    pendingApprovals.set(approvalId, { resolve });
+  });
+  emit({
+    type: "approval.resolved",
+    sessionId: boot.sessionId,
+    approvalId,
+    optionId: "cancelled" in result ? "cancelled" : result.optionId,
+  });
+  leaveWaiting();
+  if ("cancelled" in result) return undefined;
+  return result.optionId === "Approve" ? "Approve" : "Deny";
+}
+
+/** True for the tier gate's approval prompt (see requestTierApproval). */
+function isTierApprovalPrompt(title: unknown, options: unknown): title is string {
+  if (typeof title !== "string" || !title.startsWith("Allow tool:")) return false;
+  if (!Array.isArray(options) || options.length !== 2) return false;
+  const labels = options.map((o) => (typeof o === "string" ? o : (o?.value ?? o?.label)));
+  return labels[0] === "Approve" && labels[1] === "Deny";
+}
+
+/**
  * Extension/tool UI bridge. Implements the subset of upstream
  * ExtensionUIContext a non-terminal host can honour; everything else is a
  * deliberate no-op or an explicit "unsupported" card — never a hang, never a
@@ -884,21 +957,23 @@ const uiContext: any = {
   timeoutStartsOnPresentation: true,
 
   select: (title: string, options: Array<{ label?: string; value?: string } | string>) =>
-    requestUi(
-      {
-        kind: "select",
-        title,
-        options: (options ?? []).map((o, i) =>
-          typeof o === "string"
-            ? { id: o, label: o }
-            : { id: String(o.value ?? o.label ?? i), label: String(o.label ?? o.value ?? i) },
+    isTierApprovalPrompt(title, options)
+      ? requestTierApproval(title)
+      : requestUi(
+          {
+            kind: "select",
+            title,
+            options: (options ?? []).map((o, i) =>
+              typeof o === "string"
+                ? { id: o, label: o }
+                : { id: String(o.value ?? o.label ?? i), label: String(o.label ?? o.value ?? i) },
+            ),
+            multi: false,
+          },
+          "extension",
+          undefined,
+          (r) => (r.cancelled ? undefined : (r.value as string)),
         ),
-        multi: false,
-      },
-      "extension",
-      undefined,
-      (r) => (r.cancelled ? undefined : (r.value as string)),
-    ),
 
   confirm: (title: string, message: string) =>
     requestUi({ kind: "confirm", title, message }, "extension", false, (r) =>
@@ -968,6 +1043,82 @@ const uiContext: any = {
   },
 };
 (created as any).setToolUIContext?.(uiContext, true);
+
+/**
+ * Give OMP's extension runner the same UI context and runtime actions its own
+ * print/RPC/ACP modes install (`modes/runtime-init.ts`). Without this,
+ * `ExtensionRunner.hasUI()` stays false and the TIER gate refuses every
+ * prompt-tier tool with "requires approval but no interactive UI available"
+ * instead of asking. Command-context actions (new session, branch, switch,
+ * reload) are deliberately NOT provided: this worker owns exactly one session
+ * file, and an extension command must not swap it out from under the engine.
+ */
+async function initializeExtensionRunner(): Promise<void> {
+  const s: any = session;
+  const runner = s.extensionRunner;
+  if (!runner || typeof runner.initialize !== "function") return;
+  const [{ runExtensionCompact, runExtensionSetModel }, { getSessionSlashCommands }] =
+    await Promise.all([
+      import("@oh-my-pi/pi-coding-agent/extensibility/extensions/compact-handler"),
+      import("@oh-my-pi/pi-coding-agent/extensibility/extensions/get-commands-handler"),
+    ]);
+  const reportSend = (what: string) => (e: unknown) =>
+    err(`extension ${what} failed: ${String((e as Error)?.message ?? e)}`);
+  runner.initialize(
+    {
+      sendMessage: (message: unknown, options: unknown) => {
+        s.sendCustomMessage(message, options).catch(reportSend("sendMessage"));
+      },
+      sendUserMessage: (content: unknown, options: unknown) => {
+        s.sendUserMessage(content, options).catch(reportSend("sendUserMessage"));
+      },
+      appendEntry: (customType: string, data: unknown) => {
+        sessionManager.appendCustomEntry(customType, data as never);
+      },
+      setLabel: (targetId: string, label: string | undefined) => {
+        (sessionManager as any).appendLabelChange?.(targetId, label);
+      },
+      getActiveTools: () => s.getEnabledToolNames(),
+      getAllTools: () => s.getAllToolInfos(),
+      setActiveTools: (names: string[]) => s.setActiveToolsByName(names),
+      getCommands: () => getSessionSlashCommands(s),
+      setModel: (model: unknown) => runExtensionSetModel(s, model as never),
+      getThinkingLevel: () => s.thinkingLevel,
+      setThinkingLevel: (level: unknown) => s.setThinkingLevel(level),
+      getServiceTiers: () => s.serviceTierByFamily,
+      setServiceTier: (family: unknown, tier: unknown) => s.setServiceTierFamily(family, tier),
+      getSessionName: () => sessionManager.getSessionName(),
+      setSessionName: async (name: string) => {
+        await sessionManager.setSessionName(name, "user");
+      },
+    },
+    {
+      getModel: () => s.model,
+      isIdle: () => !s.isStreaming,
+      abort: () => s.abort({ reason: OMP.USER_INTERRUPT_LABEL }),
+      hasPendingMessages: () => s.queuedMessageCount > 0,
+      // The engine owns this worker's lifetime; an extension cannot end it.
+      shutdown: () => {},
+      getContextUsage: () => s.getContextUsage(),
+      getSystemPrompt: () => s.systemPrompt,
+      runEphemeralTurn: (args: unknown) => s.runEphemeralTurn(args),
+      compact: (instructionsOrOptions: unknown) =>
+        runExtensionCompact(s, instructionsOrOptions as never),
+    },
+    undefined,
+    uiContext,
+    "rpc",
+  );
+  runner.onError?.((e: unknown) => err(`extension error: ${JSON.stringify(e)}`));
+  await runner.emit({ type: "session_start" });
+}
+try {
+  await initializeExtensionRunner();
+} catch (e) {
+  // Without the runner the tier gate still fails closed (refuses), so this
+  // degrades to the old behaviour rather than to unprompted tools.
+  err(`extension runner initialization failed: ${String(e)}`);
+}
 
 // ---------------------------------------------------------------------------
 // Event stream
@@ -1042,6 +1193,105 @@ function emitFastMode(): void {
     enabled: Boolean(s.isFastModeEnabled?.()),
     active: Boolean(s.isFastModeActive?.()),
   });
+}
+
+/**
+ * Turn slow mode on or off for the current model. False when it has none.
+ *
+ * OpenAI/Google: upstream's `setSlowMode` selects the session's `flex` tier,
+ * which OMP records in the session file only. Direct Anthropic: upstream's
+ * `setSlowMode` writes `cfgProvidersAnthropicSlowMode` to the global layer, which
+ * PERSISTS `providers.anthropic.slowMode` to the user's global config.yml —
+ * something this app never does. That branch is reproduced here with a
+ * runtime-only override plus the same lane accept/stop upstream performs.
+ */
+function applySlowMode(enabled: boolean): boolean {
+  const s: any = session;
+  const model = s.model;
+  if (!slowModeAvailable(model)) return false;
+  if (model?.provider === "anthropic") {
+    try {
+      settingsOverride.overrideVerified("providers.anthropic.slowMode", enabled ? "auto" : "off");
+    } catch (e) {
+      err(`slow mode override failed: ${String(e)}`);
+      return false;
+    }
+    // Enter an already-offered (or user-stopped) low-priority window now, or
+    // stop the active one — exactly what `/slow on|off` does upstream.
+    const lane = s.getAnthropicSlowModeLane?.();
+    try {
+      if (enabled) lane?.accept?.();
+      else lane?.stop?.("user");
+    } catch (e) {
+      err(`slow mode lane update failed: ${String(e)}`);
+    }
+    return true;
+  }
+  return Boolean(s.setSlowMode?.(enabled));
+}
+
+/** Slow-mode state for the current model; label is OMP's live Claude-lane status. */
+function slowModeState(): { enabled: boolean; available: boolean; label?: string } {
+  const s: any = session;
+  const available = slowModeAvailable(s.model);
+  let label: string | undefined;
+  try {
+    label = s.getAnthropicSlowModeLabel?.() || undefined;
+  } catch {
+    label = undefined;
+  }
+  return {
+    enabled: available && Boolean(s.isSlowModeEnabled?.()),
+    available,
+    label,
+  };
+}
+
+let lastSlowMode = "";
+function emitSlowMode(force = false): void {
+  const state = slowModeState();
+  const key = JSON.stringify(state);
+  if (!force && key === lastSlowMode) return;
+  lastSlowMode = key;
+  emit({ type: "session.slowMode", sessionId: boot.sessionId, ...state });
+}
+
+function extendedContextEnabled(): boolean {
+  try {
+    return settingsOverride.read("extendedContext") === true;
+  } catch {
+    return false;
+  }
+}
+
+function emitExtendedContext(): void {
+  const window = Number((session as any).model?.contextWindow ?? 0);
+  emit({
+    type: "session.extendedContext",
+    sessionId: boot.sessionId,
+    enabled: extendedContextEnabled(),
+    contextWindow: window > 0 ? window : undefined,
+  });
+}
+
+/**
+ * Fast and slow mode both select the model family's service tier, so turning
+ * one on can turn the other off, and a model switch changes what either
+ * means. Every change re-announces both, plus the effective context window.
+ */
+function emitModelModes(): void {
+  emitFastMode();
+  emitSlowMode(true);
+  emitExtendedContext();
+}
+
+/** Wait for OMP's async extended-context rebind to move the live window. */
+async function settleContextWindow(before: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (Number((session as any).model?.contextWindow ?? 0) !== before) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
 }
 
 let persistedEmitted = false;
@@ -1293,7 +1543,13 @@ session.subscribe((ev: any) => {
     refreshAdvisors();
     emitUsage();
     emitContext();
+    emitSlowMode();
     checkPersisted();
+  }
+  // Upstream model switches (fallbacks, rollbacks) change what fast/slow mode
+  // and the context window mean for this session.
+  if (ev?.type === "model_changed" || ev?.type === "retry_fallback_applied") {
+    emitModelModes();
   }
 });
 
@@ -1509,7 +1765,8 @@ if (advisors.size) await applyAdvisors([...advisors.values()]);
 // the actual state — resumed sessions restore their persisted tier, so the UI
 // chip must reflect the session, not assume "off".
 if (boot.fastMode) (session as any).setFastMode?.(true);
-emitFastMode();
+if (boot.slowMode) applySlowMode(true);
+emitModelModes();
 
 // Resume/fork: seed the replay buffer with the persisted conversation so the
 // host can render the history that predates this process. Seeded directly
@@ -1837,7 +2094,34 @@ async function handle(req: any): Promise<unknown> {
         thinkingLevel: req.payload.thinkingLevel,
         automatic: false,
       });
+      emitModelModes();
+      emitContext();
       return { ok: true, model: String(req.payload.model) };
+    }
+
+    case "session.setSlowMode": {
+      const ok = applySlowMode(Boolean(req.payload.enabled));
+      emitModelModes();
+      const state = slowModeState();
+      return { ok, enabled: state.enabled, label: state.label };
+    }
+
+    case "session.setExtendedContext": {
+      const enabled = Boolean(req.payload.enabled);
+      const before = Number(s.model?.contextWindow ?? 0);
+      try {
+        settingsOverride.overrideVerified("extendedContext", enabled);
+      } catch (e) {
+        err(`extended context toggle failed: ${String(e)}`);
+        emitExtendedContext();
+        return { ok: false, enabled: extendedContextEnabled() };
+      }
+      // OMP rebinds the live model asynchronously after the setting flips.
+      await settleContextWindow(before);
+      emitExtendedContext();
+      emitContext();
+      const window = Number(s.model?.contextWindow ?? 0);
+      return { ok: true, enabled, contextWindow: window > 0 ? window : undefined };
     }
 
     case "session.setTitle":
@@ -1852,8 +2136,26 @@ async function handle(req: any): Promise<unknown> {
     case "session.setApprovalMode": {
       const mode = String(req.payload.mode) as ApprovalMode;
       if (!["always-ask", "write", "yolo"].includes(mode)) return { ok: false };
+      try {
+        applyApprovalSettings(mode);
+      } catch (e) {
+        // The tier gate did not accept the change. Keep the previous mode in
+        // force everywhere (bridge and tier) rather than split them.
+        err(`approval mode change failed: ${String(e)}`);
+        try {
+          applyApprovalSettings(approvalMode);
+        } catch (restoreError) {
+          err(`approval mode restore failed: ${String(restoreError)}`);
+        }
+        emit({
+          type: "session.notice",
+          sessionId: boot.sessionId,
+          level: "error",
+          message: `The approval mode could not be changed, so it stays at ${approvalMode}.`,
+        });
+        return { ok: false };
+      }
       approvalMode = mode;
-      applyApprovalSettings(mode);
       // A mode change is a real security state change — it goes in the
       // transcript, loudest for the mode that stops asking.
       emit({

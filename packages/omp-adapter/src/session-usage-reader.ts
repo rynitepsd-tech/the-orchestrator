@@ -10,6 +10,9 @@
  *                cost: { total } },
  *       provider, model, responseId, timestamp } }
  *
+ * `model_usage` entries record spend that has no message of its own (cache
+ * warming, judge calls) with the same `usage` shape; they are read too.
+ *
  * Records built here use source "omp-session" — the highest authority tier —
  * so a reindex reconciles (replaces) whatever live counters recorded.
  *
@@ -94,6 +97,39 @@ export async function readSessionFileUsage(
         ) {
           advisorIdentities.set(owner.sdkName, { id: owner.advisorId, name: owner.advisorName });
         }
+        continue;
+      }
+      if (entry?.type === "model_usage" && entry.usage) {
+        // Spend with no transcript message of its own: prompt-cache warming
+        // replays (on by default since OMP 18.3.5), auto-effort
+        // classification and other judge calls. Omitting these understated
+        // what a session really cost.
+        const scope = actor?.ompSessionId || ompSessionId || filePath;
+        const at = Date.parse(String(entry.timestamp ?? ""));
+        const rec = usageRecordFromMessage(
+          {
+            usage: entry.usage,
+            provider: entry.provider,
+            model: entry.model,
+            timestamp: Number.isFinite(at) ? at : undefined,
+          },
+          {
+            sessionId: scope,
+            projectId: actor?.projectId ?? cwd,
+            actorType: actor?.actorType ?? "primary",
+            actorId: actor?.actorId ?? "primary",
+            actorName:
+              actor?.actorName ??
+              (typeof entry.purpose === "string" && entry.purpose ? entry.purpose : undefined),
+            // Entry id + timestamp: unique per billable event, and identical
+            // in a fork's copied history, so the global index dedups it the
+            // same way it dedups provider responseIds.
+            messageId: `model-usage:${String(entry.id ?? records.length)}:${Number.isFinite(at) ? at : 0}`,
+            source: "omp-session",
+            ompSessionId: scope,
+          },
+        );
+        if (rec) records.push(rec);
         continue;
       }
       if (entry?.type !== "message") continue;

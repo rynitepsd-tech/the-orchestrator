@@ -342,6 +342,8 @@ export class WorkerSupervisor {
       resumeSessionPath: config.resumeSessionPath,
       approvalMode: config.approvalMode,
       fastMode: config.fastMode,
+      slowMode: config.slowMode,
+      extendedContext: config.extendedContext,
       // MCP and LSP are per-process and always on in normal operation; test
       // mode keeps them off so unit tests don't spawn language servers.
       enableMCP: !this.#testMode,
@@ -402,6 +404,18 @@ export class WorkerSupervisor {
         if (e.type === "session.model") {
           summary.model = e.model;
           if (e.thinkingLevel) summary.thinkingLevel = e.thinkingLevel;
+        }
+        // Keep the engine-side summary current so a reconnecting window, a
+        // session list refresh, or a revived hibernated worker sees the same
+        // per-session model modes the live UI does.
+        if (e.type === "session.fastMode") summary.fastMode = e.enabled || undefined;
+        if (e.type === "session.slowMode") summary.slowMode = e.enabled || undefined;
+        if (e.type === "session.extendedContext") {
+          summary.extendedContext = e.enabled || undefined;
+        }
+        if (e.type === "session.thinkingLevel") {
+          summary.thinkingLevel = e.level;
+          summary.thinkingResolved = e.resolved;
         }
         // A self-parked worker is about to exit ON PURPOSE; its exit must not
         // be reported as a crash.

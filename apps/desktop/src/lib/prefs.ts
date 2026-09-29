@@ -14,6 +14,10 @@ export interface SessionPreset {
   thinkingLevel?: string;
   /** Launch sessions with fast mode (provider priority tier) on. */
   fastMode?: boolean;
+  /** Launch sessions with slow mode (flex / low-priority tier) on. */
+  slowMode?: boolean;
+  /** Launch sessions with OMP's extended context windows on. */
+  extendedContext?: boolean;
   advisors: AdvisorConfig[];
 }
 

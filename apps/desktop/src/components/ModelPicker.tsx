@@ -143,6 +143,12 @@ export function ModelPicker({
               <span className="hint">
                 {m.provider}
                 {m.contextWindow > 0 && ` · ${Math.round(m.contextWindow / 1000)}k ctx`}
+                {m.extendedContextWindow &&
+                  ` (up to ${
+                    m.extendedContextWindow >= 1_000_000
+                      ? `${Number((m.extendedContextWindow / 1_000_000).toFixed(2))}M`
+                      : `${Math.round(m.extendedContextWindow / 1000)}k`
+                  } extended)`}
                 {m.thinking && ` · ${m.thinking.efforts.length} effort levels`}
               </span>
             </button>

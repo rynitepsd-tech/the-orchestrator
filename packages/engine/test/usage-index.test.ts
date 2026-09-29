@@ -300,3 +300,26 @@ describe("superseded advisor snapshots", () => {
     expect(reloaded.records().some((r) => r.source === "advisor-log")).toBe(false);
   });
 });
+
+describe("model_usage identity", () => {
+  test("a cache-warming row copied into a fork keys identically, so it counts once", () => {
+    const row = (sessionId: string): UsageRecord => ({
+      key: usageKey({ sessionId, actorId: "primary", messageId: "model-usage:w1:1790000000000" }),
+      sessionId,
+      projectId: "/p",
+      actorType: "primary",
+      actorId: "primary",
+      actorName: "cache-warm",
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      inputTokens: 3,
+      outputTokens: 1,
+      cacheReadTokens: 40_000,
+      cacheWriteTokens: 0,
+      cost: 0.02,
+      source: "omp-session",
+      ompSessionId: sessionId,
+    });
+    expect(globalUsageKey(row("parent"))).toBe(globalUsageKey(row("fork")));
+  });
+});

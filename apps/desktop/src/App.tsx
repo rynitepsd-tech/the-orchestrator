@@ -464,6 +464,11 @@ export function App(): JSX.Element {
         title: d.title,
         advisors,
         resumeSessionPath: d.path,
+        // Slow mode on Claude and extended context are runtime-only in the
+        // worker (never written to OMP's config or the session file), so a
+        // woken or recovered session must be told again what it was running.
+        slowMode: oldView?.summary.slowMode || preset?.slowMode || undefined,
+        extendedContext: oldView?.summary.extendedContext || preset?.extendedContext || undefined,
         // Restore the session's remembered approval mode at boot, so the
         // tier gate is correct from the first tool call.
         approvalMode: prefs.sessionApprovalByPath[d.path] as
@@ -488,6 +493,19 @@ export function App(): JSX.Element {
       if (preset?.fastMode) {
         void engine
           .request("session.setFastMode", { sessionId: res.session.sessionId, enabled: true })
+          .catch(() => {});
+      }
+      if (preset?.slowMode) {
+        void engine
+          .request("session.setSlowMode", { sessionId: res.session.sessionId, enabled: true })
+          .catch(() => {});
+      }
+      if (preset?.extendedContext) {
+        void engine
+          .request("session.setExtendedContext", {
+            sessionId: res.session.sessionId,
+            enabled: true,
+          })
           .catch(() => {});
       }
       // Pull the persisted conversation into the view.

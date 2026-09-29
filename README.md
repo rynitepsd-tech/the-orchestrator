@@ -166,7 +166,7 @@ Packaging and verification:
 ```bash
 bun run release:check                 # check + build:engine + app build + packaged smoke, end to end
 cd apps/desktop && bunx tauri build   # produces the .app and .dmg, if run standalone
-bun run smoke                         # packaged smoke test: 25 checks
+bun run smoke                         # packaged smoke test: 31 checks
 bun run validate:live                 # live validation against real providers (primary, advisor,
                                        # multi-advisor, subagent, resume, concurrent, fork)
 ```

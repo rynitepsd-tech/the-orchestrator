@@ -149,3 +149,49 @@ describe("readSessionFileUsage", () => {
     expect(await readSessionFileUsage("/nonexistent/nope.jsonl")).toBeNull();
   });
 });
+
+describe("model_usage entries (spend with no message of its own)", () => {
+  const warm = (id: string, cacheRead: number) => ({
+    type: "model_usage",
+    id,
+    parentId: "e1",
+    timestamp: "2026-09-28T12:00:00.000Z",
+    purpose: "cache-warm",
+    api: "anthropic-messages",
+    provider: "anthropic",
+    model: "claude-opus-5-5",
+    usage: {
+      input: 3,
+      output: 1,
+      cacheRead,
+      cacheWrite: 0,
+      totalTokens: cacheRead + 4,
+      cost: { input: 0, output: 0, cacheRead: 0.02, cacheWrite: 0, total: 0.02 },
+    },
+    stopReason: "aborted",
+  });
+
+  test("a cache-warming replay is counted with its cost and labelled", async () => {
+    const r = await readSessionFileUsage(
+      fixture([header, assistantMsg("resp-A", 1000), warm("w1", 40_000)]),
+    );
+    expect(r?.records.length).toBe(2);
+    const w = r!.records.find((x) => x.actorName === "cache-warm");
+    expect(w).toBeDefined();
+    expect(w!.cacheReadTokens).toBe(40_000);
+    expect(w!.cost).toBeCloseTo(0.02);
+    expect(w!.model).toBe("claude-opus-5-5");
+    expect(w!.source).toBe("omp-session");
+  });
+
+  test("a fork's copied warming entry keeps the same identity (dedups globally)", async () => {
+    const a = await readSessionFileUsage(fixture([header, warm("w1", 40_000)]));
+    const b = await readSessionFileUsage(
+      fixture([{ ...header, id: "omp-fork" }, warm("w1", 40_000)]),
+    );
+    const idA = a!.records[0].key.split("\u0000").slice(2).join("\u0000");
+    const idB = b!.records[0].key.split("\u0000").slice(2).join("\u0000");
+    expect(idA).toBe(idB);
+    expect(idA.startsWith("model-usage:")).toBe(true);
+  });
+});

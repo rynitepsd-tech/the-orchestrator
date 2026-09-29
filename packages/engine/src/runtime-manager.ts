@@ -11,6 +11,7 @@
  */
 import { join, resolve } from "node:path";
 import {
+  AuthApiUnavailableError,
   discoverAdvisors,
   discoverNestedTranscripts,
   discoverSessions,
@@ -21,12 +22,15 @@ import {
   listModels,
   listProviders,
   newModelRegistry,
+  oauthLogin,
   ompAgentDir,
   openAuthStorage,
   providerAuthHealth,
   readSessionFileUsage,
   relocateProjectSessions,
+  removeCredentials,
   type SessionFileUsage,
+  storeApiKey,
   workspaceForPath,
   workspaceForSession,
 } from "@orchestrator/omp-adapter";
@@ -310,18 +314,23 @@ export class RuntimeManager {
         if (!key) {
           throw Object.assign(new Error("The API key is empty."), { kind: "auth" });
         }
-        if (typeof auth?.set !== "function") {
-          throw Object.assign(new Error("This OMP build does not expose credential storage."), {
-            kind: "auth",
-          });
+        try {
+          await storeApiKey(auth, provider, key);
+        } catch (e) {
+          if (e instanceof AuthApiUnavailableError) {
+            throw Object.assign(new Error("This OMP build does not expose credential storage."), {
+              kind: "auth",
+            });
+          }
+          throw e;
         }
-        await auth.set(provider, { type: "api_key", key, source: "login" });
         await this.#afterCredentialChange();
         emitLifecycle({ type: "engine.auth", provider, status: "done" });
         return { ok: true, message: "API key saved." };
       }
 
-      if (typeof auth?.login !== "function") {
+      const login = oauthLogin(auth);
+      if (!login) {
         throw Object.assign(
           new Error(
             "This OMP build does not expose a programmatic sign-in flow. Run `omp` once in a terminal; The Orchestrator reuses those credentials.",
@@ -337,7 +346,7 @@ export class RuntimeManager {
         emitLifecycle(e);
       });
       try {
-        const loginPromise: Promise<any> = auth.login(provider, controller.ctrl);
+        const loginPromise: Promise<any> = login(provider, controller.ctrl) as Promise<any>;
         // When `failure` wins the race, OMP's own rejection is a wrapped
         // cancellation — observe it so it never surfaces as unhandled.
         loginPromise.catch(() => {});
@@ -382,8 +391,10 @@ export class RuntimeManager {
    */
   async logout(provider: string): Promise<{ ok: boolean; message?: string }> {
     const auth: any = this.#authStorage;
-    const remove = auth?.logout ?? auth?.remove;
-    if (typeof remove !== "function") {
+    try {
+      await removeCredentials(auth, provider);
+    } catch (e) {
+      if (!(e instanceof AuthApiUnavailableError)) throw e;
       throw Object.assign(
         new Error(
           "This OMP build does not expose credential removal. Run `omp logout` in a terminal.",
@@ -391,7 +402,6 @@ export class RuntimeManager {
         { kind: "auth" },
       );
     }
-    await remove.call(auth, provider);
     await this.#afterCredentialChange();
     const still = (await this.providers()).find((p) => p.name === provider);
     return {

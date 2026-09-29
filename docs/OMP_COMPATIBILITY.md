@@ -7,11 +7,11 @@ It embeds OMP rather than reimplementing it, so it is tightly coupled to a speci
 
 | | |
 |---|---|
-| **OMP version** | `18.1.11` |
+| **OMP version** | `18.4.2` |
 | **Upstream repo** | `can1357/oh-my-pi` |
-| **Tag** | `v18.1.11` |
-| **npm packages** | `@oh-my-pi/pi-coding-agent@18.1.11` and its workspace siblings |
-| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@18.1.11` (and `-darwin-x64` for Intel) |
+| **Tag** | `v18.4.2` |
+| **npm packages** | `@oh-my-pi/pi-coding-agent@18.4.2` and its workspace siblings |
+| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@18.4.2` (and `-darwin-x64` for Intel) |
 | **Required runtime** | Bun `>= 1.3.14` (OMP declares `engines.bun`) |
 | **Upstream licence** | MIT (Mario Zechner; Can Bölük) |
 
@@ -19,19 +19,18 @@ This project is caught up to upstream's latest release. The pin stays deliberate
 upstream release does not move this project automatically (see
 [Updating the bundled OMP](#updating-the-bundled-omp)).
 
-**The client-version gate that blocked `anthropic/claude-fable-5-1` is cleared on this pin.**
-OMP lists models from each provider's live endpoint whether or not the pinned client can run
-them, and Anthropic gates the newest models on the Claude Code version the client advertises.
-`17.3.8` advertised `2.1.220` and `18.1.1` advertised `2.1.246`, both below the `2.1.251` floor
-Anthropic required, so those builds listed and priced Fable 5.1 and then failed at inference with
-HTTP 400 `claude_code_version_too_old`. `18.1.11` advertises `2.1.257`
-(`pi-ai/src/providers/claude-code-fingerprint.ts`), and a real one-prompt turn on
-`anthropic/claude-fable-5-1` through the engine completed normally on 2026-09-06 — measured on
-this pin, not inferred from the constant. The floor is Anthropic's to move: a future raise would
-reopen the gate until upstream advertises a higher version, which is why the engine still
-classifies that rejection as `model-unavailable` naming the embedded OMP
-(`packages/engine/src/worker/classify-error.ts`) rather than relaying the provider's advice to
-update an unrelated product.
+**The Claude Code client-version gate no longer needs an app update.** Anthropic gates its newest
+models on the Claude Code version a client advertises, and returns HTTP 400
+`claude_code_version_too_old` naming the minimum. Up to 18.1.x OMP advertised a hard-coded
+version, so each time the floor rose the app listed and priced a model it could not run until a
+new OMP shipped (`17.3.8` → `2.1.220`, `18.1.1` → `2.1.246`, both below a `2.1.251` floor). OMP
+18.4 advertises `2.1.280` by default and, on that rejection, adopts the version Anthropic names
+for the rest of the process and retries once
+(`pi-ai/src/providers/claude-code-fingerprint.ts`, `adoptRequiredClaudeCodeVersion`). A real
+one-prompt turn on `anthropic/claude-opus-5-5` through the engine completed normally on
+2026-09-28, measured on this pin. The engine still classifies the rejection as
+`model-unavailable` naming the embedded OMP (`packages/engine/src/worker/classify-error.ts`), which
+now only fires if the adopted-version retry is refused too.
 
 ## Integration surface used
 
@@ -43,11 +42,11 @@ and not by vendoring upstream source.
 | Symbol | Used for |
 |---|---|
 | `createAgentSession(options)` | Builds the one `AgentSession` a worker owns |
-| `AgentSession` | `prompt`, `abort`, `compact`, `dispose`, `subscribe`, `setModel`, `setThinkingLevel`, `setSessionName`, `applyAdvisorConfigs`, `setAdvisorEnabled`, `getAdvisorStats`, `getContextUsage`, `getSessionStats`, `getAvailableThinkingLevels`, `setClientBridge`, `setToolUIContext` |
+| `AgentSession` | `prompt`, `abort`, `compact`, `dispose`, `subscribe`, `setModel`, `setThinkingLevel` (including `"auto"`), `setSessionName`, `applyAdvisorConfigs`, `setAdvisorEnabled`, `getAdvisorStats`, `getContextUsage`, `getSessionStats`, `getAvailableThinkingLevels`, `setClientBridge`, `setToolUIContext`, `setFastMode` / `isFastModeEnabled` / `isFastModeActive`, `setSlowMode` / `isSlowModeEnabled` (OpenAI/Google only, see below), `getAnthropicSlowModeLane`, `getAnthropicSlowModeLabel` |
 | `SessionManager` | `create`, `open`, `list`, `listAll`, `getDefaultSessionDir`, `forkFrom`, `getBranch` |
 | `Settings.init` | Per-worker settings resolution |
-| `AuthStorage` / `discoverAuthStorage` | Credential reuse and `fetchUsageReports` |
-| `ModelRegistry` | Model catalogue, `find`, `getAll`, `registerProvider` (tests only) |
+| `AuthStorage` / `discoverAuthStorage` | Credential reuse, sign-in, quota. Since 18.3 the store is namespaced — `keys.source` / `keys.keyless` (is a provider connected, and how), `credentials.reload` / `set` / `remove` / `listDisabled`, `oauth.login`, `usage.reports`. All access goes through `packages/omp-adapter/src/auth-compat.ts`, which also accepts the pre-18.3 flat API and throws when it recognises neither |
+| `ModelRegistry` | Model catalogue, `find`, `getAll`, `reapplyModelPolicies`, `registerProvider` (tests only). `getAll()` includes non-chat runners (`kind`: embedding, rerank, image, tts, stt, video, judge, search, tiny) since 18.2; the adapter keeps only chat models |
 | `AgentRegistry` | Private registry per session (defence in depth) |
 
 ### Subpath — `@oh-my-pi/pi-coding-agent/advisor/index`
@@ -59,6 +58,29 @@ declared `"./*": { "import": "./src/*.ts" }` export map:
 |---|---|
 | `discoverAdvisorConfigs(cwd, agentDir?)` | Reading the project's WATCHDOG roster exactly as the CLI would |
 | `loadWatchdogConfigFile` | Reading raw config for "Save as project default" |
+
+### Other subpaths
+
+| Import | Used for |
+|---|---|
+| `@oh-my-pi/pi-coding-agent/config/registry` → `lookup(id)` | Per-session, runtime-only setting overrides (`handle.override(settings, value)`): `tools.approvalMode`, `tools.approval`, `extendedContext`, `providers.anthropic.slowMode`. 18.4 removed `Settings.override(path, value)`; `packages/engine/src/worker/settings-override.ts` wraps both and reads every security-relevant override back |
+| `@oh-my-pi/pi-catalog/compat/context-window` → `resolveMaxContextWindow` | The larger window a model reaches with extended context on (shown in the picker) |
+| `@oh-my-pi/pi-ai` → `serviceTierFamily` | Whether a model has a slow mode (mirrors upstream's private `#slowModeTarget`) |
+
+### Model modes
+
+- **Fast mode** — `setFastMode` selects the family's priority tier; recorded in the session file.
+- **Slow mode** — on OpenAI/Google, `setSlowMode` selects the `flex` tier (session file only). On
+  direct Anthropic, upstream's `setSlowMode` persists `providers.anthropic.slowMode` to the user's
+  global `config.yml`, so the worker instead overrides that setting at runtime and calls the lane's
+  `accept()` / `stop("user")` exactly as upstream does. Verified: the config file is byte-for-byte
+  unchanged across on/off.
+- **Extended context** — the `extendedContext` setting is registry-wide and defaults to off for SDK
+  hosts. The worker overrides it per session; the session's own listener rebinds the live model
+  asynchronously, so the worker waits for the window to move before answering. The catalogue's
+  maximum is a floor: `openai-codex/gpt-5.6-luna` lists 872K and resolved 1.0M live.
+- **Auto effort** — `setThinkingLevel("auto")`; OMP picks an effort per turn and reports it in
+  `thinking_level_changed` (`configured: "auto"`, `resolved: <effort>`).
 
 ## Verified upstream behaviour
 
@@ -168,11 +190,26 @@ actually changes.
   installs its bridge. `PERMISSION_OPTIONS` is a fixed four-option menu (allow once / always allow
   / reject / always reject); `allow_always` and `reject_always` are cached per `cacheKey`, scoped to
   the session, not global.
-- `setToolUIContext(uiContext, hasUI)` — called with the `ExtensionUIContext` built from
-  `CreateAgentSessionResult` — is what wires extension and ask-tool UI requests to the host instead
-  of a terminal.
+- `setToolUIContext(uiContext, hasUI)` wires tool-level UI (the ask tool) to the host. It does
+  **not** reach the extension runner: OMP's TIER gate (write, plain edit, eval, browser, MCP) asks
+  `ExtensionRunner.hasUI()`, which is only true after `extensionRunner.initialize(actions,
+  contextActions, commandActions?, uiContext, mode)`. The worker initializes the runner the way
+  OMP's print/RPC modes do (`modes/runtime-init.ts`), minus the command-context actions (new
+  session, branch, switch, reload), because a worker owns exactly one session file. Before 0.8.0
+  it never did, so always-ask refused tier-gated tools with "requires approval but no interactive
+  UI available" instead of asking.
+- The tier gate prompts as `select("Allow tool: <name>\n<details>", ["Approve", "Deny"])`. The
+  worker recognises that shape and renders it as the same `approval.request` card the ACP bridge
+  uses. bash/delete/move stay tier-`allow`, so the bridge remains their single prompter
+  (`approval-tier.test.ts` asserts exactly one prompt each).
 - `CreateAgentSessionResult.eventBus` carries the `task:subagent:lifecycle` / `task:subagent:progress`
   / `task:subagent:event` channels the worker subscribes to for subagent cards.
+- Assistant messages may carry `upstreamModel`: the model a router or gateway actually served.
+  When it differs from the requested model the transcript says so once per change.
+- `model_usage` session entries record spend with no message of its own — prompt-cache warming
+  replays (`providers.cacheWarming`, default `idle` since 18.3.5), auto-effort classification and
+  other judge calls. The usage reader counts them, keyed on entry id + timestamp so a fork's copy
+  dedups globally.
 - `SessionManager.forkFrom(sourcePath, cwd, sessionDir)` writes the fork to disk atomically before
   returning — the caller never observes a partially-written fork file. `getBranch()` is what feeds
   resume's transcript replay.
@@ -203,6 +240,11 @@ actually changes.
    note appearing in the transcript.
 10. **Advisor completion has no push signal.** Reviews run asynchronously after `turn_end`; advisor
     state and usage must be polled (this project polls every 5 seconds) rather than awaited.
+11. **Most calls into OMP are untyped.** Handles pass through `any` with optional chaining, so an
+    upstream reshape type-checks and then no-ops. 18.3/18.4 did exactly this to `AuthStorage` and
+    `Settings.override`. The tripwires are the tests that run against the real installed package:
+    `auth-compat.test.ts`, `settings-override.test.ts`, `model-catalog.test.ts`,
+    `approval-tier.test.ts`.
 
 ## Updating the bundled OMP
 
@@ -214,7 +256,8 @@ Version bumps are deliberate, never floating.
 2. `bun install`
 3. Re-vendor **both** native addons in the same commit — the loader requires the addon to export a
    version-matched symbol, so a mismatch fails at runtime, not build time.
-4. `bun run typecheck && bun test` — the concurrency and usage suites are the tripwires.
+4. `bun run typecheck && bun test` — the concurrency and usage suites, plus the real-package tests
+   listed under limitation 11, are the tripwires. Typecheck alone proves little (see 12).
 5. `bun run build:engine` and run the packaged smoke test (`scripts/smoke-packaged.ts`).
 6. Re-verify the shapes in [Verified upstream behaviour](#verified-upstream-behaviour); the adapter
    reads several fields defensively but the usage keys are load-bearing.
