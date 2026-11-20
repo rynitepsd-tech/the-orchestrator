@@ -1,15 +1,14 @@
 {
   "name": "@orchestrator/desktop",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
-    "vite:dev": "bun run sync:toolviews && vite",
-    "vite:build": "bun run sync:toolviews && tsc --noEmit && vite build",
-    "sync:toolviews": "bun ../../scripts/sync-tool-views.ts"
+    "vite:dev": "vite",
+    "vite:build": "tsc --noEmit && vite build"
   },
   "dependencies": {
     "@orchestrator/protocol": "workspace:*",

@@ -42,6 +42,27 @@ check("engine architecture matches host", arch.includes(hostArch), `${arch.slice
 const addon = join(appPath, "Contents/Resources/engine", `pi_natives.darwin-${process.arch}.node`);
 check("native addon ships beside the engine", existsSync(addon));
 
+// --- OMP re-entry ----------------------------------------------------------
+// OMP re-launches its host executable for helper processes and for plain CLI
+// commands (the bash tool rewrites `git worktree add` into `<engine> worktree
+// add …`). In the packaged app that executable is the engine, so any
+// invocation with arguments must run OMP's CLI — a second supervisor booting
+// in its place is silent, and exactly what a source checkout cannot show.
+{
+  const reentry = Bun.spawnSync([enginePath, "--version"], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 30_000,
+  });
+  const printed = new TextDecoder().decode(reentry.stdout).trim();
+  check(
+    "an invocation with arguments runs OMP's CLI",
+    reentry.exitCode === 0 && /^omp\/\d+\.\d+\.\d+$/.test(printed),
+    printed.slice(0, 60) || `exit ${reentry.exitCode}`,
+  );
+}
+
 // --- boot the packaged engine ---------------------------------------------
 const project = makeProject("orch-smoke-", { "SMOKE.txt": "packaged smoke test\n" });
 
@@ -119,7 +140,7 @@ try {
   if (!ready) throw new Error("engine never became ready");
 
   const info = findEvent("engine.ready").event.info;
-  check("reports the pinned OMP version", info.ompVersion === "18.4.2", `OMP ${info.ompVersion}`);
+  check("reports the pinned OMP version", info.ompVersion === "19.0.1", `OMP ${info.ompVersion}`);
   check("engine architecture reported", info.arch === process.arch, info.arch);
 
   // 2. discovers the user's real OMP config

@@ -310,6 +310,12 @@ export interface AdvisorConfig {
   /** Subset of OMP built-in tool names. Omitted uses OMP's read/grep/glob default. */
   tools?: string[];
   instructions?: string;
+  /**
+   * `includeReasoning` from WATCHDOG.yml (OMP 18.13+): `false` keeps the
+   * primary's thinking out of what this advisor is sent. Omitted means OMP's
+   * default (included).
+   */
+  includeReasoning?: boolean;
   /** Where this advisor definition came from. */
   origin: "project" | "user" | "session" | "builtin";
 }

@@ -79,7 +79,7 @@ describe("OMP pin coherence", () => {
     }
     // Backstop for a fourth form nobody has invented yet: no OMP-train
     // version string anywhere in this file may disagree with the pin.
-    for (const match of notice.matchAll(/\b1[78]\.\d+\.\d+\b/g)) {
+    for (const match of notice.matchAll(/\b(?:1[7-9]|[2-9]\d)\.\d+\.\d+\b/g)) {
       expect(match[0]).toBe(PIN);
     }
   });
@@ -103,6 +103,16 @@ describe("OMP pin coherence", () => {
         expect(`${notice.includes(holder)} :: ${holder}`).toBe(`true :: ${holder}`);
       }
     }
+  });
+
+  test("the vendored tool-view bundle was built from the pinned OMP", () => {
+    // OMP stopped publishing its <omp-tool-view> bundle in the npm package
+    // (18.14), so it is built from upstream source by
+    // `scripts/build-tool-views.ts` and checked in. The renderers read each
+    // tool's args/details shapes; a bundle from another version draws the
+    // wrong cards without any error. The script stamps the version it built.
+    const banner = read("apps/desktop/src/vendor/tool-views.generated.js").slice(0, 300);
+    expect(banner.split("\n")[0]).toContain(`from OMP v${PIN} `);
   });
 
   test("the compatibility table states the version that actually ships", () => {

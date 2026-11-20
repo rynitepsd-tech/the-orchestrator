@@ -58,12 +58,15 @@ const manager = new RuntimeManager({
     const list = captured.get(e.sessionId);
     if (list) list.push(e);
     else captured.set(e.sessionId, [e]);
-    // Auto-approve: the harness is the "user" clicking Allow.
+    // Auto-approve: the harness is the "user" clicking Allow. Picked by kind,
+    // not by id — the bridge's card and the tier gate's card name their
+    // options differently ("allow_once" vs "once").
     if (e.type === "approval.request") {
+      const allow = e.options.find((o) => o.kind === "allow");
       void manager.route(e.sessionId, "approval.respond", {
         sessionId: e.sessionId,
         approvalId: e.approvalId,
-        optionId: "allow_once",
+        optionId: allow?.id ?? "allow_once",
       });
     }
   },

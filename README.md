@@ -45,9 +45,10 @@ disposes anything: session lifetime is tied to a worker process, not to what Rea
 
 **Approvals**
 
-- Gated tools (bash, edit, delete, move) stop and ask, with inline approval cards offering Allow
-  once / Always allow / Reject / Always reject, routed back to the right session even with several
-  prompts pending at once.
+- Gated tools stop and ask with inline approval cards — Allow once / Always allow / Reject /
+  Always reject for shell commands and destructive file operations, Allow / Allow for this
+  session / Deny for writes, edits and other tools — routed back to the right session even with
+  several prompts pending at once.
 - Per-session approval policy — `always-ask`, `write` (file edits auto-allowed, bash still prompts),
   or `yolo` — set at session creation, enforced worker-side.
 - Extension confirm / select / input / editor / notification requests render as native UI; requests
@@ -108,8 +109,8 @@ disposes anything: session lifetime is tied to a worker process, not to what Rea
   and rediscovers persisted OMP sessions.
 - A crashed worker is removed from routing with an actionable "resume" error; its transcript is
   preserved and other sessions are unaffected.
-- The supervisor enforces single-writer access to OMP session files, which have no cross-process
-  lock, and refuses to open the same session twice.
+- The supervisor enforces single-writer access to OMP session files and refuses to open the same
+  session twice.
 
 See [docs/USAGE_MODEL.md](docs/USAGE_MODEL.md) for the attribution and de-duplication rules.
 
@@ -146,7 +147,7 @@ leaves the rest of the system protected.
 
 Prerequisites:
 
-- Bun 1.3.14 or newer (OMP declares `engines.bun >= 1.3.14`)
+- Bun 1.4.4 or newer (OMP declares `engines.bun >= 1.4.4`)
 - Rust, stable toolchain
 - Xcode command line tools
 
@@ -166,7 +167,7 @@ Packaging and verification:
 ```bash
 bun run release:check                 # check + build:engine + app build + packaged smoke, end to end
 cd apps/desktop && bunx tauri build   # produces the .app and .dmg, if run standalone
-bun run smoke                         # packaged smoke test: 31 checks
+bun run smoke                         # packaged smoke test: 32 checks
 bun run validate:live                 # live validation against real providers (primary, advisor,
                                        # multi-advisor, subagent, resume, concurrent, fork)
 ```

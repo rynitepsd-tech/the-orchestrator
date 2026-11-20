@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.9.0
+
+- **Updated the embedded OMP from 18.4.2 to 19.0.1** — 75 upstream releases, including a major
+  version. New models arrive with it, among them Claude Fable 5.2, GPT-6.1 Terra, Gemini 4
+  Hydrogen and Carbon, Kimi K3.1 Pro, Muse Ember and Mercury 3, plus new providers you can sign in
+  to: Kiro, Chutes, Modal, Otari, Modular, Snowflake Cortex, Inception and the Antigravity CLI.
+  Unknown and custom models now have their reasoning support detected automatically.
+- **Fixed before it shipped: "Manual" approval would have stopped asking for shell commands.** OMP
+  19 decides whether a shell command needs approval before it consults the app, and the setting
+  the app used to avoid a double prompt now reads as "always allow" — every command would have run
+  unprompted, in every mode. The app no longer sets it; OMP itself skips the second prompt. Tests
+  that run a real session now cover Manual, Auto-accept edits, and switching back from Full access.
+- **Approval cards offer "for this session".** When OMP allows it, a write, edit or other gated
+  tool can be approved once or for the rest of the session, alongside Deny. A card also closes
+  when its turn is stopped, instead of lingering unanswerable.
+- **Your own OMP tool policies are respected.** `tools.approval` entries in your OMP config
+  (allow, prompt or deny per tool) used to be replaced inside the app; they now apply as written,
+  as do `bash.patterns` rules and `tools.restrictedFolders`, which ask in every mode.
+- **`git worktree add` works inside the app.** OMP 19 runs it through its own binary to clone the
+  checkout; in the packaged app that binary is the engine, which would have started a second copy
+  of itself and done nothing. The engine now hands every such call to OMP — including OMP's new
+  per-user background daemon and its shell services.
+- **Session titles keep working, and stay plain.** OMP moved automatic titling to a new option;
+  without the change sessions would have stayed "Untitled". OMP 19 also decorates generated titles
+  with an icon and a short code for its terminal; the app asks for plain titles.
+- **The `ask` tool's new form questions are answered field by field**, with multiple-choice
+  fields showing what is already ticked.
+- **Tool cards match OMP 19.** OMP stopped shipping its tool-card renderer in the npm package, so
+  the app now builds it from OMP's source at the pinned version. Reshaped tools such as `ask`
+  render their new results.
+- **Turns paused on background work are tracked.** OMP now reports a turn that is waiting on a
+  background job or a subagent separately from one that has ended; the app handles both.
+- **A session OMP moves to a new file keeps its place.** When OMP cannot keep writing a session
+  file (another `omp` process holds it) it continues in a new one; the app now records the new
+  path instead of holding on to the old one.
+- **Reviewer settings from `WATCHDOG.yml`:** `includeReasoning: false` is honoured, and reviewers
+  scoped to subagents only are no longer attached to the main session.
+- **Built with Bun 1.4.5.** OMP 19 requires Bun 1.4.4 or newer.
+
 ## 0.8.0
 
 - **Updated the embedded OMP from 18.1.11 to 18.4.2** — 33 upstream releases. New models arrive

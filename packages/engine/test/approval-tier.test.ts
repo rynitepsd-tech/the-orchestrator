@@ -2,12 +2,20 @@
  * APPROVAL TIER — "always ask" must gate OMP's own tool tiers, not just bash,
  * and must ASK rather than refuse.
  *
- * The ACP bridge only prompts for bash/delete/move. Every other tool (write,
- * eval, browser, MCP…) is gated by OMP's tier system, which reads
- * `tools.approvalMode` and defaults to "yolo". The worker overrides that
- * setting per session. On OMP 18.4 the override API changed and the old
- * probe silently skipped, so a write in an "always ask" session would have
- * run unprompted. This drives a real worker and a real `write` tool call.
+ * The client bridge only prompts for bash and destructive file operations.
+ * Every other tool (write, eval, browser, MCP…) is gated by OMP's tier system,
+ * which reads `tools.approvalMode` and defaults to "yolo". The worker overrides
+ * that setting per session. Both gates have silently broken on an OMP bump:
+ *
+ *  - 18.4 changed the override API and the old probe skipped, so a write in an
+ *    "always ask" session would have run unprompted.
+ *  - 19.0 resolves bash's approval before consulting the bridge, so the
+ *    worker's `tools.approval.bash: allow` (there to stop a second prompt)
+ *    made every shell command run unprompted; and the tier gate started
+ *    asking through `ui.approve()` / a three-option select, which the old
+ *    two-option matcher did not recognise.
+ *
+ * These drive a real worker and real `write` / `bash` tool calls.
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
@@ -71,9 +79,25 @@ describe("approval tier gate", () => {
     expect(req.type).toBe("approval.request");
     expect(req.toolName).toBe("write");
     expect(String(req.detail)).toContain("gated.txt");
+    // OMP's own choices, in the app's words: this call, the rest of the
+    // session, or no.
+    expect(req.options.map((o: any) => o.id)).toEqual(["once", "session", "deny"]);
+    expect(req.options.map((o: any) => o.kind)).toEqual(["allow", "allow-always", "deny"]);
+    expect(req.options[1].label).toBe("Allow write for this session");
     // Asked exactly once — no second prompter for the same call.
     expect(blockingRequests(sessionId).length).toBe(1);
     await answer(sessionId, req, "deny");
+  }, 60_000);
+
+  test("an aborted turn settles its approval card instead of leaving it open", async () => {
+    const { project, sessionId, req } = await pendingWrite("tier-abort");
+    await h.manager.route(sessionId, "session.abort", { sessionId });
+    expect(await waitFor(() => h.finishedFor(sessionId).length > 0, 30_000)).toBe(true);
+    const resolved = eventsFor(sessionId).find(
+      (e: any) => e.type === "approval.resolved" && e.approvalId === req.approvalId,
+    ) as any;
+    expect(resolved?.optionId).toBe("cancelled");
+    expect(existsSync(join(project, "gated.txt"))).toBe(false);
   }, 60_000);
 
   test("Approve runs the write", async () => {
@@ -113,6 +137,62 @@ describe("approval tier gate", () => {
     await answer(s.sessionId, req, "allow");
     expect(await waitFor(() => h.finishedFor(s.sessionId).length > 0, 30_000)).toBe(true);
     expect(blockingRequests(s.sessionId).length).toBe(1);
+  }, 60_000);
+
+  test("auto-accept edits writes without asking but still asks for a shell command", async () => {
+    const writer = await h.manager.create({
+      projectPath: makeProject("tier-write-mode"),
+      title: "Write mode",
+      model: "mockprov/mock-write",
+      advisors: [],
+      approvalMode: "write",
+    });
+    await h.manager.route(writer.sessionId, "session.prompt", {
+      sessionId: writer.sessionId,
+      text: "write the file",
+    });
+    expect(await waitFor(() => h.finishedFor(writer.sessionId).length > 0, 30_000)).toBe(true);
+    expect(blockingRequests(writer.sessionId).length).toBe(0);
+
+    const shell = await h.manager.create({
+      projectPath: makeProject("tier-write-mode-bash"),
+      title: "Write mode bash",
+      model: "mockprov/mock-alpha",
+      advisors: [],
+      approvalMode: "write",
+    });
+    await h.manager.route(shell.sessionId, "session.prompt", {
+      sessionId: shell.sessionId,
+      text: "run the tool",
+    });
+    expect(await waitFor(() => blockingRequests(shell.sessionId).length > 0, 30_000)).toBe(true);
+    const req = blockingRequests(shell.sessionId)[0];
+    expect(req.toolName).toBe("bash");
+    await answer(shell.sessionId, req, "deny");
+  }, 90_000);
+
+  test("leaving full access makes a shell command ask again", async () => {
+    const s = await h.manager.create({
+      projectPath: makeProject("tier-yolo-back"),
+      title: "Back to manual",
+      model: "mockprov/mock-alpha",
+      advisors: [],
+      approvalMode: "yolo",
+    });
+    const set = await h.manager.route<{ ok: boolean }>(s.sessionId, "session.setApprovalMode", {
+      sessionId: s.sessionId,
+      mode: "always-ask",
+    });
+    expect(set.ok).toBe(true);
+    await h.manager.route(s.sessionId, "session.prompt", {
+      sessionId: s.sessionId,
+      text: "run the tool",
+    });
+    expect(await waitFor(() => blockingRequests(s.sessionId).length > 0, 30_000)).toBe(true);
+    const req = blockingRequests(s.sessionId)[0];
+    expect(req.type).toBe("approval.request");
+    expect(req.toolName).toBe("bash");
+    await answer(s.sessionId, req, "deny");
   }, 60_000);
 
   test("full access lets the same write through without asking", async () => {

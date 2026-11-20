@@ -14,7 +14,14 @@
  *   tool_execution_update{ type, toolCallId, toolName, args, partialResult: { content[], details } }
  *   tool_execution_end   { type, toolCallId, toolName, result: { content[], details }, isError }
  *   turn_end             { type, message, toolResults[] }
- *   agent_end            { type, messages[], isTerminal }
+ *   agent_pause          { type, messages[], yielded, awaiting }
+ *   agent_end            { type, messages[] }
+ *
+ * A run opens at the first agent_start and closes at exactly one agent_end,
+ * emitted once nothing can resume it. A model loop that stops while background
+ * work (a job, a child agent, queued input) can still resume the run emits
+ * agent_pause instead (OMP 18.21+; before that each loop ended with its own
+ * agent_end carrying `isTerminal`).
  *
  * Anything unrecognised returns [] rather than throwing, so a new upstream
  * event degrades to "not displayed" instead of breaking the session.
@@ -215,11 +222,18 @@ export class EventMapper {
         return [];
       }
 
+      case "agent_pause":
+        // The model loop stopped but the run is still open: something outside
+        // it (a background job, a child agent, queued input) will resume it.
+        this.#ctx.onRunState?.("idle");
+        return [];
+
       case "agent_end": {
         // Deliberately does NOT emit `session.finished`. Only the caller that
         // drove the turn knows how it actually ended — an aborted run reaches
         // agent_end too, and reporting "completed" here would clobber the
         // real outcome. The mapper reports activity; the runtime reports fate.
+        // (`isTerminal` is the pre-18.21 per-loop shape; absent means the run ended.)
         this.#ctx.onRunState?.(ev.isTerminal !== false ? "completed" : "idle");
         return [];
       }
@@ -350,6 +364,27 @@ export class EventMapper {
           },
         ];
       }
+
+      // Known upstream kinds with nothing to show here. Listed so the
+      // "unmapped" line below only ever flags a kind nobody has looked at:
+      // advisor state is polled by the worker, cache warming and manual
+      // compaction are reported through usage and the worker's own events,
+      // and the rest drive terminal-only surfaces (queue chips, goal HUD,
+      // IRC, TTSR rules, todo nudges).
+      case "advisor_cost_changed":
+      case "advisor_yielded":
+      case "cache_warming_start":
+      case "cache_warming_end":
+      case "manual_compaction_start":
+      case "manual_compaction_end":
+      case "retry_fallback_succeeded":
+      case "config_warnings_changed":
+      case "queue_update":
+      case "goal_updated":
+      case "irc_message":
+      case "ttsr_triggered":
+      case "todo_reminder":
+        return [];
 
       default:
         // Never silently: an unmapped upstream kind is exactly the thing to

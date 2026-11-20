@@ -142,29 +142,38 @@ Upstream OMP approval semantics are preserved, and the app now bridges them into
 the GUI rather than only inheriting whatever your terminal OMP config allows.
 `autoApprove` defaults to `false` in production; the only place it can be true
 is the supervisor's test mode (`packages/engine/src/worker/supervisor.ts`,
-`autoApprove: this.#testMode && config.approvalMode !== "always-ask"`), reached
-only under `ORCHESTRATOR_TEST_MODE=1`. Sessions are created with `hasUI: true`.
+`autoApprove: this.#testMode && config.approvalMode === undefined`), reached
+only under `ORCHESTRATOR_TEST_MODE=1` and only for a test that names no approval
+mode. Sessions are created with `hasUI: true`.
 **The absence of a UI response is never treated as consent** — a tool call
 awaiting approval simply stays blocked until it is answered or the turn is
 aborted.
 
 Two gates cover the tool set, and both are wired:
 
-1. **Upstream's ACP permission gate** (in `@oh-my-pi/pi-coding-agent`,
-   `src/session/acp-permission-gate.ts`) intercepts `bash`, `edit`, `delete`,
-   and `move` and routes them through each worker's
-   `ClientBridge.requestPermission` into an `approval.request` event — the
-   inline card with Allow once / Always allow / Reject / Always reject.
-   `allow_always` / `reject_always` are cached per session so identical
-   requests do not re-prompt.
-2. **OMP's tool-tier gate** covers everything else (`write`, `eval`,
-   `browser`, `computer`, MCP tools…) by tier. The worker binds it to the
-   session's approval mode with a runtime, non-persisted
-   `settings.override("tools.approvalMode", …)` at boot and on every mode
-   change — without that override the tier gate reads the user's global
-   config, which defaults to yolo. `bash`/`delete`/`move` carry per-tool
-   tier allows so the ACP gate remains their single prompter; `edit` stays
-   tier-gated because the ACP gate only prompts for destructive edit ops.
+1. **Upstream's client permission gate** (in `@oh-my-pi/pi-coding-agent`,
+   `src/session/acp-permission-gate.ts`) covers `bash` and destructive file
+   operations (`delete`, `move`, an `edit` that deletes or moves) and routes
+   them through each worker's `ClientBridge.requestPermission` into an
+   `approval.request` event — the inline card with Allow once / Always allow /
+   Reject / Always reject. `allow_always` / `reject_always` are cached per
+   session so identical requests do not re-prompt. Since OMP 19, `bash` is
+   resolved by OMP first (the approval mode, your `bash.patterns` rules,
+   critical-command detection) and reaches the card only when that says "ask".
+2. **OMP's tool-tier gate** covers everything else (`write`, plain edits,
+   `eval`, `browser`, `computer`, MCP tools, and anything inside a
+   `tools.restrictedFolders` folder) by tier, and asks through the same card
+   with Allow / Allow for this session / Deny. It does not ask again for a
+   call the first gate already approved.
+
+Both gates read `tools.approvalMode`. The worker binds it to the session's
+approval mode with a runtime, non-persisted override at boot and on every mode
+change — without that override the gates read the user's global config, which
+defaults to yolo. The override is read back and the session refuses to start if
+it did not take effect. The worker does **not** override `tools.approval`:
+your own per-tool `allow` / `prompt` / `deny` policies apply as written, so a
+`tools.approval.bash: allow` in your OMP config still means shell commands run
+without a prompt here.
 
 Per-session **approval mode** — `always-ask` (Manual), `write` (Auto-accept
 edits), or `yolo` (Full access) — is set from the composer, enforced

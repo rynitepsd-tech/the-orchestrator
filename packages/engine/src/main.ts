@@ -14,10 +14,6 @@
  * session would ever start.
  */
 import { logger, protectStdout } from "./logging";
-import { EngineServer } from "./server";
-
-// Must happen before anything else can log, in either role.
-protectStdout();
 
 // Long prompt-cache retention: providers that support it (Anthropic's 1-hour
 // TTL) keep the conversation-prefix cache warm across the pauses typical of
@@ -29,22 +25,35 @@ protectStdout();
 // inherit it via spawn env and also run this line themselves.
 process.env.PI_CACHE_RETENTION ??= "long";
 
-// --- worker role -----------------------------------------------------------
+// --- role dispatch ---------------------------------------------------------
 // Checked first, and before any supervisor state is constructed.
-// OMP re-enters `process.execPath` for its subprocess helpers: hidden
-// `__omp_worker_*` selectors (daemon broker, LSP mux, tiny title model, …)
-// and the one plain CLI command it daemonizes, `browser-relay` (the broker
-// spawns `resolveWorkerSpawnCmd("browser-relay")` for authenticated browser
-// tooling). In a compiled build execPath is THIS binary, so route those to
-// OMP's CLI — otherwise a supervisor boots in their place, dies on its closed
-// stdin, and OMP respawns it every ~10s forever.
+//
+// This binary is launched by the app in exactly two shapes: with no arguments
+// (the supervisor) and with `--orchestrator-worker` (a session worker). Every
+// OTHER invocation is OMP re-entering `process.execPath`, which in a compiled
+// build is THIS binary:
+//
+//   - hidden `__omp_worker_*` selectors — the per-user daemon, shell services
+//     and PTY commands, the JS eval kernel, tiny/speech model workers, and the
+//     worker threads those processes start;
+//   - plain CLI commands — `browser-relay` (daemonized for authenticated
+//     browser tooling) and, since OMP 19, `worktree add`: the bash tool
+//     rewrites an agent's `git worktree add` into `<execPath> worktree add …`.
+//
+// All of them belong to OMP's CLI. Routing by "anything with arguments" rather
+// than by a list of known selectors is deliberate: a selector this file has
+// never heard of would otherwise boot a second supervisor in its place, which
+// dies on its closed stdin (OMP then respawns it every ~10s, forever) or, for
+// a one-shot command, exits 0 having done nothing.
 const cliArgs = process.argv.slice(2);
-const ompReentry =
-  cliArgs.some((a) => a.startsWith("__omp_worker_")) || cliArgs[0] === "browser-relay";
-if (process.argv.includes("--orchestrator-worker")) {
+if (cliArgs.includes("--orchestrator-worker")) {
+  // stdout is protocol-only: must happen before anything else can log.
+  protectStdout();
   // The worker module takes over the process and exits on its own.
   await import("./worker/main");
-} else if (ompReentry) {
+} else if (cliArgs.length > 0) {
+  // stdout stays untouched here — it is OMP's (a shell service's output, a
+  // command's result), not this engine's protocol channel.
   // The compiled build defines PI_COMPILED, so the import itself
   // self-dispatches `runCli(process.argv.slice(2))`; dev builds need the
   // explicit call (the define also compiles this branch away there).
@@ -53,12 +62,16 @@ if (process.argv.includes("--orchestrator-worker")) {
     await cli.runCli(cliArgs);
   }
 } else {
+  protectStdout();
   await runSupervisor();
 }
 
 // --- supervisor role -------------------------------------------------------
 
 async function runSupervisor(): Promise<void> {
+  // Loaded here, not at the top: OMP's helper processes re-enter this file
+  // (see above) and should not pay for the supervisor's module graph.
+  const { EngineServer } = await import("./server");
   const server = new EngineServer({
     agentDir: process.env.ORCHESTRATOR_AGENT_DIR || undefined,
     // Test mode disables every approval gate. The GUI can never reach it: the

@@ -349,9 +349,11 @@ export class WorkerSupervisor {
       enableMCP: !this.#testMode,
       enableLsp: !this.#testMode,
       // Tests auto-approve by default so the mock provider can run tools
-      // unattended — EXCEPT when a test explicitly exercises the approval
-      // bridge by asking for "always-ask". Production is never auto-approve.
-      autoApprove: this.#testMode && config.approvalMode !== "always-ask",
+      // unattended — EXCEPT when a test names an approval mode, which then
+      // runs through the real gates exactly as it would in the app (OMP's
+      // auto-approve outranks the mode, so it would mask "write" and any
+      // later mode change). Production is never auto-approve.
+      autoApprove: this.#testMode && config.approvalMode === undefined,
       testProviders: this.#env.testProviders,
     };
 

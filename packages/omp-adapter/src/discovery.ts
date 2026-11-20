@@ -688,7 +688,12 @@ export async function discoverAdvisors(cwd: string, agentDir: string): Promise<A
     // discoverAdvisorConfigs(cwd, agentDir?) -> { advisors, sharedInstructions }
     const res = await discover(cwd, agentDir);
     const list: any[] = Array.isArray(res) ? res : (res?.advisors ?? []);
-    return list.map((a, i) => normalizeAdvisor(a, i, "project"));
+    // `scope: subagent` (OMP 18.13+) attaches an advisor to advised subagents
+    // only. The roster shown and applied here reviews the top-level session,
+    // so those entries are not part of it.
+    return list
+      .filter((a) => a?.scope !== "subagent")
+      .map((a, i) => normalizeAdvisor(a, i, "project"));
   } catch {
     // A malformed WATCHDOG file must never break opening a project; upstream
     // logs and skips, and so do we.
@@ -710,6 +715,7 @@ function normalizeAdvisor(a: any, index: number, origin: AdvisorConfig["origin"]
     thinkingLevel,
     tools: Array.isArray(a?.tools) ? a.tools.map(String) : undefined,
     instructions: typeof a?.instructions === "string" ? a.instructions : undefined,
+    includeReasoning: typeof a?.includeReasoning === "boolean" ? a.includeReasoning : undefined,
     origin,
   };
 }
@@ -722,6 +728,7 @@ export function toOmpAdvisor(a: AdvisorConfig): Record<string, unknown> {
     ...(selector ? { model: selector } : {}),
     ...(a.tools ? { tools: a.tools } : {}),
     ...(a.instructions ? { instructions: a.instructions } : {}),
+    ...(a.includeReasoning !== undefined ? { includeReasoning: a.includeReasoning } : {}),
     enabled: a.enabled,
   };
 }

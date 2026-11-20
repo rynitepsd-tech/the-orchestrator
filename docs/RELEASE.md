@@ -51,7 +51,7 @@ builds and then fails at runtime inside the packaged bundle.
 Check, in order:
 
 1. `@oh-my-pi/pi-coding-agent` in the engine package resolves to the pinned version (`18.4.2` as
-   of 0.8.0 — the exact string is in `packages/engine/package.json` and
+   of 0.9.0 — the exact string is in `packages/engine/package.json` and
    `packages/omp-adapter/package.json`, which must agree).
 2. `OMP_VERSION` in `scripts/build-engine.ts` matches that version exactly. The constant is what the
    build prints and what the smoke test asserts against.
@@ -59,8 +59,12 @@ Check, in order:
    check. If you intentionally move the pin, all three change together.
 4. The native addon package (`@oh-my-pi/pi-natives-darwin-arm64`, and `-darwin-x64` if building
    Intel) is installed at the same version.
-5. Bun is at least `1.3.14` — OMP declares this in `engines.bun`, and the repo pins
-   `packageManager: bun@1.3.14`.
+5. Bun is at least `1.4.4` — OMP declares this in `engines.bun`, and the repo pins
+   `packageManager: bun@1.4.5`. The engine binary embeds the Bun that compiled it, and OMP's CLI
+   entry (re-entered for every helper process) refuses to start on an older one, so the build
+   machine's Bun is what matters — `BUN_VERSION` in both workflows.
+6. `apps/desktop/src/vendor/tool-views.generated.js` was built from the pinned OMP
+   (`bun scripts/build-tool-views.ts <upstream checkout>`); `omp-pin.test.ts` checks its stamp.
 
 If the pin moves, re-read [OMP_COMPATIBILITY.md](./OMP_COMPATIBILITY.md) and re-verify the integration
 surface listed there before releasing. Upstream is a fast-moving project and the coupling is tight.
@@ -87,9 +91,9 @@ What each step is for:
 | `bun install` | Restore the workspace from `bun.lock`, including the native addon package. | Clean install, no lockfile churn. |
 | `bun run typecheck` | `tsc --build --force` across the workspace. | No errors. |
 | `bun test` | Usage de-duplication, concurrency, adapter, and protocol suites. The concurrency suite drives a local mock provider speaking the OpenAI SSE wire format. No real API credits are spent. | All passing, zero failures. |
-| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~96 MB) and `pi_natives.darwin-arm64.node` (~155 MB) in `resources/engine/`. |
+| `bun run build:engine` | `bun build --compile` of the engine sidecar into `resources/engine/`, then explicit `codesign`, then copies the native addon beside it. | `orchestrator-engine` (~120 MB) and `pi_natives.darwin-arm64.node` (~117 MB) in `resources/engine/`. |
 | `bunx tauri build` | Builds the Vite frontend, compiles the Rust binary, and bundles `resources/engine` into the app as `Contents/Resources/engine`. | `The Orchestrator.app` and `The Orchestrator_<version>_aarch64.dmg` under `apps/desktop/src-tauri/target/release/bundle/`. |
-| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 31/31 checks passed. |
+| `bun run scripts/smoke-packaged.ts` | Drives the engine **inside the built app**. | 32/32 checks passed. |
 
 The engine build must run before `tauri build`. `tauri.conf.json` declares
 `"resources": { "../../../resources/engine": "engine" }`, so the bundler copies whatever is in that
@@ -105,7 +109,8 @@ and cannot resolve at bundle time; removing the flags breaks the compile.
 `scripts/smoke-packaged.ts` is the only test that exercises the shipping artifact. It catches the
 class of failure that does not exist in a source checkout: a missing native addon, an architecture
 mismatch, a bundler-stripped dynamic import, or config discovery that only worked from the repo. Its
-31 checks cover engine architecture against the host, addon presence beside the binary, boot to
+32 checks cover engine architecture against the host, addon presence beside the binary, OMP's
+re-entry into the engine binary (an invocation with arguments must run OMP's CLI), boot to
 `engine.ready`, the reported OMP version, OMP agent-directory discovery, model registry load,
 provider resolution from existing credentials, project open, session discovery, the approval bridge
 (a gated tool call actually stops and waits for `approval.respond`), reviewed answer publication
@@ -413,7 +418,7 @@ If Developer ID signing and notarization are wired into the workflow later, it a
 | `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` | Notarization credentials — or, preferred, the App Store Connect API key trio below. |
 | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_API_KEY` | App Store Connect key for `notarytool --key`. Avoids storing an Apple ID password. |
 
-Runner requirements: macOS with Xcode command line tools, Bun `>= 1.3.14`, and a Rust toolchain
+Runner requirements: macOS with Xcode command line tools, Bun `>= 1.4.4`, and a Rust toolchain
 meeting `rust-version = 1.77.2`. The job must import the certificate into a temporary keychain and
 delete it in a cleanup step that runs even on failure. Never echo any of these values into logs.
 
@@ -467,7 +472,7 @@ Constraints that must hold:
 - [ ] `bun run build:engine` — engine plus matching `.node` present in `resources/engine/`.
 - [ ] `bunx tauri build` — `.app` and `.dmg` produced.
 - [ ] `file -b` agrees on architecture for the Rust binary and the engine sidecar.
-- [ ] `bun run scripts/smoke-packaged.ts` — 25/25, run against the DMG-installed app.
+- [ ] `bun run scripts/smoke-packaged.ts` — 32/32, run against the DMG-installed app.
 - [ ] `bun run validate:live` — live validation passes against configured providers (optional but
       recommended before a release: primary/advisor/multi-advisor/subagent/resume/concurrent/fork).
 - [ ] `shasum -a 256` computed; `SHA256SUMS.txt` written.

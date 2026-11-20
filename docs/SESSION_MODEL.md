@@ -290,10 +290,11 @@ both roots involved in integration; they do not coordinate external Git/CLI writ
 
 ## 5. Single-writer enforcement
 
-OMP session `.jsonl` files have **no cross-process lock**. Two processes appending to the same
-file will interleave records and silently lose data — there is no error, no detection, and the
-transcript is corrupt afterwards. The Orchestrator therefore enforces the invariant itself, at
-the only place that can see all runtimes: the supervisor, at create time.
+Two processes appending to the same OMP session `.jsonl` interleave records and lose data. The
+Orchestrator enforces the invariant itself, at the only place that can see all of its runtimes:
+the supervisor, at create time. (Across processes, OMP 18.5+ holds a per-session lease and
+continues the conversation in a new file when it cannot keep writing the original — it forks
+rather than blocks. See "Scope of the guarantee" below.)
 
 ```ts
 if (config.resumeSessionPath) {
@@ -316,8 +317,11 @@ set by intersecting the discovery listing with `supervisor.openSessionPaths()`, 
 already-open session is shown as open instead of offered for a second resume.
 
 Scope of the guarantee: it covers this app's own workers. It cannot stop a separate `omp` CLI
-process, or a second copy of The Orchestrator, from opening the same file — no cross-process
-lock exists to build on. Do not run the CLI on a session this app currently has open.
+process, or a second copy of The Orchestrator, from opening the same session. OMP's own lease
+keeps the two from corrupting one file, but the loser carries on in a new file, so the
+conversation splits in two. The worker re-announces `session.persisted` when its path changes, so
+this app resumes the copy it actually wrote. Do not run the CLI on a session this app currently
+has open.
 
 ## 6. Resume, interoperability, and fork
 

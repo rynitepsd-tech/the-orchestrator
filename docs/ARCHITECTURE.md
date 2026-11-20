@@ -164,9 +164,11 @@ OMP owns transcripts. The Orchestrator does not create a competing format.
   `~/Library/Application Support/The Orchestrator/`. Sourced decisions are explicitly editable
   local metadata; no competing transcript store is created.
 
-**Single-writer enforcement.** OMP session files have no cross-process lock, and two writers lose
-data silently. The supervisor tracks which persisted path each worker owns and refuses to open the
-same session twice, surfacing a clear message instead of risking corruption.
+**Single-writer enforcement.** Two writers on one OMP session file lose data. The supervisor tracks
+which persisted path each worker owns and refuses to open the same session twice, surfacing a clear
+message instead of risking corruption. Across processes OMP (18.5+) holds a per-session lease and
+continues a conversation in a new file rather than share one; the worker re-announces the path when
+that happens.
 
 ## Crash recovery
 

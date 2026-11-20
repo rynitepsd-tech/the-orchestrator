@@ -7,17 +7,22 @@ It embeds OMP rather than reimplementing it, so it is tightly coupled to a speci
 
 | | |
 |---|---|
-| **OMP version** | `18.4.2` |
+| **OMP version** | `19.0.1` |
 | **Upstream repo** | `can1357/oh-my-pi` |
-| **Tag** | `v18.4.2` |
-| **npm packages** | `@oh-my-pi/pi-coding-agent@18.4.2` and its workspace siblings |
-| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@18.4.2` (and `-darwin-x64` for Intel) |
-| **Required runtime** | Bun `>= 1.3.14` (OMP declares `engines.bun`) |
+| **Tag** | `v19.0.1` |
+| **npm packages** | `@oh-my-pi/pi-coding-agent@19.0.1` and its workspace siblings |
+| **Native addon** | `@oh-my-pi/pi-natives-darwin-arm64@19.0.1` (and `-darwin-x64` for Intel) |
+| **Required runtime** | Bun `>= 1.4.4` (OMP declares `engines.bun`; the repo and CI pin `1.4.5`) |
 | **Upstream licence** | MIT (Mario Zechner; Can Bölük) |
 
-This project is caught up to upstream's latest release. The pin stays deliberate: a future
-upstream release does not move this project automatically (see
+This project is caught up to upstream's latest release as of 2026-11-19. The pin stays
+deliberate: a future upstream release does not move this project automatically (see
 [Updating the bundled OMP](#updating-the-bundled-omp)).
+
+**OMP 19 raised the runtime floor to Bun 1.4.4.** OMP's CLI entry — which the engine re-enters for
+every helper process (see [Re-entry into the engine binary](#re-entry-into-the-engine-binary)) —
+exits at start on an older Bun, so the engine must be compiled with a Bun that meets it. The repo
+(`packageManager`) and both CI workflows pin `1.4.5`.
 
 **The Claude Code client-version gate no longer needs an app update.** Anthropic gates its newest
 models on the Claude Code version a client advertises, and returns HTTP 400
@@ -28,7 +33,7 @@ new OMP shipped (`17.3.8` → `2.1.220`, `18.1.1` → `2.1.246`, both below a `2
 for the rest of the process and retries once
 (`pi-ai/src/providers/claude-code-fingerprint.ts`, `adoptRequiredClaudeCodeVersion`). A real
 one-prompt turn on `anthropic/claude-opus-5-5` through the engine completed normally on
-2026-09-28, measured on this pin. The engine still classifies the rejection as
+2026-09-28 (measured on 18.4.2). The engine still classifies the rejection as
 `model-unavailable` naming the embedded OMP (`packages/engine/src/worker/classify-error.ts`), which
 now only fires if the adopted-version retry is refused too.
 
@@ -41,7 +46,7 @@ and not by vendoring upstream source.
 
 | Symbol | Used for |
 |---|---|
-| `createAgentSession(options)` | Builds the one `AgentSession` a worker owns |
+| `createAgentSession(options)` | Builds the one `AgentSession` a worker owns. `autoTitle: true` has OMP name an unnamed session from the user's first real message; it replaced `AgentSession.maybeStartTitleGeneration`, which no longer exists |
 | `AgentSession` | `prompt`, `abort`, `compact`, `dispose`, `subscribe`, `setModel`, `setThinkingLevel` (including `"auto"`), `setSessionName`, `applyAdvisorConfigs`, `setAdvisorEnabled`, `getAdvisorStats`, `getContextUsage`, `getSessionStats`, `getAvailableThinkingLevels`, `setClientBridge`, `setToolUIContext`, `setFastMode` / `isFastModeEnabled` / `isFastModeActive`, `setSlowMode` / `isSlowModeEnabled` (OpenAI/Google only, see below), `getAnthropicSlowModeLane`, `getAnthropicSlowModeLabel` |
 | `SessionManager` | `create`, `open`, `list`, `listAll`, `getDefaultSessionDir`, `forkFrom`, `getBranch` |
 | `Settings.init` | Per-worker settings resolution |
@@ -63,7 +68,7 @@ declared `"./*": { "import": "./src/*.ts" }` export map:
 
 | Import | Used for |
 |---|---|
-| `@oh-my-pi/pi-coding-agent/config/registry` → `lookup(id)` | Per-session, runtime-only setting overrides (`handle.override(settings, value)`): `tools.approvalMode`, `tools.approval`, `extendedContext`, `providers.anthropic.slowMode`. 18.4 removed `Settings.override(path, value)`; `packages/engine/src/worker/settings-override.ts` wraps both and reads every security-relevant override back |
+| `@oh-my-pi/pi-coding-agent/config/registry` → `lookup(id)` | Per-session, runtime-only setting overrides (`handle.override(settings, value)`): `tools.approvalMode`, `title.icons`, `extendedContext`, `providers.anthropic.slowMode`. 18.4 removed `Settings.override(path, value)`; `packages/engine/src/worker/settings-override.ts` wraps both and reads every security-relevant override back |
 | `@oh-my-pi/pi-catalog/compat/context-window` → `resolveMaxContextWindow` | The larger window a model reaches with extended context on (shown in the picker) |
 | `@oh-my-pi/pi-ai` → `serviceTierFamily` | Whether a model has a slow mode (mirrors upstream's private `#slowModeTarget`) |
 
@@ -100,8 +105,15 @@ tool_execution_start { type, toolCallId, toolName, args }
 tool_execution_update{ type, toolCallId, toolName, args, partialResult: { content[], details } }
 tool_execution_end   { type, toolCallId, toolName, result: { content[], details }, isError }
 turn_end             { type, message, toolResults[] }
-agent_end            { type, messages[], isTerminal }
+agent_pause          { type, messages[], yielded, awaiting }
+agent_end            { type, messages[] }
 ```
+
+Since 18.21 a *run* opens at the first `agent_start` and closes at exactly one `agent_end`, emitted
+once nothing can resume it. A model loop that stops while a background job, a child agent or queued
+input can still resume the run emits `agent_pause` instead. (Before 18.21 every loop ended with its
+own `agent_end` carrying `isTerminal`.) The worker treats both as "a loop stopped" for flushing and
+usage, and still decides the request's fate itself with `waitForIdle()` plus its own settle check.
 
 Mapping into product events lives in `packages/omp-adapter/src/event-mapper.ts`.
 
@@ -185,23 +197,47 @@ actually changes.
 
 ### Approval and extension UI wiring
 
-- `ClientBridge.requestPermission` is installed via `session.setClientBridge()` immediately after
-  `createAgentSession` returns — the same point upstream's own ACP (agent-client-protocol) mode
-  installs its bridge. `PERMISSION_OPTIONS` is a fixed four-option menu (allow once / always allow
-  / reject / always reject); `allow_always` and `reject_always` are cached per `cacheKey`, scoped to
-  the session, not global.
+- OMP has two gates, and both read `tools.approvalMode` (default `yolo`), which the worker
+  overrides per session.
+  - **Client bridge.** `ClientBridge.requestPermission` is installed via
+    `session.setClientBridge()` immediately after `createAgentSession` returns — the same point
+    upstream's own ACP (agent-client-protocol) mode installs its bridge. OMP consults it for `bash`
+    and for destructive file operations (`delete`, `move`, an `edit` that deletes or moves).
+    `PERMISSION_OPTIONS` is a fixed four-option menu (allow once / always allow / reject / always
+    reject); `allow_always` and `reject_always` are cached per `cacheKey`, scoped to the session.
+    Since 19.0 OMP resolves `bash` **before** it asks the bridge — the approval mode, the user's
+    `bash.patterns` rules and critical-command detection — and only reaches the bridge when that
+    resolution says "ask". The bridge receives a second `steeringSignal`; a user steer that
+    supersedes the dialog aborts it, and the worker closes the card.
+  - **Tier gate.** Everything else (`write`, plain edits, eval, browser, computer, MCP, and any call
+    into a `tools.restrictedFolders` folder) is gated by tool tier inside `ExtensionToolWrapper`,
+    which asks `ExtensionRunner.hasUI()` and then prompts through the extension UI. It skips the
+    prompt when the bridge already approved the exact arguments, so a bridged call is asked once.
+- **The worker must not override `tools.approval`.** Up to 0.8.0 it set
+  `{ bash, delete, move: "allow" }` there so the tier gate would not ask a second time. On OMP 19
+  that user-policy `allow` is what the bash pre-resolution reads, so every shell command ran
+  unprompted in "always ask". The override is gone; the user's own per-tool policies now apply
+  untouched. `approval-tier.test.ts` and `interaction.test.ts` assert a shell command asks, exactly
+  once, in "always ask" and in "write", and again after leaving full access.
 - `setToolUIContext(uiContext, hasUI)` wires tool-level UI (the ask tool) to the host. It does
-  **not** reach the extension runner: OMP's TIER gate (write, plain edit, eval, browser, MCP) asks
-  `ExtensionRunner.hasUI()`, which is only true after `extensionRunner.initialize(actions,
-  contextActions, commandActions?, uiContext, mode)`. The worker initializes the runner the way
-  OMP's print/RPC modes do (`modes/runtime-init.ts`), minus the command-context actions (new
-  session, branch, switch, reload), because a worker owns exactly one session file. Before 0.8.0
-  it never did, so always-ask refused tier-gated tools with "requires approval but no interactive
-  UI available" instead of asking.
-- The tier gate prompts as `select("Allow tool: <name>\n<details>", ["Approve", "Deny"])`. The
-  worker recognises that shape and renders it as the same `approval.request` card the ACP bridge
-  uses. bash/delete/move stay tier-`allow`, so the bridge remains their single prompter
-  (`approval-tier.test.ts` asserts exactly one prompt each).
+  **not** reach the extension runner: `ExtensionRunner.hasUI()` is only true after
+  `extensionRunner.initialize(actions, contextActions, commandActions?, uiContext, mode)`. The
+  worker initializes the runner the way OMP's print/RPC modes do (`modes/runtime-init.ts`), minus
+  the command-context actions (new session, branch, switch, reload), because a worker owns exactly
+  one session file.
+- The tier gate prompts through `uiContext.approve({ full, compact, session?, grants? }, { signal })`
+  when the host defines it, answering `"once"`, `"session"`, `"deny"` or a remembered
+  grant. Without `approve` it falls back to a `select` whose option list grew from
+  `["Approve", "Deny"]` to include `Approve <tool> for this session` — which the worker's old
+  two-option matcher no longer recognised, so 19.0 would have shown a generic picker. The worker
+  implements `approve` and renders the same `approval.request` card the bridge uses, with a
+  "for this session" option when OMP offers one. Every dialog method also honours the `signal`
+  OMP now passes, so an aborted or superseded prompt closes its card.
+- The `ask` tool takes one HTML form since 18.18 (`{ html }`, answers in
+  `details.answers[]`). Hosts with `uiContext.formDialog` render the form; the worker does not
+  define it, so OMP walks the fields one at a time through `select` / `input` / `editor`. A
+  multi-select field is a `select` re-shown after each toggle (`selectionMarker: "checkbox"`,
+  `checkedIndices`); the worker marks the checked rows.
 - `CreateAgentSessionResult.eventBus` carries the `task:subagent:lifecycle` / `task:subagent:progress`
   / `task:subagent:event` channels the worker subscribes to for subagent cards.
 - Assistant messages may carry `upstreamModel`: the model a router or gateway actually served.
@@ -214,12 +250,40 @@ actually changes.
   returning — the caller never observes a partially-written fork file. `getBranch()` is what feeds
   resume's transcript replay.
 
+### Re-entry into the engine binary
+
+OMP re-launches `process.execPath` for work it wants in another process, and in the packaged app
+that executable is the engine. Two shapes exist:
+
+- hidden `__omp_worker_*` selectors (`resolveWorkerSpawnCmd`): the per-user daemon that replaced
+  the per-project brokers in 19.0 (`__omp_worker_daemon` — LSP, blobs, tiny/speech models), shell
+  services and PTY commands (`__omp_worker_shell_process`), the JS eval kernel, and the worker
+  threads those processes start;
+- plain CLI commands (`resolveCliEntryCmd`): `browser-relay`, and since 19.0 `worktree add` — with
+  `worktree.clone` on (the default) the bash tool rewrites an agent's `git worktree add` into
+  `<execPath> worktree add …`.
+
+`packages/engine/src/main.ts` therefore routes **every invocation that carries arguments** other
+than its own `--orchestrator-worker` to OMP's CLI, and leaves stdout alone in that role. Matching a
+list of known selectors, as it did before, turns each new upstream re-entry into a second
+supervisor booting in its place. `entry-dispatch.test.ts` and the packaged smoke test both run the
+entry with a plain flag and expect OMP's answer.
+
+The daemon is shared per user with any `omp` CLI on the machine: the newer build wins, an older
+daemon re-execs into it, and the daemon exits a few seconds after its last client disconnects.
+Subagent worker threads (`task.workerThreads`) need a CLI worker host and so stay off in an SDK
+embedding: subagents run in-process, as before.
+
 ## Known compatibility limitations
 
 1. **Process-per-session is mandatory.** Several process-global hazards make many concurrent
    top-level sessions in one process unsafe. See [ARCHITECTURE.md](./ARCHITECTURE.md#why-process-per-session).
-2. **No cross-process session lock.** OMP session `.jsonl` files have no file lock; two writers lose
-   data silently. The supervisor enforces single-writer itself and refuses to open a session twice.
+2. **Cross-process session ownership is OMP's, and it forks rather than blocks.** Since 18.5 an
+   open session holds a per-session lease; a process that cannot keep writing the original file
+   (another omp process holds it, or the file changed underneath) continues the conversation in a
+   new file. The supervisor still enforces single-writer for this app's own workers and refuses to
+   open a session twice; the worker re-announces `session.persisted` whenever the path changes so a
+   later resume opens the copy that was actually written.
 3. **`Settings.init()` is a memoized process singleton** that ignores the 2nd+ caller's
    `cwd`/`agentDir`. Safe only because each worker has exactly one session.
 4. **Advisor token counts are live-context, not cumulative.** `PerAdvisorStat.cost` *is* cumulative;
@@ -240,11 +304,29 @@ actually changes.
    note appearing in the transcript.
 10. **Advisor completion has no push signal.** Reviews run asynchronously after `turn_end`; advisor
     state and usage must be polled (this project polls every 5 seconds) rather than awaited.
-11. **Most calls into OMP are untyped.** Handles pass through `any` with optional chaining, so an
+11. **Generated titles are plain.** OMP 19 heads generated session titles with a "card" (a Nerd
+    Font glyph or emoji plus a short code) for its terminal status line. The worker overrides
+    `title.icons` to `boring` at runtime, so the sidebar and the session file get a plain title.
+12. **Tool-call intent tracing is off.** OMP 19 disables it by default for SDK sessions
+    (`tools.intentTracing`); subagent cards therefore show the current tool rather than an intent
+    line. Left at upstream's default — it costs tokens on every tool call.
+13. **Advisor cadence settings are not forwarded.** `WATCHDOG.yml` entries may now carry
+    `reviewMode`, `reviewInterval`, `syncBacklog`, `maxNotesPerUpdate`, `scope` and
+    `includeReasoning`. This app runs its own review rounds (SESSION_MODEL.md §3), so only
+    `includeReasoning` is passed through; entries with `scope: subagent` are left out of the
+    top-level roster.
+14. **The `<omp-tool-view>` bundle is built here, not installed.** OMP 18.14 stopped publishing it
+    in the npm package. `scripts/build-tool-views.ts` builds it from an upstream checkout at the
+    pinned tag and the result is committed; `omp-pin.test.ts` fails when its stamp disagrees with
+    the pin.
+15. **Most calls into OMP are untyped.** Handles pass through `any` with optional chaining, so an
     upstream reshape type-checks and then no-ops. 18.3/18.4 did exactly this to `AuthStorage` and
     `Settings.override`. The tripwires are the tests that run against the real installed package:
     `auth-compat.test.ts`, `settings-override.test.ts`, `model-catalog.test.ts`,
-    `approval-tier.test.ts`.
+    `approval-tier.test.ts`, `interaction.test.ts`, `entry-dispatch.test.ts`. On 19.0 two more
+    reshapes type-checked cleanly and were caught only by those tests and by reading upstream:
+    the approval change above, and `maybeStartTitleGeneration` disappearing (auto-titling would
+    have silently stopped).
 
 ## Updating the bundled OMP
 
@@ -256,9 +338,15 @@ Version bumps are deliberate, never floating.
 2. `bun install`
 3. Re-vendor **both** native addons in the same commit — the loader requires the addon to export a
    version-matched symbol, so a mismatch fails at runtime, not build time.
-4. `bun run typecheck && bun test` — the concurrency and usage suites, plus the real-package tests
-   listed under limitation 11, are the tripwires. Typecheck alone proves little (see 12).
-5. `bun run build:engine` and run the packaged smoke test (`scripts/smoke-packaged.ts`).
-6. Re-verify the shapes in [Verified upstream behaviour](#verified-upstream-behaviour); the adapter
-   reads several fields defensively but the usage keys are load-bearing.
-7. Update this document's version table and note any behaviour change.
+4. Rebuild the tool-view bundle from an upstream checkout at the new tag
+   (`bun scripts/build-tool-views.ts <checkout>`, limitation 14) and commit it.
+5. Check `engines.bun` in the new `@oh-my-pi/pi-coding-agent`; when it rises, move
+   `packageManager` and `BUN_VERSION` in both workflows with it.
+6. `bun run typecheck && bun test` — the concurrency and usage suites, plus the real-package tests
+   listed under limitation 15, are the tripwires. Typecheck alone proves little.
+7. `bun run build:engine` and run the packaged smoke test (`scripts/smoke-packaged.ts`).
+8. Re-verify the shapes in [Verified upstream behaviour](#verified-upstream-behaviour); the adapter
+   reads several fields defensively but the usage keys are load-bearing. Grep upstream for
+   `resolveCliEntryCmd(` and `resolveWorkerSpawnCmd(` — every new caller is a new way the engine
+   binary gets re-entered.
+9. Update this document's version table and note any behaviour change.

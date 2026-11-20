@@ -25,31 +25,31 @@ via the published npm SDK, not vendored source and not a fork.
 
 - Project: OhMyPi (OMP)
 - Upstream: <https://github.com/can1357/oh-my-pi>
-- Version embedded: **18.4.2**
+- Version embedded: **19.0.1**
 - Licence: MIT
 - Copyright (c) 2025 Mario Zechner
 - Copyright (c) 2025-2026 Can Bölük
 - Copyright (c) 2026 Stencil Labs, Inc.
 
-The direct dependency is `@oh-my-pi/pi-coding-agent@18.4.2`. That package pulls in
+The direct dependency is `@oh-my-pi/pi-coding-agent@19.0.1`. That package pulls in
 sibling packages from the same upstream project and the same release train, all at
-version 18.4.2 and all under the same MIT licence. The set resolved for this build is:
+version 19.0.1 and all under the same MIT licence. The set resolved for this build is:
 
 | Package | Version |
 | --- | --- |
-| `@oh-my-pi/pi-coding-agent` | 18.4.2 |
-| `@oh-my-pi/pi-agent-core` | 18.4.2 |
-| `@oh-my-pi/pi-ai` | 18.4.2 |
-| `@oh-my-pi/pi-catalog` | 18.4.2 |
-| `@oh-my-pi/pi-mnemopi` | 18.4.2 |
-| `@oh-my-pi/pi-tui` | 18.4.2 |
-| `@oh-my-pi/pi-utils` | 18.4.2 |
-| `@oh-my-pi/pi-wire` | 18.4.2 |
-| `@oh-my-pi/omptype` | 18.4.2 |
-| `@oh-my-pi/omp-stats` | 18.4.2 |
-| `@oh-my-pi/snapcompact` | 18.4.2 |
-| `@oh-my-pi/pi-natives` | 18.4.2 |
-| `@oh-my-pi/pi-natives-darwin-arm64` | 18.4.2 |
+| `@oh-my-pi/pi-coding-agent` | 19.0.1 |
+| `@oh-my-pi/pi-agent-core` | 19.0.1 |
+| `@oh-my-pi/pi-ai` | 19.0.1 |
+| `@oh-my-pi/pi-catalog` | 19.0.1 |
+| `@oh-my-pi/pi-mnemopi` | 19.0.1 |
+| `@oh-my-pi/pi-tui` | 19.0.1 |
+| `@oh-my-pi/pi-utils` | 19.0.1 |
+| `@oh-my-pi/pi-wire` | 19.0.1 |
+| `@oh-my-pi/omptype` | 19.0.1 |
+| `@oh-my-pi/omp-stats` | 19.0.1 |
+| `@oh-my-pi/snapcompact` | 19.0.1 |
+| `@oh-my-pi/pi-natives` | 19.0.1 |
+| `@oh-my-pi/pi-natives-darwin-arm64` | 19.0.1 |
 
 Because this code is redistributed inside the `.app`, the full licence text is
 reproduced below.
@@ -83,8 +83,8 @@ SOFTWARE.
 ### 1.1 pi-natives (Rust N-API addon)
 
 OMP ships a compiled Rust N-API addon. On Apple Silicon this is
-`pi_natives.darwin-arm64.node` (approximately 155 MB), taken from
-`@oh-my-pi/pi-natives-darwin-arm64@18.4.2`. It is published by the same upstream
+`pi_natives.darwin-arm64.node` (approximately 117 MB), taken from
+`@oh-my-pi/pi-natives-darwin-arm64@19.0.1`. It is published by the same upstream
 project under the same MIT licence. Its own `LICENSE` names two of the three
 holders above — Copyright (c) 2025-2026 Can Bölük and Copyright (c) 2026
 Stencil Labs, Inc. — and that notice is reproduced by the MIT text above.
@@ -98,7 +98,7 @@ own directory. It is not fetched at runtime.
 ## 2. Bun runtime
 
 The Orchestrator engine is produced with `bun build --compile`, which emits a
-single-file executable of roughly 85 MB. That executable statically contains the Bun
+single-file executable of roughly 120 MB. That executable statically contains the Bun
 runtime, so Bun is redistributed as part of the shipped application.
 
 - Project: Bun
@@ -107,7 +107,7 @@ runtime, so Bun is redistributed as part of the shipped application.
 - Licence: MIT
 
 Bun is also the development toolchain: the repository is a Bun workspace and OMP
-requires Bun >= 1.3.14.
+requires Bun >= 1.4.4.
 
 ---
 
@@ -118,8 +118,8 @@ requires Bun >= 1.3.14.
 
 | Component | Licence | Shipped in the `.app`? |
 | --- | --- | --- |
-| `@oh-my-pi/pi-coding-agent` and siblings (18.4.2) | MIT | Bundled — compiled into the engine binary |
-| `@oh-my-pi/pi-natives-darwin-arm64` (18.4.2) | MIT | Bundled — `.node` addon beside the engine binary |
+| `@oh-my-pi/pi-coding-agent` and siblings (19.0.1) | MIT | Bundled — compiled into the engine binary |
+| `@oh-my-pi/pi-natives-darwin-arm64` (19.0.1) | MIT | Bundled — `.node` addon beside the engine binary |
 | Bun runtime (Oven) | MIT | Bundled — inside the `bun --compile` executable |
 | `@tauri-apps/api` | Apache-2.0 OR MIT | Bundled — in the built frontend |
 | `@tauri-apps/plugin-dialog` | Apache-2.0 OR MIT | Bundled |
@@ -130,6 +130,8 @@ requires Bun >= 1.3.14.
 | `react` | MIT | Bundled — in the built frontend |
 | `react-dom` | MIT | Bundled — in the built frontend |
 | `zustand` | MIT | Bundled — in the built frontend |
+| OMP tool-view bundle (`<omp-tool-view>`, built from OMP's `packages/collab-web` source by `scripts/build-tool-views.ts`) | MIT | Bundled — in the built frontend; carries its own copies of `react` / `react-dom` and `katex` |
+| `katex` (inside the tool-view bundle) | MIT | Bundled — in the built frontend |
 | `@tauri-apps/cli` | Apache-2.0 OR MIT | Build-time only |
 | `vite` and `@vitejs/plugin-react` | MIT | Build-time only |
 | `typescript` | Apache-2.0 | Build-time only |

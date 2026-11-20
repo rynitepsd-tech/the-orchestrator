@@ -528,28 +528,29 @@ const settings = await OMP.Settings.init({ cwd: boot.projectPath, agentDir: boot
 const settingsOverride = settingOverrides(settings, await loadSettingLookup());
 
 /**
- * The ACP bridge only gates {bash, edit, delete, move}; every other tool
- * (write, eval, browser, computer, MCP…) is gated by OMP's TIER system,
- * which reads `tools.approvalMode` — a setting that defaults to yolo and
- * that nothing here set before. Overriding it (runtime-only, never
- * persisted; one session per process makes the singleton per-session) is
- * what makes the session's approval mode actually mean something.
+ * OMP has two gates. The client bridge (below) is asked for bash and for
+ * destructive file operations (delete, move, an edit that deletes or moves);
+ * everything else — write, plain edits, eval, browser, computer, MCP… — is
+ * gated by OMP's TIER system, which prompts through the extension UI
+ * (`uiContext.approve`). Both read `tools.approvalMode`, a setting that
+ * defaults to yolo. Overriding it (runtime-only, never persisted; one session
+ * per process makes the singleton per-session) is what makes the session's
+ * approval mode actually mean something.
  *
- * bash/delete/move get per-tool "allow" at the tier so the ACP bridge stays
- * their single prompter (no double-ask). `edit` is deliberately NOT
- * excepted: the ACP bridge only prompts for destructive edit ops, so plain
- * content edits must fall through to the tier gate in always-ask.
+ * `tools.approval` (the user's own per-tool allow/deny/prompt policies) is
+ * deliberately left alone. Up to OMP 18.4 the worker overrode it with
+ * `{ bash, delete, move: "allow" }` so the tier gate would not ask a second
+ * time after the bridge. OMP 19 resolves bash's approval BEFORE consulting
+ * the bridge, so that same override made every shell command run unprompted
+ * in "always ask" — and OMP now skips the second prompt itself once the
+ * bridge has approved the exact arguments. `approval-tier.test.ts` and
+ * `interaction.test.ts` pin both halves.
  */
 function applyApprovalSettings(mode: ApprovalMode): void {
-  // Fail closed: if the tier gate cannot be told the mode, it stays at OMP's
-  // default ("yolo") and every non-bridge tool would run unprompted. Both
-  // writes are read back; any failure throws to the caller.
+  // Fail closed: if the gates cannot be told the mode, they stay at OMP's
+  // default ("yolo") and every tool would run unprompted. The write is read
+  // back; any failure throws to the caller.
   settingsOverride.overrideVerified("tools.approvalMode", mode);
-  settingsOverride.overrideVerified("tools.approval", {
-    bash: "allow",
-    delete: "allow",
-    move: "allow",
-  });
 }
 try {
   applyApprovalSettings(approvalMode);
@@ -568,6 +569,23 @@ if (boot.extendedContext) {
   } catch (e) {
     err(`extended context could not be enabled at boot: ${String(e)}`);
   }
+}
+
+// Auto-title: OMP names an unnamed session from the user's first real message
+// once the reply begins (the way Codex and Claude do). It gates this itself —
+// already-named sessions, greetings/low-signal input and PI_NO_TITLE all skip —
+// and a later user rename overrides the result. An explicit title from the
+// launch sheet is respected. Never in test mode: the title request resolves to
+// a REAL provider, and its in-flight request racing shutdown flaked the
+// packaged smoke test's 15s exit window.
+const autoTitle = !boot.userTitled && process.env.ORCHESTRATOR_TEST_MODE !== "1";
+// OMP 19 heads generated titles with a "card" — a Nerd Font glyph or emoji plus
+// a short code — drawn for its terminal status line. The sidebar is plain
+// text, so ask for plain titles (runtime-only, like every override here).
+try {
+  settingsOverride.override("title.icons", "boring");
+} catch (e) {
+  err(`plain session titles could not be requested: ${String(e)}`);
 }
 
 const created = await OMP.createAgentSession({
@@ -640,6 +658,7 @@ const created = await OMP.createAgentSession({
   // A missing UI must never imply consent; approvals bridge to the host.
   autoApprove: boot.autoApprove,
   hasUI: true,
+  autoTitle,
   // Only an explicit primary-authored submission may become the canonical answer.
   appendSystemPrompt:
     "Advisor agents may interject visible review notes as <advisory> messages. " +
@@ -681,7 +700,6 @@ const sessionCaps = {
   abort: typeof (session as any).abort === "function",
   setModel: typeof (session as any).setModel === "function",
   navigateTree: typeof (session as any).navigateTree === "function",
-  titleGeneration: typeof (session as any).maybeStartTitleGeneration === "function",
 } as const;
 for (const [name, ok] of Object.entries(sessionCaps)) {
   if (!ok) err(`upstream capability missing: session.${name}`, { kind: "configuration" });
@@ -753,19 +771,24 @@ function leaveWaiting(): void {
 
 /**
  * Approval policy applied on top of upstream's ClientBridge permission gate.
- * The gate covers bash / edit / delete / move (see acp-permission-gate.ts).
+ * The gate consults the bridge for bash and for destructive file operations
+ * (delete, move, an edit that deletes or moves a file — acp-permission-gate.ts).
  *
- *  - "always-ask": every gated call prompts the host.
- *  - "write":      content edits (edit/write) auto-allow; bash, delete and
- *                  move still prompt — same destructive effect as `bash rm`,
- *                  same gate.
- *  - "yolo":       everything the gate covers auto-allows. Explicit user
- *                  choice — never a silent default.
+ *  - bash:  OMP resolves it first (the session's approval mode, the user's own
+ *           `bash.patterns` rules, critical commands) and only reaches the
+ *           bridge when that resolution says "ask". A bash request is therefore
+ *           never auto-allowed here — in any mode.
+ *  - "always-ask": every bridged call prompts the host.
+ *  - "write":      a destructive edit auto-allows; delete and move still
+ *                  prompt — same destructive effect as `bash rm`.
+ *  - "yolo":       file operations the bridge still sees auto-allow. Explicit
+ *                  user choice — never a silent default.
  *
- * Path scoping cuts across all modes: a mutating tool whose target resolves
- * outside the project folder ALWAYS prompts, even in yolo. That is the
- * prompt-injection guardrail — "yolo" means everything inside the project,
- * not ~/.ssh.
+ * Path scoping cuts across the modes for the calls the bridge sees: a file
+ * operation whose target resolves outside the project folder prompts even in
+ * yolo. It is a guardrail, not a sandbox — OMP only consults the bridge for
+ * the operations above, and not at all for file tools in a session that is in
+ * yolo when its tools are bound.
  */
 const PATHY_INPUT_KEYS = [
   "path",
@@ -804,11 +827,22 @@ function pathsOutsideProject(rawInput: unknown): string[] {
 
 function policyAllows(toolCall: { toolName: string; rawInput?: unknown }): boolean {
   if (approvalMode === "always-ask") return false;
-  if (toolCall.toolName !== "bash" && pathsOutsideProject(toolCall.rawInput).length > 0) {
-    return false;
-  }
+  if (toolCall.toolName === "bash") return false;
+  if (pathsOutsideProject(toolCall.rawInput).length > 0) return false;
   if (approvalMode === "yolo") return true;
   return toolCall.toolName === "edit" || toolCall.toolName === "write";
+}
+
+/** Run `cancel` once when any of the given signals aborts (now, if one already has). */
+function onAnyAbort(signals: Array<AbortSignal | undefined>, cancel: () => void): void {
+  for (const signal of signals) {
+    if (!signal) continue;
+    if (signal.aborted) {
+      cancel();
+      return;
+    }
+    signal.addEventListener("abort", cancel, { once: true });
+  }
 }
 
 const clientBridge = {
@@ -817,6 +851,9 @@ const clientBridge = {
     toolCall: { toolCallId: string; toolName: string; title: string; rawInput?: unknown },
     options: Array<{ optionId: string; name: string; kind: string }>,
     signal?: AbortSignal,
+    // Aborted when the user steers the turn while the card is open: OMP has
+    // already moved on, so the card must close rather than linger unanswerable.
+    steeringSignal?: AbortSignal,
   ): Promise<
     { outcome: "cancelled" } | { outcome: "selected"; optionId: string; kind?: string }
   > => {
@@ -851,13 +888,9 @@ const clientBridge = {
 
     const result = await new Promise<{ optionId: string } | { cancelled: true }>((resolve) => {
       pendingApprovals.set(approvalId, { resolve });
-      signal?.addEventListener(
-        "abort",
-        () => {
-          if (pendingApprovals.delete(approvalId)) resolve({ cancelled: true });
-        },
-        { once: true },
-      );
+      onAnyAbort([signal, steeringSignal], () => {
+        if (pendingApprovals.delete(approvalId)) resolve({ cancelled: true });
+      });
     });
 
     emit({
@@ -875,17 +908,37 @@ const clientBridge = {
 };
 (session as any).setClientBridge?.(clientBridge);
 
+/** What OMP's tier gate hands `ExtensionUIContext.approve()` (extensions/types.ts upstream). */
+interface TierApprovalPrompt {
+  /** "Allow tool: <name>", optional Origin/Reason rows, then the tool's own detail rows. */
+  full: string;
+  compact: string;
+  /** Label of the "approve for this session" choice; absent when every call must ask. */
+  session?: string;
+  /** Remembered-approval choices; only offered in OMP's `always-ask-cached` mode. */
+  grants?: ReadonlyArray<{ scope: "folder" | "target"; label: string; alwaysLabel: string }>;
+}
+type TierApprovalAnswer =
+  | "once"
+  | "session"
+  | "deny"
+  | { grant: "folder" | "target"; always: boolean };
+
 /**
- * OMP's TIER gate (write, plain edit, eval, browser, MCP…) prompts through the
- * extension runner's UI as `select("Allow tool: <name>\n<details>",
- * ["Approve", "Deny"])`. Route that to the same approval card, pending map and
- * resolution path the ACP bridge uses, so the user sees one kind of approval
- * whichever gate asked. Returns the option OMP expects, or undefined when the
- * request was cancelled (turn aborted) — which OMP treats as a denial.
+ * OMP's TIER gate (write, plain edit, eval, browser, computer, MCP…, and any
+ * call into a `tools.restrictedFolders` folder) asks through the extension
+ * UI's `approve()`. Route it to the same approval card, pending map and
+ * resolution path the client bridge uses, so the user sees one kind of
+ * approval whichever gate asked. Anything but an explicit approval is "deny",
+ * which is also what a cancelled request (turn aborted) resolves to.
  */
-async function requestTierApproval(prompt: string): Promise<string | undefined> {
-  const [head = "", ...rest] = prompt.split("\n");
+async function requestTierApproval(
+  prompt: TierApprovalPrompt,
+  signal?: AbortSignal,
+): Promise<TierApprovalAnswer> {
+  const [head = "", ...rest] = String(prompt?.full ?? "").split("\n");
   const toolName = head.replace(/^Allow tool:\s*/, "").trim() || "tool";
+  const grants = prompt?.grants ?? [];
   const approvalId = interactionId("appr");
   emit({
     type: "approval.request",
@@ -895,13 +948,35 @@ async function requestTierApproval(prompt: string): Promise<string | undefined> 
     summary: head,
     detail: rest.join("\n").trim() || undefined,
     options: [
-      { id: "Approve", label: "Allow", kind: "allow" },
-      { id: "Deny", label: "Deny", kind: "deny" },
+      { id: "once", label: grants.length ? "Allow once" : "Allow", kind: "allow" },
+      ...(prompt?.session
+        ? [
+            {
+              id: "session",
+              label: prompt.session.replace(/^Approve\b/, "Allow"),
+              kind: "allow-always" as const,
+            },
+          ]
+        : []),
+      ...grants.map((g) => ({
+        id: `grant:${g.scope}`,
+        label: g.label.replace(/^Approve\b/, "Allow"),
+        kind: "allow-always" as const,
+      })),
+      ...grants.map((g) => ({
+        id: `grant-always:${g.scope}`,
+        label: g.alwaysLabel.replace(/^Always Approve\b/, "Always allow"),
+        kind: "allow-always" as const,
+      })),
+      { id: "deny", label: "Deny", kind: "deny" },
     ],
   });
   enterWaiting();
   const result = await new Promise<{ optionId: string } | { cancelled: true }>((resolve) => {
     pendingApprovals.set(approvalId, { resolve });
+    onAnyAbort([signal], () => {
+      if (pendingApprovals.delete(approvalId)) resolve({ cancelled: true });
+    });
   });
   emit({
     type: "approval.resolved",
@@ -910,16 +985,15 @@ async function requestTierApproval(prompt: string): Promise<string | undefined> 
     optionId: "cancelled" in result ? "cancelled" : result.optionId,
   });
   leaveWaiting();
-  if ("cancelled" in result) return undefined;
-  return result.optionId === "Approve" ? "Approve" : "Deny";
-}
-
-/** True for the tier gate's approval prompt (see requestTierApproval). */
-function isTierApprovalPrompt(title: unknown, options: unknown): title is string {
-  if (typeof title !== "string" || !title.startsWith("Allow tool:")) return false;
-  if (!Array.isArray(options) || options.length !== 2) return false;
-  const labels = options.map((o) => (typeof o === "string" ? o : (o?.value ?? o?.label)));
-  return labels[0] === "Approve" && labels[1] === "Deny";
+  if ("cancelled" in result) return "deny";
+  if (result.optionId === "once") return "once";
+  if (result.optionId === "session" && prompt?.session) return "session";
+  const grant = grants.find((g) => result.optionId.endsWith(`:${g.scope}`));
+  if (grant && result.optionId.startsWith("grant-always:")) {
+    return { grant: grant.scope, always: true };
+  }
+  if (grant && result.optionId.startsWith("grant:")) return { grant: grant.scope, always: false };
+  return "deny";
 }
 
 /**
@@ -933,6 +1007,7 @@ function requestUi<T>(
   extensionName: string,
   fallback: T,
   map: (r: { value: unknown; cancelled: boolean }) => T,
+  signal?: AbortSignal,
 ): Promise<T> {
   const requestId = interactionId("ui");
   emit({ type: "extension.ui.request", sessionId: boot.sessionId, requestId, extensionName, ui });
@@ -948,7 +1023,33 @@ function requestUi<T>(
         }
       },
     });
+    // OMP closes its dialogs through the signal (turn aborted, an `ask`
+    // deadline, a steer that superseded the question). Settle the card too —
+    // the host reuses approval.resolved for interaction cards — or it would
+    // sit in the transcript looking answerable with nothing waiting on it.
+    onAnyAbort([signal], () => {
+      const pending = pendingUi.get(requestId);
+      if (!pending) return;
+      pendingUi.delete(requestId);
+      emit({
+        type: "approval.resolved",
+        sessionId: boot.sessionId,
+        approvalId: requestId,
+        optionId: "cancelled",
+      });
+      pending.resolve({ value: undefined, cancelled: true });
+    });
   });
+}
+
+/** The slice of OMP's `ExtensionUIDialogOptions` a desktop host can honour. */
+interface DialogOptions {
+  signal?: AbortSignal;
+  secret?: boolean;
+  /** `ask`'s multi-select fallback: rows `< markableCount` are checkboxes. */
+  selectionMarker?: string;
+  checkedIndices?: number[];
+  markableCount?: number;
 }
 
 const uiContext: any = {
@@ -956,39 +1057,72 @@ const uiContext: any = {
   // another session's dialog in the host.
   timeoutStartsOnPresentation: true,
 
-  select: (title: string, options: Array<{ label?: string; value?: string } | string>) =>
-    isTierApprovalPrompt(title, options)
-      ? requestTierApproval(title)
-      : requestUi(
-          {
-            kind: "select",
-            title,
-            options: (options ?? []).map((o, i) =>
-              typeof o === "string"
-                ? { id: o, label: o }
-                : { id: String(o.value ?? o.label ?? i), label: String(o.label ?? o.value ?? i) },
-            ),
-            multi: false,
-          },
-          "extension",
-          undefined,
-          (r) => (r.cancelled ? undefined : (r.value as string)),
-        ),
+  select: (
+    title: string,
+    options: Array<{ label?: string; value?: string } | string>,
+    dialogOptions?: DialogOptions,
+  ) => {
+    // OMP's `ask` tool walks a form one field at a time on hosts without a
+    // form surface. A multi-select field is a select re-shown after every
+    // toggle; mark the checked rows so the state survives each round trip.
+    // The id stays the bare label — that is what OMP matches the answer on.
+    const checked =
+      dialogOptions?.selectionMarker === "checkbox"
+        ? new Set(dialogOptions.checkedIndices ?? [])
+        : undefined;
+    const markable = dialogOptions?.markableCount ?? Number.POSITIVE_INFINITY;
+    return requestUi(
+      {
+        kind: "select",
+        title,
+        options: (options ?? []).map((o, i) => {
+          const id = typeof o === "string" ? o : String(o.value ?? o.label ?? i);
+          const label = typeof o === "string" ? o : String(o.label ?? o.value ?? i);
+          return {
+            id,
+            label: checked && i < markable ? `${checked.has(i) ? "☑" : "☐"} ${label}` : label,
+          };
+        }),
+        multi: false,
+      },
+      "extension",
+      undefined,
+      (r) => (r.cancelled ? undefined : (r.value as string)),
+      dialogOptions?.signal,
+    );
+  },
 
-  confirm: (title: string, message: string) =>
-    requestUi({ kind: "confirm", title, message }, "extension", false, (r) =>
-      r.cancelled ? false : Boolean(r.value),
+  confirm: (title: string, message: string, dialogOptions?: DialogOptions) =>
+    requestUi(
+      { kind: "confirm", title, message },
+      "extension",
+      false,
+      (r) => (r.cancelled ? false : Boolean(r.value)),
+      dialogOptions?.signal,
     ),
 
-  input: (title: string, placeholder?: string) =>
-    requestUi({ kind: "input", title, placeholder }, "extension", undefined, (r) =>
-      r.cancelled ? undefined : String(r.value ?? ""),
+  input: (title: string, placeholder?: string, dialogOptions?: DialogOptions) =>
+    requestUi(
+      { kind: "input", title, placeholder, secret: dialogOptions?.secret === true || undefined },
+      "extension",
+      undefined,
+      (r) => (r.cancelled ? undefined : String(r.value ?? "")),
+      dialogOptions?.signal,
     ),
 
-  editor: (title: string, prefill?: string) =>
-    requestUi({ kind: "editor", title, initial: prefill ?? "" }, "extension", undefined, (r) =>
-      r.cancelled ? undefined : String(r.value ?? ""),
+  editor: (title: string, prefill?: string, dialogOptions?: DialogOptions) =>
+    requestUi(
+      { kind: "editor", title, initial: prefill ?? "" },
+      "extension",
+      undefined,
+      (r) => (r.cancelled ? undefined : String(r.value ?? "")),
+      dialogOptions?.signal,
     ),
+
+  // OMP's tier gate. Defining this is what makes OMP hand over the structured
+  // prompt (session choice, remembered grants) instead of a generic select.
+  approve: (prompt: TierApprovalPrompt, dialogOptions?: DialogOptions) =>
+    requestTierApproval(prompt, dialogOptions?.signal),
 
   notify: (message: string, type?: "info" | "warning" | "error") => {
     emit({
@@ -1020,6 +1154,10 @@ const uiContext: any = {
   getEditorText: () => "",
   addAutocompleteProvider: () => {},
   setEditorComponent: () => {},
+  getEditorComponent: () => undefined,
+  rerenderMessage: () => {},
+  refreshTranscript: () => {},
+  getLinkClicksAvailable: () => false,
   getToolsExpanded: () => true,
   setToolsExpanded: () => {},
   theme: undefined,
@@ -1294,12 +1432,15 @@ async function settleContextWindow(before: number): Promise<void> {
   }
 }
 
-let persistedEmitted = false;
+// Re-announced when the path CHANGES, not just once: OMP re-homes a session
+// into a new file when it cannot keep writing the original (another omp
+// process holds it, or the file changed underneath). The host resumes from
+// whatever path it was last told, so a stale one would revive the old copy.
+let persistedPath: string | undefined;
 function checkPersisted(): void {
-  if (persistedEmitted) return;
   const sessionFile = (session as any).sessionFile ?? (sessionManager as any).getSessionFile?.();
-  if (sessionFile) {
-    persistedEmitted = true;
+  if (sessionFile && String(sessionFile) !== persistedPath) {
+    persistedPath = String(sessionFile);
     ompSessionId = String((session as any).sessionId ?? ompSessionId);
     emit({
       type: "session.persisted",
@@ -1538,7 +1679,9 @@ session.subscribe((ev: any) => {
     emitContext();
     checkPersisted();
   }
-  if (ev?.type === "agent_end") {
+  // A model loop stopped: `agent_end` closes the run, `agent_pause` (OMP 18.21+)
+  // is a loop that stopped while background work can still resume the run.
+  if (ev?.type === "agent_end" || ev?.type === "agent_pause") {
     flush();
     refreshAdvisors();
     emitUsage();
@@ -1912,22 +2055,6 @@ async function handle(req: any): Promise<unknown> {
         }
       }
 
-      // Auto-title: name the session from its first real prompt (the way
-      // Codex and Claude do). OMP gates this itself — already-named sessions,
-      // greetings/low-signal input, and PI_NO_TITLE all skip — and applies
-      // the result via setSessionName("auto"), which a later user rename
-      // overrides. An explicit title from the launch sheet is respected.
-      // Never in test mode: the online title model resolves to a REAL
-      // provider, and its in-flight request racing shutdown flaked the
-      // packaged smoke test's 15s exit window.
-      if (!boot.userTitled && process.env.ORCHESTRATOR_TEST_MODE !== "1") {
-        try {
-          (session as any).maybeStartTitleGeneration?.(String(req.payload.text));
-        } catch {
-          /* titling must never block or break the prompt */
-        }
-      }
-
       const nowBusy = ownedRun || Boolean(s.isStreaming);
       if (nowBusy && req.payload.whenBusy === "reject") throw new Error("Session is busy");
       if (nowBusy && req.payload.whenBusy !== "queue") {
@@ -2126,7 +2253,9 @@ async function handle(req: any): Promise<unknown> {
 
     case "session.setTitle":
       try {
-        s.setSessionName?.(String(req.payload.title));
+        // "user", not the default "auto": OMP re-titles auto-named sessions
+        // (title.refreshOnReplan) and would overwrite a rename marked auto.
+        s.setSessionName?.(String(req.payload.title), "user");
       } catch {
         /* cosmetic */
       }
@@ -2156,6 +2285,9 @@ async function handle(req: any): Promise<unknown> {
         return { ok: false };
       }
       approvalMode = mode;
+      // OMP decides which tools consult the bridge when it binds them, and
+      // that depends on the mode; re-installing the bridge rebinds them.
+      (session as any).setClientBridge?.(clientBridge);
       // A mode change is a real security state change — it goes in the
       // transcript, loudest for the mode that stops asking.
       emit({
