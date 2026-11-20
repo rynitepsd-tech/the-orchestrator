@@ -59,7 +59,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![engine_send, engine_restart, app_quit])
+        .invoke_handler(tauri::generate_handler![
+            engine_send,
+            engine_restart,
+            app_quit
+        ])
         .setup(|app| {
             let supervisor = EngineSupervisor::new(app.handle().clone());
             app.manage(supervisor.clone());
