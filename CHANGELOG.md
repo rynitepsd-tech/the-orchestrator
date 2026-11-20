@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+- **First published build of the 0.9 line.** 0.9.0 was tagged but never built: GitHub had retired
+  the macOS runner image the release workflow used, so the run was cancelled before it started.
+  This release is 0.9.0 plus that fix — builds now run on macOS 15 — and everything listed under
+  0.9.0 below ships here.
+
 ## 0.9.0
 
 - **Updated the embedded OMP from 18.4.2 to 19.0.1** — 75 upstream releases, including a major

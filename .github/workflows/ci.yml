@@ -1,7 +1,7 @@
 name: CI
 
 # The Orchestrator is macOS-only (Tauri 2 + a bun --compile engine sidecar that
-# ships an OMP native addon beside it). Apple Silicon runners only: macos-14 is
+# ships an OMP native addon beside it). Apple Silicon runners only: macos-15 is
 # the arm64 image. Windows and Linux are not supported and are not built here.
 
 on:
@@ -24,7 +24,7 @@ env:
 jobs:
   build:
     name: typecheck, test, build
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
@@ -81,7 +81,7 @@ jobs:
         run: bunx vite build
 
       - name: Build engine
-        # Host arch only (arm64 on macos-14). --target=x64 exists in
+        # Host arch only (arm64 on macos-15). --target=x64 exists in
         # scripts/build-engine.ts but that path is unbuilt and untested, and it
         # needs @oh-my-pi/pi-natives-darwin-x64 installed.
         #

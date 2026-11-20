@@ -8,7 +8,7 @@ name: Release
 # is architecture-specific. A DMG that pairs, say, an arm64 app with an x64
 # engine fails at first launch with "Failed to load pi_natives native addon".
 # Both are therefore built on the same runner, for the host arch only
-# (macos-14 = Apple Silicon), and the packaged smoke test asserts the match.
+# (macos-15 = Apple Silicon), and the packaged smoke test asserts the match.
 # If an Intel (x64) release is ever produced, build it on an x64 runner and
 # publish it as a separate DMG — do not mix artefacts from two runners into one.
 
@@ -30,7 +30,7 @@ env:
 jobs:
   release-macos:
     name: build and publish (macOS, Apple Silicon)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
